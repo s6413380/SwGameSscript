@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         器靈
 // @namespace    local.auto-clicker
-// @version      2.75
+// @version      2.77
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -833,7 +833,7 @@
 
     <div data-tab="material">
       <div class="hint">鍛造材料在鍛造時自動記（也讀鍛造工具腳本的紀錄）；裝備數值在物品頁看過就會記下來，之後賣掉也還算得到</div>
-      <div class="row"><select data-role="material-mode" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="regression">依材料貢獻（扣除其他材料）</option><option value="single">依單一材料</option><option value="combo">依材料組合</option></select>
+      <div class="row"><select data-role="material-mode" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="tendency">材料屬性傾向（全部類型）</option><option value="regression">依材料貢獻（扣除其他材料）</option><option value="single">依單一材料</option><option value="combo">依材料組合</option></select>
         <select data-role="material-type" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
       <div class="row"><select data-role="material-forger" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
       <div class="row"><select data-role="material-sort" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="count">依件數</option><option value="atk">依攻擊</option><option value="def">依防禦</option><option value="int">依智力</option><option value="lck">依幸運</option><option value="fullDur">依耐久</option><option value="wgt">依重量（輕的先）</option><option value="recyclePrice">依回收價</option></select>
@@ -2658,17 +2658,36 @@
     return sendGameRequest(path, options);
   }
 
+  // 一個請求卡住不回，排在後面的動作（掛機、鍛造共用一條隊伍）會全部卡死，所以要有逾時
+  const GAME_REQUEST_TIMEOUT_MILLISECONDS = 30000;
+
   async function sendGameRequest(path, options = {}) {
     const token = currentGameToken();
     if (!token) throw new Error('還沒取得 token，請在遊戲裡點一下任一分頁再試');
-    const response = await window.fetch(path, {
-      credentials: 'same-origin',
-      ...options,
-      headers: { ...(options.headers || {}), token },
-    });
-    const text = await response.text();
+    const controller = new AbortController();
+    const timer = backgroundTimer.setTimeout(() => controller.abort(), GAME_REQUEST_TIMEOUT_MILLISECONDS);
+    let response;
+    let text;
+    try {
+      response = await window.fetch(path, {
+        credentials: 'same-origin',
+        ...options,
+        signal: controller.signal,
+        headers: { ...(options.headers || {}), token },
+      });
+      text = await response.text();
+    } catch (cause) {
+      // 網路斷掉、逾時：過一下通常就好，呼叫的一方可以重試
+      const error = new Error(cause.name === 'AbortError' ? `${GAME_REQUEST_TIMEOUT_MILLISECONDS / 1000} 秒沒回應` : `連線失敗（${cause.message}）`);
+      error.transient = true;
+      throw error;
+    } finally {
+      backgroundTimer.clearTimeout(timer);
+    }
     if (!response.ok) {
       const error = new Error(`HTTP ${response.status}：${text.slice(0, 100)}`);
+      error.status = response.status;
+      error.transient = response.status >= 500 || response.status === 429;
       // 腳本自己打的 API 遊戲不知道要驗證；遊戲收到這個事件會重抓驗證狀態、把驗證框叫出來
       if (response.status === 403 && /CAPTCHA_REQUIRED/.test(text)) {
         error.captchaRequired = true;
@@ -4415,6 +4434,8 @@
     );
     if (durabilities.some((value) => value !== '-')) lines.push(`耐久：${durabilities.join(' ')}`);
     if (settings.equipApiEnabled) lines.push(equipMonitorText(settings));
+    if (forgeRunner.running) lines.push(`API 鍛造：執行中（已開 ${forgeRunner.started} 爐${forgeRunner.failures ? `，重試中 ${forgeRunner.failures}/${FORGE_RETRY_LIMIT}` : ''}${forgeRunner.captchaWaiting ? '，等驗證' : ''}）`);
+    else if (forgeRunner.stoppedReason) lines.push(`API 鍛造已停：${forgeRunner.stoppedReason}`);
     watchBattleLog(settings);
     const combatLine = settings.combatEnabled ? combatQuickText() : '';
     if (combatLine) lines.push(combatLine);
@@ -7481,7 +7502,7 @@
       names.map((__, second) => rows.reduce((sum, row) => sum + row[first] * row[second], 0) + (first === second ? REGRESSION_RIDGE : 0))
     );
     const inverse = invertMatrix(gram);
-    const result = { type, names: materialNames, sampleCount: samples.length, coefficients: {}, errors: {}, fit: {}, uses: {}, enchantLift: {} };
+    const result = { type, names: materialNames, sampleCount: samples.length, coefficients: {}, errors: {}, fit: {}, uses: {}, enchantLift: {}, means: {} };
     REGRESSION_FIELDS.forEach(([field]) => {
       const targets = samples.map((sample) => sample.base[field]);
       const moment = names.map((_, index) => rows.reduce((sum, row, rowIndex) => sum + row[index] * targets[rowIndex], 0));
@@ -7494,6 +7515,7 @@
       result.coefficients[field] = Object.fromEntries(names.map((name, index) => [name, beta[index]]));
       result.errors[field] = Object.fromEntries(names.map((name, index) => [name, Math.sqrt(Math.max(0, inverse[index][index] * variance))]));
       result.fit[field] = total > 0 ? 1 - residual / total : null;
+      result.means[field] = mean;
     });
     // 附魔是有或沒有，用「有放這個材料時出現率」減「沒放時出現率」看關聯
     const enchantNames = [...new Set(samples.flatMap((sample) => Object.keys(sample.enchantments)))];
@@ -7677,6 +7699,123 @@
       <div class="hint">「+數字/個」＝其他材料不變時，多放 1 個平均多多少附魔值；出現率＝有放這個材料時比沒放時多／少多少</div>`;
   }
 
+  // 材料屬性傾向：每種裝備類型各解一次材料貢獻，換成「佔該類型平均值的百分比」（盔甲和武器的數值差很多，這樣才能放在一起比），
+  // 再依用過的件數跨類型平均，看得出某個材料偏攻擊、偏防禦還是偏輕量；不用先選類型
+  const TENDENCY_LABELS = { atk: '偏攻擊', def: '偏防禦', int: '偏智力', lck: '偏幸運', fullDur: '偏耐久', wgt: '偏輕' };
+  // 雜訊會讓每個材料每項都有一點點正值；至少要這麼多、而且是誤差的兩倍以上才算真的有傾向
+  const TENDENCY_MIN_PERCENT = 1;
+
+  function isClearTendency(value, error) {
+    return value >= TENDENCY_MIN_PERCENT && value > error * 2;
+  }
+
+  function materialTendencies(weights, forger) {
+    const types = [...new Set([...forgedRecords().values()].map((item) => item.type).filter(Boolean))];
+    const byMaterial = new Map();
+    types.forEach((type) => {
+      const model = materialRegression(type, weights, forger);
+      if (!model) return;
+      model.names.forEach((name) => {
+        const uses = model.uses[name];
+        if (uses < REGRESSION_MIN_USES) return;
+        const entry = byMaterial.get(name) || { name, uses: 0, types: [], weighted: {}, errors: {}, weights: {} };
+        entry.uses += uses;
+        entry.types.push(type);
+        REGRESSION_FIELDS.forEach(([field]) => {
+          const mean = Math.abs(model.means[field]);
+          if (!mean) return;
+          entry.weighted[field] = (entry.weighted[field] || 0) + ((model.coefficients[field][name] / mean) * 100) * uses;
+          entry.errors[field] = (entry.errors[field] || 0) + (((model.errors[field][name] / mean) * 100) * uses) ** 2;
+          entry.weights[field] = (entry.weights[field] || 0) + uses;
+        });
+        byMaterial.set(name, entry);
+      });
+    });
+    // 附魔：全部類型一起看，有放這個材料時比沒放時出現率高多少
+    const samples = [...forgedRecords().values()].filter((equipment) => Array.isArray(equipment.materials) && (!forger || equipment.forger === forger));
+    const enchantNames = [...new Set(samples.flatMap((sample) => Object.keys(sample.enchantments || {})))];
+    return [...byMaterial.values()].map((entry) => {
+      const percent = {};
+      const error = {};
+      REGRESSION_FIELDS.forEach(([field]) => {
+        const weight = entry.weights[field];
+        percent[field] = weight ? entry.weighted[field] / weight : 0;
+        error[field] = weight ? Math.sqrt(entry.errors[field]) / weight : 0;
+      });
+      const has = (sample) => sample.materials.some(([material]) => material === entry.name);
+      const withMaterial = samples.filter(has);
+      const without = samples.filter((sample) => !has(sample));
+      const rate = (group, enchant) => (group.length ? group.filter((sample) => sample.enchantments && enchant in sample.enchantments).length / group.length : 0);
+      const enchants = enchantNames
+        .map((enchant) => ({ enchant, rate: rate(withMaterial, enchant), lift: rate(withMaterial, enchant) - rate(without, enchant) }))
+        .filter(({ lift }) => lift >= 0.1)
+        .sort((first, second) => second.lift - first.lift);
+      // 傾向：比誤差大的正向屬性裡最大的；重量是越輕越好，用負值算
+      const leaning = REGRESSION_FIELDS.map(([field]) => [field, field === 'wgt' ? -percent[field] : percent[field], error[field]])
+        .filter(([, value, fieldError]) => isClearTendency(value, fieldError))
+        .sort(([, first], [, second]) => second - first)
+        .slice(0, 2)
+        .map(([field]) => TENDENCY_LABELS[field]);
+      return { name: entry.name, uses: entry.uses, types: entry.types, percent, error, enchants, leaning };
+    });
+  }
+
+  function tendencyCardHtml(item, maxAbs) {
+    const bars = MATERIAL_BAR_FIELDS.map(([field, label]) => {
+      const value = item.percent[field];
+      const good = field === 'wgt' ? value < 0 : value > 0;
+      const width = Math.min(50, (Math.abs(value) / maxAbs[field]) * 50);
+      const unsure = Math.abs(value) < item.error[field];
+      return `<div style="display:flex;align-items:center;gap:4px;height:14px;opacity:${unsure ? 0.45 : 1}" title="±${item.error[field].toFixed(1)}%">
+        <span style="width:14px;color:#a0a0aa">${label}</span>
+        <div style="flex:1;height:8px;background:#26262b;border-radius:4px;position:relative;overflow:hidden">
+          <div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:#55555c"></div>
+          <div style="position:absolute;top:0;bottom:0;${value >= 0 ? 'left:50%' : `left:${50 - width}%`};width:${width}%;background:${good ? '#4ade80' : '#f87171'}"></div></div>
+        <span style="width:48px;text-align:right;font-variant-numeric:tabular-nums;color:${good ? '#4ade80' : '#f87171'}">${value >= 0 ? '+' : ''}${value.toFixed(1)}%</span></div>`;
+    }).join('');
+    const enchants = item.enchants
+      .slice(0, 4)
+      .map(
+        ({ enchant, rate, lift }) =>
+          `<span style="display:inline-block;margin:1px 2px 0 0;padding:0 6px;border-radius:9px;background:#3b2f5c;color:#ddd6fe" title="有放時出現 ${Math.round(rate * 100)}%">${escapeHtml(enchant)} +${Math.round(lift * 100)}%</span>`
+      )
+      .join('');
+    return `<div style="border:1px solid #2e2e34;border-radius:8px;padding:6px;margin:4px 0;background:#1c1c21">
+      <div style="display:flex;gap:6px;align-items:baseline"><b style="flex:1;min-width:0;word-break:break-all">${escapeHtml(item.name)}</b>
+        ${item.leaning.map((label) => `<span style="padding:0 6px;border-radius:9px;background:#14532d;color:#bbf7d0;font-size:11px">${label}</span>`).join('')}
+        <span style="color:#a0a0aa;white-space:nowrap">${item.uses} 件</span></div>
+      <div style="font-size:11px;color:#a0a0aa;margin:2px 0 3px">${escapeHtml(item.types.join('、'))}</div>
+      ${bars}
+      <div style="font-size:11px;margin-top:2px">${enchants || '<span style="color:#666">看不出跟哪個附魔有關</span>'}</div>
+    </div>`;
+  }
+
+  function tendencyHtml(items, sortKey, filter) {
+    if (!items.length) return `<div class="hint">還沒有足夠的資料：每個材料至少要在同一類型用過 ${REGRESSION_MIN_USES} 件才算得出來</div>`;
+    const sortField = REGRESSION_FIELDS.some(([field]) => field === sortKey) ? sortKey : null;
+    const score = (item, field) => (field === 'wgt' ? -item.percent[field] : item.percent[field]);
+    const maxAbs = Object.fromEntries(MATERIAL_BAR_FIELDS.map(([field]) => [field, Math.max(1, ...items.map((item) => Math.abs(item.percent[field])))]));
+    // 各屬性推薦：只挑比誤差大的（看得出正向的）
+    const picks = MATERIAL_BAR_FIELDS.map(([field, label, color]) => {
+      const best = items
+        .filter((item) => isClearTendency(score(item, field), item.error[field]))
+        .sort((first, second) => score(second, field) - score(first, field))
+        .slice(0, 3)
+        .map((item) => `${escapeHtml(item.name)} ${field === 'wgt' ? '-' : '+'}${Math.abs(item.percent[field]).toFixed(1)}%`)
+        .join('、');
+      return `<div style="margin:1px 0"><b style="color:${color}">${field === 'wgt' ? '輕量' : label}</b>：${best || '<span style="color:#666">還看不出來</span>'}</div>`;
+    }).join('');
+    const shown = items
+      .filter((item) => !filter || item.name.includes(filter))
+      .sort((first, second) => (sortField ? score(second, sortField) - score(first, sortField) : second.uses - first.uses));
+    return {
+      header: `<div class="hint">數字＝其他材料不變時，<b>多放 1 個</b>大約增減該類型平均值的幾 %（換成普通品質、跨類型依件數平均）；淡色＝誤差比數值大，還看不準</div>
+        <div class="subhead">各屬性推薦材料</div><div style="font-size:12px">${picks}</div>
+        <div class="hint">屬性受名稱、鍛造師、運氣影響很大，只當大概的方向；材料用得越多樣、件數越多越準</div>`,
+      cards: shown.map((item) => tendencyCardHtml(item, maxAbs)).join(''),
+    };
+  }
+
   function renderMaterialSummary() {
     const mode = panel.querySelector('[data-role="material-mode"]').value;
     const typeSelect = panel.querySelector('[data-role="material-type"]');
@@ -7687,6 +7826,24 @@
     const forgerSelect = panel.querySelector('[data-role="material-forger"]');
     fillForgerSelect(forgerSelect);
     const nameAdjust = readSettingsFromPanel().materialNameAdjust;
+    // 傾向看全部類型，類型選單用不到
+    typeSelect.style.display = mode === 'tendency' ? 'none' : '';
+    if (mode === 'tendency') {
+      const box = panel.querySelector('[data-role="material-summary"]');
+      const result = tendencyHtml(
+        materialTendencies(nameAdjust ? loadNameWeights() || { days: {} } : null, forgerSelect.value),
+        panel.querySelector('[data-role="material-sort"]').value,
+        panel.querySelector('[data-role="material-filter"]').value.trim()
+      );
+      if (typeof result === 'string') {
+        box.innerHTML = result;
+        lastMaterialCards = { html: `<div style="grid-column:1/-1">${result}</div>`, title: '材料屬性傾向' };
+        return;
+      }
+      box.innerHTML = result.header + result.cards;
+      lastMaterialCards = { html: `<div style="grid-column:1/-1">${result.header}</div>${result.cards}`, title: `材料屬性傾向${forgerSelect.value ? `・${forgerSelect.value}` : ''}` };
+      return;
+    }
     if (mode === 'regression') {
       const box = panel.querySelector('[data-role="material-summary"]');
       const model = materialRegression(typeSelect.value, nameAdjust ? loadNameWeights() || { days: {} } : null, forgerSelect.value);
@@ -8716,7 +8873,9 @@
 
   // API 鍛造自己跑一條線，不佔用打怪的流程：同一個分頁可以一邊打怪一邊 API 鍛造。
   // 不用定時巡：有空的角色就開爐，否則睡到最早那爐的完成時間（遊戲有給 actionCompleteTime）再來收
-  const forgeRunner = { running: false, runId: 0, timerId: null, started: 0, captchaWaiting: false, captchaCheckedAt: 0 };
+  const forgeRunner = { running: false, runId: 0, timerId: null, started: 0, captchaWaiting: false, captchaCheckedAt: 0, failures: 0 };
+  // 遊戲回錯誤或連線失敗時重試幾次才停（例如伺服器偶爾 502、掛機剛好同時動到同一個角色）
+  const FORGE_RETRY_LIMIT = 5;
 
   function forgeLog(message) {
     setStatus(`［鍛造］${message}`);
@@ -8746,6 +8905,7 @@
     forgeRunner.running = true;
     forgeRunner.runId++;
     forgeRunner.started = 0;
+    forgeRunner.failures = 0;
     forgeRunner.captchaWaiting = false;
     writeJsonStorage(runLockKey(true), { tab: tabKey, at: Date.now() });
     rememberTabRole(!state.running);
@@ -8756,6 +8916,8 @@
   function stopForgeRunner(message) {
     if (!forgeRunner.running) return;
     forgeRunner.running = false;
+    // 狀態列會被掛機的訊息蓋掉，停下的原因另外留著顯示在監控區
+    forgeRunner.stoppedReason = `${new Date().toLocaleTimeString('zh-TW', { hour12: false })} ${message || '已停止'}`;
     forgeRunner.runId++;
     forgeRunner.captchaWaiting = false;
     backgroundTimer.clearTimeout(forgeRunner.timerId);
@@ -8852,6 +9014,7 @@
         forgeRunner.started++;
         actions.push(`${idle.name} 在鍛造坊 ${freeShop} 開始鍛造 ${summary}${forgesLeft === null ? '' : `，材料還夠 ${forgesLeft} 爐`}`);
       }
+      forgeRunner.failures = 0;
       const delay = nextForgeDelay(heroes, heroIds, Boolean(idle && freeShop));
       forgeLog(`${actions.join('、') || (idle ? '鍛造坊都有人在用' : '角色都在鍛造中')}（已開 ${progress()} 爐，${Math.round(delay / 1000)} 秒後再看）`);
       scheduleForgeRunner(delay);
@@ -8865,8 +9028,15 @@
         forgeLog('伺服器要求活人驗證，完成後會自動繼續');
         return;
       }
-      // 材料不夠、配方有問題這類不會自己好，停下來讓人處理
-      pauseForgeRunner(error.message);
+      if ((error.transient || error.status) && forgeRunner.failures < FORGE_RETRY_LIMIT) {
+        forgeRunner.failures++;
+        const delay = randomGap(30000, 60000);
+        forgeLog(`出錯（${error.message}），${Math.round(delay / 1000)} 秒後重試（第 ${forgeRunner.failures}/${FORGE_RETRY_LIMIT} 次）`);
+        scheduleForgeRunner(delay);
+        return;
+      }
+      // 材料不夠、配方有問題這類不會自己好，連續出錯也是，停下來讓人處理
+      pauseForgeRunner(forgeRunner.failures ? `連續 ${forgeRunner.failures + 1} 次出錯，最後一次：${error.message}` : error.message);
     }
   }
 
