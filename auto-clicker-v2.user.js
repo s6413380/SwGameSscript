@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         器靈
 // @namespace    local.auto-clicker
-// @version      2.84
+// @version      2.85
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -112,6 +112,8 @@
   // 區域表預設內容改過就加一：已經存過設定的人也補上新的預設區域（只補一次，刪掉了不會再冒出來）
   const AREA_PRESET_VERSION = 4;
   const LOOT_RARE_PAUSE_OFF_KEY = 'autoClickerV2LootRarePauseOff';
+  const PLAYER_IGNORE_DEFAULT = '大草原1-3、黑暗山洞1-3';
+  const PLAYER_IGNORE_DEFAULT_KEY = 'autoClickerV2PlayerIgnoreDefault';
   const AREA_PRESET_KEY = 'autoClickerV2AreaPreset';
 
   function areaKey(areaIndex, name) {
@@ -155,16 +157,15 @@
     healthEscapeEnabled: false,
     healthEscapeArea: '',
     healthEscapeNumber: 1,
-    // 避難：同地圖有紅名或黑名單玩家就換到這個關卡掛機
+    // 避難：同地圖有紅名或黑名單玩家就離開；back＝往回退一關，escape＝先去避難關卡
     playerEscapeEnabled: false,
+    playerEscapeMode: 'back',
     playerEscapeRed: true,
     playerBlacklist: '',
     playerEscapeArea: '',
     playerEscapeNumber: 1,
-    // 避難關卡也有危險玩家（或沒設避難關卡）時往回退一關，退到還是有就再退
-    playerEscapeBack: true,
     // 這些關卡的危險玩家不理（前幾層常有小號紅名），例如「1-2」「大草原1-2」「老鼠洞」
-    playerIgnoreStages: '',
+    playerIgnoreStages: PLAYER_IGNORE_DEFAULT,
     resourcePausePercent: 20,
     deathPauseEnabled: true,
     // 異常狀態（中毒、燒傷…）：0＝不處理、1＝輕度以上、2＝中度以上、3＝重度
@@ -499,6 +500,12 @@
       saveSettings(merged);
     }
     writeJsonStorage(LOOT_RARE_PAUSE_OFF_KEY, true);
+    // v2.82～2.84 預設不理會的關卡是空的；還是空的就補上新預設一次，之後自己清空就照自己的
+    if (saved && !readJsonStorage(PLAYER_IGNORE_DEFAULT_KEY, false) && !merged.playerIgnoreStages) {
+      merged.playerIgnoreStages = PLAYER_IGNORE_DEFAULT;
+      saveSettings(merged);
+    }
+    writeJsonStorage(PLAYER_IGNORE_DEFAULT_KEY, true);
     return merged;
   }
 
@@ -809,13 +816,14 @@
         <legend>避難：換關卡掛機</legend>
         <label class="row"><input data-field="healthEscapeEnabled" type="checkbox" style="flex:none;width:auto"> 血量低於上面「緊急暫停」的 % 時，不暫停、改去</label>
         <div class="row">${escapeTargetHtml('healthEscape')}</div>
-        <label class="row"><input data-field="playerEscapeEnabled" type="checkbox" style="flex:none;width:auto"> 同地圖有危險玩家時改去</label>
-        <div class="row">${escapeTargetHtml('playerEscape')}</div>
+        <label class="row"><input data-field="playerEscapeEnabled" type="checkbox" style="flex:none;width:auto"> 同地圖有危險玩家時離開</label>
+        <div class="row">做法<select data-field="playerEscapeMode" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="back">往回退一關（還有就再退）</option><option value="escape">先去避難關卡，那裡也有再往回退</option></select></div>
+        <div class="row">避難關卡 ${escapeTargetHtml('playerEscape')}</div>
         <label class="row"><input data-field="playerEscapeRed" type="checkbox" style="flex:none;width:auto"> 紅名玩家算危險</label>
         <div class="row">黑名單<input data-field="playerBlacklist" placeholder="玩家暱稱或 ID，逗號分隔"></div>
-        <label class="row"><input data-field="playerEscapeBack" type="checkbox" style="flex:none;width:auto"> 避難關卡也有危險玩家時退回前一關（還有就再退）</label>
-        <div class="row">不理會的關卡<input data-field="playerIgnoreStages" placeholder="例：1-2 或 大草原1-2、老鼠洞"></div>
-        <div class="hint">觸發時把「移動」頁的目標改成這裡並打開自動移動，走過去後照常掛機，不會自己改回來。血量：到了避難關卡血量還是低才暫停（死亡照樣馬上暫停）。玩家：每 15 秒看一次同地圖的玩家（城鎮不看）；移動途中路過的關卡不管，到了目標關卡才看；避難關卡沒選就直接從目前的關卡往回退；退到第 1 關還有就只提醒。不理會的關卡：只寫數字＝每個區域的那幾關，加區域名稱＝只限那個區域，只寫區域名稱＝整個區域</div>
+        <div class="row">不理會的關卡<input data-field="playerIgnoreStages" placeholder="例：大草原1-3、黑暗山洞1-3"></div>
+        <div class="hint">不理會的關卡寫法：「大草原1-3」＝大草原第 1～3 關；「1-2」＝每個區域的第 1、2 關；「老鼠洞」＝整個老鼠洞；多個用逗號或頓號分開</div>
+        <div class="hint">觸發時把「移動」頁的目標改成這裡並打開自動移動，走過去後照常掛機，不會自己改回來。血量：到了避難關卡血量還是低才暫停（死亡照樣馬上暫停）。玩家：每 15 秒看一次同地圖的玩家（城鎮不看）；移動途中路過的關卡不管，到了目標關卡才看；分支退到入口之前會回到母區域；退到第 1 關還有就只提醒</div>
       </fieldset>
       <label class="row"><input data-field="verifyEnabled" type="checkbox" style="flex:none;width:auto"> 畫面出現驗證框就暫停</label>
       <div class="row">關鍵字<input data-field="verifyKeyword" placeholder="驗證框上的文字"></div>
@@ -3524,19 +3532,19 @@
     const reason = `同地圖有危險玩家：${names}`;
     // 目標是自己剛換的（已經避難或退過）就不再回避難關卡，免得在兩個有人的地方來回跑
     const escaped = state.playerEscapeTarget === targetLabel(settings) || isEscapeTarget(settings, 'playerEscape');
-    if (!escaped && settings.playerEscapeArea) {
+    if (!escaped && settings.playerEscapeMode === 'escape' && settings.playerEscapeArea) {
       escapeTo(settings, 'playerEscape', reason);
       state.playerEscapeTarget = targetLabel(readSettingsFromPanel());
       return true;
     }
-    const back = settings.playerEscapeBack ? previousStage(settings, place) : null;
+    const back = previousStage(settings, place);
     if (back) {
       state.playerEscapeTarget = moveTargetTo(back.area, back.stage, `${reason}，往回退一關`);
       return true;
     }
     if (state.playerAlertKey !== names) {
       state.playerAlertKey = names;
-      alertUser(`${reason}（${settings.playerEscapeBack ? '已經退到第 1 關' : '已經在避難關卡'}，留在原地）`);
+      alertUser(`${reason}（已經退到第 1 關，留在原地）`);
     }
     return false;
   }
