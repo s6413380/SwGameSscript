@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         自動點擊按鈕 V2（載入器）
+// @name         器靈（載入器）
 // @namespace    local.auto-clicker
-// @version      2.1
-// @description  每次開頁面載入最新的自動點擊 V2：本機中繼站和 GitHub 都抓，用版本比較新的；都失敗才用上次的版本
+// @version      2.2
+// @description  每次開頁面載入最新的器靈：本機中繼站和 GitHub 都抓，用版本比較新的；都失敗才用上次的版本
 // @match        https://myteam.swordgale.online/*
 // @grant        none
 // @downloadURL  http://localhost:8787/auto-clicker-v2.loader.user.js
@@ -31,7 +31,7 @@
     script.textContent = `${code}\n//# sourceURL=auto-clicker-v2.user.js`;
     (document.head || document.documentElement).appendChild(script);
     script.remove();
-    console.info(`[自動點擊 V2 載入器] 已載入（${source}）`);
+    console.info(`[器靈 載入器] 已載入（${source}）`);
   }
 
   async function fetchScript({ url, timeout }) {
@@ -93,6 +93,6 @@
       // 讀不到快取就只能提示
     }
     if (cached) run(cached, `連不上（${failures.join('；')}），用上次的版本`);
-    else console.error('[自動點擊 V2 載入器] 中繼站和 GitHub 都連不上，也沒有上次的版本', failures);
+    else console.error('[器靈 載入器] 中繼站和 GitHub 都連不上，也沒有上次的版本', failures);
   })();
 })();

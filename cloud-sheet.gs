@@ -5,6 +5,8 @@
 const SHEETS = {
   growth: ['key', 'heroId', 'name', 'type', 'typeId', 'tier', 'potential', 'from', 'to', 'place', 'time', 'diff', 'contributor', 'uploadedAt'],
   equipment: ['equipmentId', 'type', 'quality', 'atk', 'def', 'int', 'lck', 'wgt', 'fullDur', 'fullSlots', 'recyclePrice', 'enchantments', 'materials', 'forger', 'craftedTime', 'name', 'contributor', 'uploadedAt'],
+  // 地圖編號與換地圖的路線（kind = zone / route），API 打怪換地圖用
+  places: ['key', 'kind', 'zone', 'name', 'fromZone', 'fromStage', 'toZone', 'toStage', 'path', 'contributor', 'uploadedAt'],
 };
 // 跟遊戲腳本的 CLOUD_PAGE_ROWS 要一樣，腳本靠「拿到的列數少於這個」判斷已經抓完
 const PAGE_ROWS = 3000;
@@ -27,7 +29,7 @@ function jsonOutput(data) {
   return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON);
 }
 
-// ?after_growth=N&after_equipment=M：從第 N 筆之後開始給，腳本記住看到哪裡，下次只抓新的
+// ?after_growth=N&after_equipment=M&after_places=K：從第 N 筆之後開始給，腳本記住看到哪裡，下次只抓新的
 function doGet(event) {
   const result = {};
   Object.keys(SHEETS).forEach((name) => {

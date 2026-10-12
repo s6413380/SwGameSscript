@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         自動點擊按鈕 V2
+// @name         器靈
 // @namespace    local.auto-clicker
-// @version      2.51
+// @version      2.60
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -99,13 +99,18 @@
 
   // 地圖區域表：沒有「從哪裡進」的是地形（用切換按鈕進入），有的是子區域（在母區域某一關按進入按鈕，用返回按鈕離開）。
   // 名稱要和關卡欄位上顯示的文字一樣，之後有新區域可以自己加在空白列
-  const AREA_COUNT = 8;
+  const AREA_COUNT = 12;
   const DEFAULT_AREAS = [
     { name: '大草原' },
     { name: '黑暗山洞' },
     { name: '猛牛原', parent: '大草原', parentStage: 11 },
     { name: '草原秘徑', parent: '大草原', parentStage: 16 },
+    { name: '老鼠洞', parent: '黑暗山洞', parentStage: 11 },
+    { name: '迷霧森林', parent: '草原秘徑', parentStage: 27 },
   ];
+  // 區域表預設內容改過就加一：已經存過設定的人也補上新的預設區域（只補一次，刪掉了不會再冒出來）
+  const AREA_PRESET_VERSION = 3;
+  const AREA_PRESET_KEY = 'autoClickerV2AreaPreset';
 
   function areaKey(areaIndex, name) {
     return `area${areaIndex + 1}${name}`;
@@ -145,6 +150,10 @@
     deathPauseEnabled: true,
     // 異常狀態（中毒、燒傷…）：0＝不處理、1＝輕度以上、2＝中度以上、3＝重度
     statusAlertLevel: 2,
+    // 執行中不在狩獵頁／鍛造頁就自動切過去
+    autoNavigateEnabled: true,
+    // 打怪改直接打 API：不用停在狩獵頁，同一個分頁可以同時 API 鍛造
+    huntByApiEnabled: false,
     statusPauseLevel: 3,
     expPauseEnabled: false,
     expSelectors: '',
@@ -439,7 +448,22 @@
       saved.intervalMaxSeconds = saved.intervalSeconds * 2;
       delete saved.intervalSeconds;
     }
-    return { ...defaultSettings, ...saved };
+    const merged = { ...defaultSettings, ...saved };
+    if (saved && (Number(readJsonStorage(AREA_PRESET_KEY, 1)) || 1) < AREA_PRESET_VERSION) addMissingPresetAreas(merged);
+    writeJsonStorage(AREA_PRESET_KEY, AREA_PRESET_VERSION);
+    return merged;
+  }
+
+  function addMissingPresetAreas(settings) {
+    const names = Array.from({ length: AREA_COUNT }, (_, index) => String(settings[areaKey(index, 'Name')] || '').trim());
+    DEFAULT_AREAS.filter((preset) => !names.includes(preset.name)).forEach((preset) => {
+      const empty = names.indexOf('');
+      if (empty === -1) return;
+      names[empty] = preset.name;
+      settings[areaKey(empty, 'Name')] = preset.name;
+      settings[areaKey(empty, 'Parent')] = preset.parent || '';
+      settings[areaKey(empty, 'ParentStage')] = preset.parentStage || 0;
+    });
   }
 
   function saveSettings(settings) {
@@ -613,7 +637,7 @@
   const panel = document.createElement('div');
   panel.innerHTML = `
     <div class="row" style="font-weight:bold;margin:0 0 6px;cursor:move" data-role="header">
-      <span style="flex:1">自動點擊 V2 <span style="font-weight:normal;opacity:.7">v${SCRIPT_VERSION}</span> ⠿ <span data-role="mini-status" style="font-weight:normal;opacity:.85"></span></span>
+      <span style="flex:1">器靈 <span style="font-weight:normal;opacity:.7">v${SCRIPT_VERSION}</span> ⠿ <span data-role="mini-status" style="font-weight:normal;opacity:.85"></span></span>
       <button data-action="minimize" title="縮到最小／展開">–</button>
       <button data-action="close" title="關閉：這個分頁的腳本全部停止（重新整理頁面才會恢復）">×</button>
     </div>
@@ -622,6 +646,9 @@
     <div class="tabs">${TABS.map(([id, name]) => `<button data-tab-button="${id}" data-group="${tabGroupOf(id)}">${name}</button>`).join('')}</div>
 
     <div data-tab="main">
+      <label class="row"><input data-field="huntByApiEnabled" type="checkbox" style="flex:none;width:auto"> <b>用 API 打怪</b>（不用停在狩獵頁，可以同一個分頁 API 鍛造）</label>
+      <div class="hint">開了之後原地掛機、前進後退、全隊休息都直接打 API；補給、換裝請用 API 版。目標關卡只會在同一張地圖裡前進後退</div>
+      <label class="row"><input data-field="autoNavigateEnabled" type="checkbox" style="flex:none;width:auto"> 執行中不在狩獵頁／鍛造頁就自動切過去（API 打怪、API 鍛造不需要）</label>
       <label>A 原地掛機（重複點）</label>
       <div class="row"><input data-field="selectorA" placeholder="CSS selector"><button data-pick="selectorA">選取</button></div>
       <label>原地掛機點 ${numberInput('repeatCount', 'min="1"')} 次後全隊休息</label>
@@ -637,9 +664,10 @@
     <div data-tab="move">
       <label class="row"><input data-field="stageEnabled" type="checkbox" style="flex:none;width:auto"> 自動移動到目標關卡（到之前不原地掛機）</label>
       <div class="row">關卡欄位<input data-field="stageSelector" placeholder="顯示目前位置的文字"><button data-pick="stageSelector" data-pick-mode="element">選取</button></div>
-      <div class="row">目標<input data-field="stageTargetArea" list="auto-clicker-areas" placeholder="區域名稱" style="width:90px;flex:none">
+      <div class="row">目標<select data-field="stageTargetArea" style="width:150px;flex:none"></select>
         第 ${numberInput('stageTargetNumber', 'min="0"')} 關</div>
-      <div class="hint">目標是分支（猛牛原、草原秘徑）時不用填關卡，進去就開始重複刷；大區填 0＝進到大區就好</div>
+      <div class="hint">選項來自下面的區域表。目標是分支時關卡填 0＝進去就開始刷；大區填 0＝進到大區就好。
+        API 打怪不用設定下面的按鈕：換大區會先回城再前往，分支裡可以再有分支（母區域填分支名稱）；不在目標那條路上就直接去目標大區第 1 層，再一路走進去。走到分支入口時遊戲會告訴腳本有哪些分支，區域表沒有的會自動補上</div>
       <datalist id="auto-clicker-areas"></datalist>
       <div class="row">城鎮<input data-field="townName" placeholder="初始之鎮" style="width:90px;flex:none">${pickButtonHtml('stageTown', '回城', { text: true })}</div>
       <div class="hint">在城鎮時直接按目標大區（到第 1 關再前行）；目標填城鎮名稱＝回城</div>
@@ -647,7 +675,7 @@
       <div class="hint">畫面上出現可按的「完成移動」時一律先按，不管有沒有開自動移動</div>
       <fieldset class="group">
         <legend>區域表</legend>
-        <div class="hint">名稱要和關卡欄位上的文字一樣。「從…第…關進入」留空＝大區（用進入按鈕切換大區）；有填＝分支地圖（在那一關按進入，用返回按鈕回大區）</div>
+        <div class="hint">名稱要和關卡欄位上的文字一樣。「從…第…關進入」留空＝大區（用進入按鈕切換大區）；有填＝分支地圖（在那一關按進入，用返回按鈕回大區）；母區域也可以是分支</div>
         ${Array.from({ length: AREA_COUNT }, (_, index) => areaRowHtml(index)).join('')}
       </fieldset>
     </div>
@@ -935,7 +963,7 @@
   const alertDialog = document.createElement('div');
   alertDialog.setAttribute('data-auto-clicker', '');
   alertDialog.innerHTML = `
-    <div style="font-weight:bold;font-size:18px;color:#c00">⚠ 自動點擊已暫停</div>
+    <div data-role="alert-title" style="font-weight:bold;font-size:18px;color:#c00">⚠ 器靈已暫停</div>
     <div data-role="alert-message" style="margin:12px 0;font-size:14px"></div>
     <button data-action="dismiss-alert">知道了</button>
   `;
@@ -1057,8 +1085,16 @@
     fieldElements.forEach((input) => {
       const key = input.dataset.field;
       if (input.type === 'checkbox') input.checked = settings[key];
-      else input.value = settings[key];
+      else setFieldValue(input, settings[key]);
     });
+  }
+
+  // 下拉選單的選項是之後才填的（例如區域表），先放一個同名選項，值才不會被丟掉
+  function setFieldValue(input, value) {
+    if (input.tagName === 'SELECT' && value !== '' && value !== undefined && ![...input.options].some((option) => option.value === String(value))) {
+      input.add(new Option(String(value), String(value)));
+    }
+    input.value = value;
   }
 
   // 偶發問題（例如誤判沒道具）只看當下狀態列抓不到，留一段歷史方便事後對照
@@ -1710,7 +1746,7 @@
           // 讀不到就照常重新整理
         }
         if (triedVersion === version) {
-          setStatus(`有新版 ${version}，但重新整理後還是 ${SCRIPT_VERSION}：這個分頁不是用載入器載入，請在 Tampermonkey 移除「自動點擊按鈕 V2」完整版、改裝載入器`);
+          setStatus(`有新版 ${version}，但重新整理後還是 ${SCRIPT_VERSION}：這個分頁不是用載入器載入，請在 Tampermonkey 移除「器靈」（或舊名「自動點擊按鈕 V2」）完整版、改裝載入器`);
           return;
         }
         autoUpdate.pendingVersion = version;
@@ -1724,11 +1760,18 @@
 
   // 只在沒有進行中的動作時重新整理：停著（沒在等驗證、沒有暫停警報）或執行中剛排好下一步的空檔。
   // 吃藥、換裝這些非同步流程做到一半時不會走到這裡，重新整理不會把它們切斷
+  // 重新整理後要接著跑哪些：打怪、鍛造（API 鍛造跟打怪可以同時）
+  function resumeModes() {
+    return [state.running && !state.forgeMode ? 'hunt' : '', (state.running && state.forgeMode) || forgeRunner.running ? 'forge' : '']
+      .filter(Boolean)
+      .join(',');
+  }
+
   function reloadForUpdateIfIdle() {
-    if (!autoUpdate.pendingVersion) return false;
+    if (!autoUpdate.pendingVersion || forgeRunner.captchaWaiting) return false;
     if (!state.running && (state.verifyResumeMode !== null || dashboard.alert)) return false;
     try {
-      if (state.running) sessionStorage.setItem(RESUME_AFTER_RELOAD_KEY, state.forgeMode ? 'forge' : 'hunt');
+      if (resumeModes()) sessionStorage.setItem(RESUME_AFTER_RELOAD_KEY, resumeModes());
     } catch {
       // 記不住就只重新整理，不自動開始
     }
@@ -1813,7 +1856,11 @@
     }
   }
 
-  window.addEventListener('pagehide', () => leaveDashboard(readSettingsFromPanel()));
+  window.addEventListener('pagehide', () => {
+    leaveDashboard(readSettingsFromPanel());
+    if (state.running) releaseRunLock(state.forgeMode);
+    if (forgeRunner.running) releaseRunLock(true);
+  });
 
   function dashboardReport(settings) {
     const location = settings.stageSelector ? readLocation(settings) : null;
@@ -1823,8 +1870,10 @@
       role: tabRole(),
       nickname: dashboard.profile.nickname,
       money: dashboard.profile.money,
-      running: state.running,
+      running: state.running || forgeRunner.running,
       forgeMode: state.forgeMode,
+      huntRunning: state.running && !state.forgeMode,
+      forgeRunning: (state.running && state.forgeMode) || forgeRunner.running,
       alert: dashboard.alert,
       status: statusElement.textContent,
       location: location ? location.text : '',
@@ -1849,7 +1898,7 @@
     const input = panel.querySelector(`[data-field="${field}"]`);
     if (!input) throw new Error(`找不到欄位 ${field}`);
     if (input.type === 'checkbox') input.checked = Boolean(value);
-    else input.value = value;
+    else setFieldValue(input, value);
     input.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
@@ -1889,6 +1938,7 @@
         return '開始鍛造';
       case 'stop':
         stop('總覽頁按了停止');
+        stopForgeRunner('總覽頁按了停止');
         return '停止';
       case 'resume':
         clearAlert();
@@ -1913,7 +1963,7 @@
         return healOnceByApi(Number(command.heroId), command.group);
       case 'reload':
         try {
-          if (command.autoStart) sessionStorage.setItem(RESUME_AFTER_RELOAD_KEY, state.forgeMode ? 'forge' : 'hunt');
+          if (command.autoStart && resumeModes()) sessionStorage.setItem(RESUME_AFTER_RELOAD_KEY, resumeModes());
         } catch {
           // 記不住就只重新整理，不自動開始
         }
@@ -1994,7 +2044,30 @@
     }
   }
 
-  async function requestGameApi(path, options = {}) {
+  // 腳本送出的動作（打怪、鍛造、吃藥、換裝）排隊一個一個送，兩個動作之間至少隔一下；
+  // API 打怪和 API 鍛造在同一個分頁一起跑也不會同時送出
+  let actionQueue = Promise.resolve();
+  let lastActionAt = 0;
+  function queueAction(run) {
+    const next = actionQueue.then(async () => {
+      const gap = randomGap(800, 1600) - (Date.now() - lastActionAt);
+      if (gap > 0) await wait(gap);
+      try {
+        return await run();
+      } finally {
+        lastActionAt = Date.now();
+      }
+    });
+    actionQueue = next.catch(() => {});
+    return next;
+  }
+
+  function requestGameApi(path, options = {}) {
+    if (String(options.method || 'GET').toUpperCase() !== 'GET') return queueAction(() => sendGameRequest(path, options));
+    return sendGameRequest(path, options);
+  }
+
+  async function sendGameRequest(path, options = {}) {
     const token = currentGameToken();
     if (!token) throw new Error('還沒取得 token，請在遊戲裡點一下任一分頁再試');
     const response = await window.fetch(path, {
@@ -2031,7 +2104,9 @@
 
   // 狩獵看 /api/huntInfo（只有隊伍 4 人）；鍛造的角色不在隊伍裡，改看 /api/heroes（全部角色）
   async function refreshHeroStats({ forge = false } = {}) {
-    const heroes = (await requestGameApi(forge ? HEROES_API : HUNT_INFO_API)).heroes || [];
+    const data = await requestGameApi(forge ? HEROES_API : HUNT_INFO_API);
+    const heroes = data.heroes || [];
+    if (!forge) state.huntInfo = data;
     state.heroStats = new Map(heroes.map((hero) => [hero.id, hero]));
     if (!forge) {
       state.huntTeamIds = heroes.map((hero) => hero.id);
@@ -2155,7 +2230,7 @@
   // 用的時候才判斷資料夠不夠新：過期就重抓，失敗就清掉改讀數值條，不要拿過期的數字判斷
   // API 換裝也要知道狩獵隊伍有誰
   function needsHuntTeam(settings) {
-    return hasApiSupply(settings) || Boolean(settings.equipApiEnabled);
+    return hasApiSupply(settings) || Boolean(settings.equipApiEnabled) || Boolean(settings.huntByApiEnabled);
   }
 
   async function ensureFreshHeroStats(settings, { forge = false } = {}) {
@@ -2246,8 +2321,10 @@
 
   // 遊戲吃道具就是 POST /api/items/{道具id}/use，body 帶數量與 heroId；畫面上只有「使用」和「使用×10」，所以數量只送 1 或 10。
   // 先 GET 物品欄（等同按「道具」），之後每次使用都依回應裡最新的角色數值重算，補到目標就停
-  async function useItemByApi(settings, { group, index }) {
+  async function useItemByApi(settings, { group, index }, { onDone = null, isCancelled = null } = {}) {
     const runId = state.runId;
+    const cancelled = isCancelled || (() => runId !== state.runId);
+    const finish = onDone || (() => continueAfterItem(settings));
     const label = `第 ${index + 1} 條${group.name}`;
     const heroId = heroIdForSlot(settings, group.id, index);
     const names = itemNames(settings, group);
@@ -2258,7 +2335,7 @@
       state.itemUsedSlots.add(`${group.id}:${index}`);
       setStatus(`${label}：${message}，這次掛機前先不補`);
       logItemUse(`${who} ✗ ${message}`);
-      continueAfterItem(settings);
+      finish();
     };
     if (!hero) {
       skipUntilNextAction(`狩獵隊伍裡找不到 heroId ${heroId}`);
@@ -2268,11 +2345,11 @@
     try {
       items = (await requestGameApi(ITEMS_API)).items || [];
     } catch (error) {
-      if (runId !== state.runId) return;
+      if (cancelled()) return;
       skipUntilNextAction(`開啟物品欄失敗（${error.message}）`);
       return;
     }
-    if (runId !== state.runId) return;
+    if (cancelled()) return;
     const targetValue = (hero[group.fullField] * targetPercent) / 100;
     const startValue = hero[group.heroField];
     const used = [];
@@ -2282,7 +2359,7 @@
       const needed = Math.ceil((targetValue - hero[group.heroField]) / item[group.healField]);
       const quantity = needed >= 10 && item.available >= 10 ? 10 : 1;
       await wait(itemRequestGap());
-      if (runId !== state.runId) return;
+      if (cancelled()) return;
       let result;
       try {
         result = await requestGameApi(`${ITEMS_API}/${item.id}/use`, {
@@ -2291,11 +2368,11 @@
           body: JSON.stringify({ quantity, heroId }),
         });
       } catch (error) {
-        if (runId !== state.runId) return;
+        if (cancelled()) return;
         skipUntilNextAction(`使用 ${item.name} 失敗（${error.message}，已吃 ${used.join('、') || '無'}）`);
         return;
       }
-      if (runId !== state.runId) return;
+      if (cancelled()) return;
       used.push(`${item.name}×${quantity}`);
       const beforeValue = hero[group.heroField];
       // 回應帶回最新的物品欄與角色數值，直接拿來算下一次；萬一沒帶就自己估
@@ -2325,7 +2402,7 @@
     }
     setStatus(`${label}：${outcome}（${summary}）`);
     logItemUse(`${who} ＝ ${outcome}（${summary}）`);
-    continueAfterItem(settings);
+    finish();
   }
 
   const HUNT_API_PATTERN = /\/api\/hunt(?:\?|$)/;
@@ -2335,6 +2412,7 @@
   const FORGE_START_PATTERN = /\/api\/forge(?:[?#]|$)/;
   const FORGE_COMPLETE_PATTERN = /\/api\/heroes\/(\d+)\/complete(?:Forge|Action)(?:[?#]|$)/;
   const ITEM_LIST_PATTERN = /\/api\/(?:items|mines)(?:[?#]|$)/;
+  const ITEM_USE_PATTERN = /\/api\/items\/(\d+)\/use(?:[?#]|$)/;
 
   // 原地掛機的回應已經帶回打完後的隊伍數值與裝備變化，直接拿來用，下一步就不用再 GET 一次
   // 遊戲隊伍資料每人有 statuses；kind 為 condition 的是異常（中毒、燒傷…），classification 是程度
@@ -2376,8 +2454,9 @@
     else if (pauseTexts.length || alertTexts.length) alertUser(`異常狀態：${[...pauseTexts, ...alertTexts].join('、')}`);
   }
 
-  function handleHuntResponse(data, requestBody) {
+  function handleHuntResponse(data, requestBody, url) {
     if (!data || typeof data !== 'object') return;
+    if (data.huntInfo) state.huntInfo = data.huntInfo;
     const heroes = data.huntInfo && data.huntInfo.heroes;
     if (Array.isArray(heroes) && !state.forgeMode) {
       state.heroStats = new Map(heroes.map((hero) => [hero.id, hero]));
@@ -2397,7 +2476,7 @@
     const settings = readSettingsFromPanel();
     if (Array.isArray(heroes) && !state.forgeMode) checkHeroConditions(heroes, settings);
     if (settings.combatEnabled) recordBattleFromApi(data.report);
-    if (settings.huntStatsEnabled) recordHuntStats(data, requestBody, settings);
+    if (settings.huntStatsEnabled) recordHuntStats(data, requestBody, settings, url);
     if (settings.incomeEnabled) {
       recordIncome(data);
       if (activeTab === 'income') renderIncome();
@@ -2547,9 +2626,9 @@
     continueAfterItem(settings);
   }
 
-  async function useItem(settings, { group, index }) {
+  async function useItem(settings, { group, index }, options) {
     if (usesItemApi(settings, group, index)) {
-      useItemByApi(settings, { group, index });
+      useItemByApi(settings, { group, index }, options);
       return;
     }
     const runId = state.runId;
@@ -2862,7 +2941,7 @@
   function pauseWithAlert(message) {
     dashboard.alert = message;
     stop(message);
-    alertUser(message);
+    alertUser(message, { paused: true });
   }
 
   let audioContext = null;
@@ -2907,6 +2986,7 @@
   function shutDownTab() {
     const settings = readSettingsFromPanel();
     if (state.running || state.verifyResumeMode !== null) stop('面板已關閉，腳本停止');
+    stopForgeRunner('面板已關閉，鍛造停止');
     apiRecorder.recording = false;
     apiRecorder.heroCapture = null;
     leaveDashboard(settings);
@@ -2915,8 +2995,12 @@
     panel.style.display = 'none';
   }
 
-  function alertUser(message) {
+  // 只提醒（異常狀態、稀有掉落沒設暫停）時腳本照跑，標題不能寫「已暫停」，不然會以為停了
+  let alertTitle = '⚠ 器靈已暫停';
+  function alertUser(message, { paused = false } = {}) {
     const settings = readSettingsFromPanel();
+    alertTitle = paused ? '⚠ 器靈已暫停' : '⚠ 器靈提醒（仍在執行）';
+    alertDialog.querySelector('[data-role="alert-title"]').textContent = alertTitle;
     // 面板被關掉時也要讓人看得到暫停原因，所以暫停就把面板叫回來
     panel.style.display = '';
     if (settings.alertRedEnabled) panel.setAttribute('data-alerting', '');
@@ -2927,7 +3011,7 @@
     }
     if (settings.alertNotifyEnabled) {
       if ('Notification' in window && Notification.permission === 'granted') {
-        new Notification('自動點擊已暫停', { body: message });
+        new Notification(alertTitle.replace('⚠ ', ''), { body: message });
       }
       startTitleFlash();
     }
@@ -2946,7 +3030,7 @@
     let showWarning = false;
     titleFlashTimer = setInterval(() => {
       showWarning = !showWarning;
-      document.title = showWarning ? '⚠ 自動點擊已暫停' : originalTitle;
+      document.title = showWarning ? alertTitle : originalTitle;
     }, 1000);
   }
 
@@ -3738,10 +3822,326 @@
     syncGrowth(settings);
     syncCloud(settings);
     sampleMoney(settings);
+    keepRunLock();
+    checkForgeCaptcha();
     if (!state.running) reloadForUpdateIfIdle();
     announceVerificationSolved(settings);
     if (state.running) shouldPause(settings);
     else resumeIfVerificationGone(settings);
+  }
+
+  // API 打怪：原地掛機／前進／後退都是 POST /api/hunt（前進後退加 ?type=），全隊休息 POST /api/heroes/restAll，
+  // 休息到角色的完成時間後 POST /api/heroes/restAll/complete。不靠畫面按鈕，所以不用停在狩獵頁
+  function isApiHunt(settings) {
+    return Boolean(settings.huntByApiEnabled) && !state.forgeMode;
+  }
+
+  function huntTeam() {
+    return (state.huntTeamIds || []).map((id) => state.heroStats.get(id)).filter(Boolean);
+  }
+
+  // 畫面上的血條可能不在（人在別頁），改用 API 拿到的隊伍數值判斷要不要暫停
+  function pauseIfApiTeamInDanger(settings) {
+    const team = huntTeam();
+    const percent = (value, full) => (full ? (value / full) * 100 : 100);
+    if (settings.deathPauseEnabled && team.some((hero) => hero.perished || hero.hp === 0)) {
+      pauseWithAlert('有角色死亡，已暫停');
+      return true;
+    }
+    if (settings.healthPausePercent > 0 && team.some((hero) => percent(hero.hp, hero.fullHp) < settings.healthPausePercent)) {
+      pauseWithAlert(`有角色血量低於 ${settings.healthPausePercent}%，已暫停`);
+      return true;
+    }
+    if (settings.resourcePausePercent > 0 && team.some((hero) => percent(hero.sp, hero.fullSp) < settings.resourcePausePercent)) {
+      pauseWithAlert(`有角色體力低於 ${settings.resourcePausePercent}%，已暫停`);
+      return true;
+    }
+    return false;
+  }
+
+  // 地圖知識：API 回應的 huntZone 是地圖編號（城鎮 0、大草原 1；分支是另一個編號，像草原秘徑 10002、老鼠洞 20002），
+  // 分支入口那一層的 huntInfo 會帶 paths（這層可以進的分支）。記下編號對應的名稱、哪個分支從哪張地圖第幾層進，
+  // 區域表沒有的分支自動補上；也同步到雲端，一台電腦走過，別台不用再走
+  const PLACES_KEY = 'autoClickerV2Places';
+  const KNOWN_ZONES = { 0: '初始之鎮', 1: '大草原', 10002: '草原秘徑', 20002: '老鼠洞' };
+  const PLACE_API_PATTERN = /\/api\//;
+  const HUNT_INFO_PATTERN = /\/api\/huntInfo(?:\?|$)/;
+
+  function loadPlaces() {
+    const saved = readJsonStorage(PLACES_KEY, null) || {};
+    const zones = { ...KNOWN_ZONES };
+    // 學到的名稱蓋過內建的；同一個名稱只留一個編號
+    Object.entries(saved.zones || {}).forEach(([zone, name]) => setZoneName(zones, zone, name));
+    return { zones, forks: saved.forks || {} };
+  }
+
+  function savePlaces(places) {
+    writeJsonStorage(PLACES_KEY, places);
+  }
+
+  function setZoneName(zones, zone, name) {
+    if (!name || zones[zone] === name) return false;
+    Object.keys(zones).forEach((other) => {
+      if (zones[other] === name) delete zones[other];
+    });
+    zones[zone] = String(name);
+    return true;
+  }
+
+  function zoneIdByName(places, name) {
+    const entry = Object.entries(places.zones).find(([, zoneName]) => zoneName === name);
+    return entry ? Number(entry[0]) : null;
+  }
+
+  function learnPlace(data) {
+    const info = data && (data.huntZone !== undefined ? data : data.huntInfo);
+    if (!info || info.huntZone === undefined || info.huntZone === null) return;
+    const zone = Number(info.huntZone);
+    const stage = Number(info.huntStage) || 0;
+    const places = loadPlaces();
+    let changed = setZoneName(places.zones, zone, info.zoneName);
+    (Array.isArray(info.paths) ? info.paths : []).forEach((forkPath) => {
+      if (!forkPath || forkPath.zoneId === undefined) return;
+      const branch = Number(forkPath.zoneId);
+      changed = setZoneName(places.zones, branch, forkPath.zoneName) || changed;
+      const known = places.forks[branch];
+      if (!known || known.parent !== zone || known.stage !== stage) {
+        places.forks[branch] = { parent: zone, stage };
+        changed = true;
+      }
+    });
+    if (!changed) return;
+    savePlaces(places);
+    addLearnedAreas(places);
+  }
+
+  // 學到的分支區域表裡沒有，就補進空白列（已經有的不動，以使用者填的為準）
+  function addLearnedAreas(places) {
+    const settings = readSettingsFromPanel();
+    const names = Array.from({ length: AREA_COUNT }, (_, index) => String(settings[areaKey(index, 'Name')] || '').trim());
+    let added = 0;
+    Object.entries(places.forks).forEach(([branch, fork]) => {
+      const name = places.zones[branch];
+      const parent = places.zones[fork.parent];
+      const empty = names.indexOf('');
+      if (!name || !parent || names.includes(name) || empty === -1) return;
+      names[empty] = name;
+      settings[areaKey(empty, 'Name')] = name;
+      settings[areaKey(empty, 'Parent')] = parent;
+      settings[areaKey(empty, 'ParentStage')] = fork.stage;
+      added++;
+    });
+    if (!added) return;
+    writeSettingsToPanel(settings);
+    saveSettings(readSettingsFromPanel());
+    refreshAreaList();
+  }
+
+  // 下一步怎麼移動。區域表決定分支從哪張地圖第幾層進（分支裡還可以再有分支，例如大草原 → 草原秘徑 → 迷霧森林）；
+  // 分支的層數接著母地圖算，所以在母地圖走到那一層就能進。出分支只能回城或直接回某個大區第 1 層，
+  // 所以不在目標那條路上就直接去目標大區第 1 層。回傳 null＝已到達；{ problem }＝走不了；{ type }＝前進／後退；{ path }＝打這支 API
+  function planApiMove(settings) {
+    const info = state.huntInfo;
+    if (!settings.stageEnabled || !settings.stageTargetArea || !info || info.huntZone === undefined) return null;
+    const places = loadPlaces();
+    const zone = Number(info.huntZone);
+    const stage = Number(info.huntStage) || 0;
+    const hereName = places.zones[zone] || info.zoneName || `地圖 ${zone}`;
+    const from = `目前「${hereName}${zone ? ` ${stage}` : ''}」→ 目標「${targetLabel(settings)}」`;
+    const goTown = { from, label: '回城', path: '/api/move/0' };
+    const targetName = settings.stageTargetArea;
+    if (targetName === String(settings.townName || '').trim() || zoneIdByName(places, targetName) === 0) return zone === 0 ? null : goTown;
+
+    const areas = new Map(configuredAreas(settings).map((area) => [area.name, area]));
+    const target = areas.get(targetName);
+    if (!target) return { problem: `區域表裡沒有「${targetName}」` };
+    const chain = [target];
+    while (chain[0].parent) {
+      const parent = areas.get(chain[0].parent);
+      if (!parent || chain.includes(parent)) return { problem: `區域表裡找不到「${chain[0].name}」的母區域「${chain[0].parent}」` };
+      chain.unshift(parent);
+    }
+    const index = zone === 0 ? -1 : chain.findIndex((area) => area.name === hereName);
+    if (index === -1) {
+      // 直接移動被伺服器拒絕過（例如大區之間不能直接走）就先回城
+      if (state.apiDirectMoveFailed && zone !== 0) return goTown;
+      const bigAreaId = zoneIdByName(places, chain[0].name);
+      if (bigAreaId === null) return { problem: `還不知道「${chain[0].name}」的地圖編號，請手動進去一次（之後會記住，也會同步到雲端）` };
+      return { from, label: `前往${chain[0].name} 1`, path: `/api/move/${bigAreaId}` };
+    }
+    const step = (stageNumber) => ({ from, label: stage < stageNumber ? '前行' : '後退', type: stage < stageNumber ? 'forward' : 'back' });
+    if (index === chain.length - 1) {
+      if (!settings.stageTargetNumber || stage === settings.stageTargetNumber) return null;
+      return step(settings.stageTargetNumber);
+    }
+    const next = chain[index + 1];
+    if (stage !== next.parentStage) return step(next.parentStage);
+    const nextId = zoneIdByName(places, next.name);
+    if (nextId === null) return { problem: `這層沒看到「${next.name}」的入口，確認區域表的進入層數` };
+    return { from, label: `進入${next.name}`, path: `/api/moveForkPath/${nextId}` };
+  }
+
+  function performApiMove(settings, move) {
+    clearItemSkips();
+    if (move.type) huntByApi(settings, move.type, move.from);
+    else moveByApi(settings, move);
+  }
+
+  function rememberApiPlace(info) {
+    if (!info || info.huntZone === undefined) return;
+    state.huntInfo = info;
+    if (Array.isArray(info.heroes)) {
+      state.heroStats = new Map(info.heroes.map((hero) => [hero.id, hero]));
+      state.heroStatsAt = Date.now();
+    }
+  }
+
+  // move/{編號} 要等角色的移動時間到了再 move/complete；分支這類是立刻到
+  async function moveByApi(settings, move) {
+    const runId = state.runId;
+    try {
+      const data = await requestGameApi(move.path, { method: 'POST' });
+      if (runId !== state.runId) return;
+      state.apiHuntFailures = 0;
+      rememberApiPlace(data && data.huntZone !== undefined ? data : data && data.huntInfo);
+      if (move.path === '/api/move/0') state.apiDirectMoveFailed = false;
+      setStatus(`${move.from}：API ${move.label}`);
+      const heroes = huntTeam();
+      if (heroes.some((hero) => hero.actionState === 1)) {
+        state.apiMoving = true;
+        state.apiMoveUntil = restUntilOf(heroes);
+        state.timerId = backgroundTimer.setTimeout(() => tick(settings), randomGap(1000, 3000));
+        return;
+      }
+      scheduleApiHunt(settings, state.huntInfo);
+    } catch (error) {
+      if (runId !== state.runId) return;
+      if (!error.captchaRequired && /^\/api\/move\/[1-9]/.test(move.path) && !state.apiDirectMoveFailed) {
+        state.apiDirectMoveFailed = true;
+        setStatus(`${move.from}：直接${move.label}失敗（${error.message}），改成先回城`);
+        state.timerId = backgroundTimer.setTimeout(() => tick(settings), randomGap(3000, 6000));
+        return;
+      }
+      handleApiHuntError(settings, error);
+    }
+  }
+
+  async function finishMoveByApi(settings) {
+    if (Date.now() < state.apiMoveUntil) {
+      const delay = state.apiMoveUntil - Date.now() + randomGap(1000, 3000);
+      setStatus(`移動中，${Math.ceil(delay / 1000)} 秒後完成移動`);
+      state.timerId = backgroundTimer.setTimeout(() => tick(settings), delay);
+      return;
+    }
+    const runId = state.runId;
+    try {
+      const data = await requestGameApi('/api/move/complete', { method: 'POST' });
+      if (runId !== state.runId) return;
+      state.apiHuntFailures = 0;
+      state.apiMoving = false;
+      rememberApiPlace(data && data.huntZone !== undefined ? data : data && data.huntInfo);
+      const places = loadPlaces();
+      setStatus(`API 完成移動，到了${state.huntInfo ? places.zones[state.huntInfo.huntZone] || state.huntInfo.zoneName || '' : ''}`);
+      scheduleApiHunt(settings, state.huntInfo);
+    } catch (error) {
+      if (runId !== state.runId) return;
+      // 可能已經在別處（例如手動）完成了：重讀一次位置再判斷
+      state.apiMoving = false;
+      state.heroStatsAt = 0;
+      handleApiHuntError(settings, error);
+    }
+  }
+
+  // 等伺服器說可以打的時間（huntAvailableAt）再晚個 1～3 秒，像人看到冷卻結束才按
+  function scheduleApiHunt(settings, huntInfo) {
+    if (reloadForUpdateIfIdle()) return;
+    const availableAt = huntInfo && huntInfo.huntAvailableAt ? Date.parse(huntInfo.huntAvailableAt) : 0;
+    const delay = Math.max(0, (availableAt || 0) - Date.now()) + randomGap(1000, 3000);
+    state.timerId = backgroundTimer.setTimeout(() => tick(settings), delay);
+    statusElement.textContent += `（${(delay / 1000).toFixed(1)} 秒後下一步）`;
+  }
+
+  function handleApiHuntError(settings, error) {
+    if (error.captchaRequired) {
+      pauseForCaptcha(settings);
+      return;
+    }
+    state.apiHuntFailures = (state.apiHuntFailures || 0) + 1;
+    if (state.apiHuntFailures >= 3) {
+      pauseWithAlert(`API 打怪連續失敗：${error.message}`);
+      return;
+    }
+    setStatus(`API 打怪失敗（${error.message}），稍後重試`);
+    state.timerId = backgroundTimer.setTimeout(() => tick(settings), randomGap(5000, 10000));
+  }
+
+  async function huntByApi(settings, type, note = '') {
+    const runId = state.runId;
+    try {
+      const data = await requestGameApi(`/api/hunt${type ? `?type=${type}` : ''}`, { method: 'POST' });
+      if (runId !== state.runId) return;
+      state.apiHuntFailures = 0;
+      clearItemSkips();
+      if (!type) state.clickCountA++;
+      setStatus(
+        type
+          ? `API ${type === 'forward' ? '前進' : '後退'}一層（${note || `目標第 ${settings.stageTargetNumber} 層`}）`
+          : `第 ${state.cycleCount + 1} 輪：API 原地掛機 ${state.clickCountA}/${settings.repeatCount}`
+      );
+      scheduleApiHunt(settings, data && data.huntInfo);
+    } catch (error) {
+      if (runId !== state.runId) return;
+      handleApiHuntError(settings, error);
+    }
+  }
+
+  function restUntilOf(heroes) {
+    const times = (heroes || []).map((hero) => Date.parse(hero.actionCompleteTime)).filter(Number.isFinite);
+    return times.length ? Math.max(...times) : 0;
+  }
+
+  async function restByApi(settings) {
+    const runId = state.runId;
+    try {
+      const data = await requestGameApi('/api/heroes/restAll', { method: 'POST' });
+      if (runId !== state.runId) return;
+      state.apiHuntFailures = 0;
+      state.apiResting = true;
+      state.apiRestUntil = restUntilOf(data && data.heroes);
+      if (data && data.huntZone !== undefined) state.huntInfo = data;
+      finishCycle(settings);
+    } catch (error) {
+      if (runId !== state.runId) return;
+      handleApiHuntError(settings, error);
+    }
+  }
+
+  // 休息要到角色的完成時間才能結束；還沒到就等到那時候
+  async function finishRestByApi(settings) {
+    if (Date.now() < state.apiRestUntil) {
+      const delay = state.apiRestUntil - Date.now() + randomGap(1000, 3000);
+      setStatus(`全隊休息中，${Math.ceil(delay / 1000)} 秒後完成休息`);
+      state.timerId = backgroundTimer.setTimeout(() => tick(settings), delay);
+      return;
+    }
+    const runId = state.runId;
+    try {
+      const data = await requestGameApi('/api/heroes/restAll/complete', { method: 'POST' });
+      if (runId !== state.runId) return;
+      state.apiHuntFailures = 0;
+      state.apiResting = false;
+      const info = data && data.huntInfo;
+      if (info) {
+        state.huntInfo = info;
+        state.heroStats = new Map((info.heroes || []).map((hero) => [hero.id, hero]));
+        state.heroStatsAt = Date.now();
+      }
+      setStatus(`第 ${state.cycleCount + 1} 輪：API 完成休息`);
+      scheduleApiHunt(settings, info);
+    } catch (error) {
+      if (runId !== state.runId) return;
+      handleApiHuntError(settings, error);
+    }
   }
 
   function scheduleNext(settings) {
@@ -3796,10 +4196,6 @@
   // 輪流巡每個還沒做完的鍛造坊：切過去 → 好了就「完成鍛造」→ 次數沒滿就「開始鍛造」。
   // 不讀倒數時間，直接看按鈕能不能按，畫面上的時間格式怎麼變都不影響
   async function forgeTick(settings) {
-    if (settings.forgeByApiEnabled) {
-      forgeApiTick(settings);
-      return;
-    }
     const runId = state.runId;
     if (state.needRest) {
       pauseWithAlert('鍛造體力不足，而且沒有道具可用');
@@ -3872,14 +4268,40 @@
     scheduleForge(settings);
   }
 
+  // 打怪要在狩獵頁、鍛造要在鍛造頁才找得到按鈕（API 鍛造也要在鍛造頁才能把配方填進表單）。
+  // 用遊戲自己的連結切頁（不重新載入）；10 秒內切過還沒到就先等，不要一直點
+  const MODE_PAGES = { hunt: '/hunt', forge: '/forge' };
+  let lastNavigateAt = 0;
+  function ensureModePage(settings) {
+    if (!settings.autoNavigateEnabled || isApiHunt(settings)) return false;
+    const target = state.forgeMode ? MODE_PAGES.forge : MODE_PAGES.hunt;
+    if (location.pathname === target || location.pathname.startsWith(`${target}/`)) return false;
+    if (Date.now() - lastNavigateAt >= 10000) {
+      lastNavigateAt = Date.now();
+      const link = [...document.querySelectorAll('a[href]')].find((anchor) => !panel.contains(anchor) && new URL(anchor.href, location.href).pathname === target);
+      if (link) {
+        link.click();
+      } else {
+        // 找不到選單連結就直接改網址，遊戲的路由會跟著換頁
+        history.pushState(null, '', target);
+        window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+      }
+      setStatus(`不在${state.forgeMode ? '鍛造' : '狩獵'}頁，自動切過去`);
+    }
+    state.timerId = backgroundTimer.setTimeout(() => tick(settings), 2500);
+    return true;
+  }
+
   function tick() {
     if (!state.running) return;
     // 每一步都重讀面板：要換裝的角色、可用道具這些清單常在按開始之後才勾，沿用開始時的設定會一直看不到
     const settings = readSettingsFromPanel();
     if (shouldPause(settings)) return;
+    if (ensureModePage(settings)) return;
 
+    const apiHunt = isApiHunt(settings);
     // 剛移動完要先按完成移動才能做其他事；按完只隔一個道具步驟就接著做，不用等整個間隔
-    if (clickFinishMoveIfReady(settings)) {
+    if (!apiHunt && clickFinishMoveIfReady(settings)) {
       setStatus('已按完成移動');
       state.timerId = backgroundTimer.setTimeout(() => tick(settings), settings.itemStepSeconds * 1000);
       return;
@@ -3890,7 +4312,26 @@
       return;
     }
 
-    if (settings.selectorC && !state.clickedC) {
+    // API 打怪：上一輪全隊休息後，到時間就完成休息；一開始就在休息中（例如手動按過）也一樣
+    if (apiHunt && !state.apiResting && huntTeam().some((hero) => hero.actionState === 2)) {
+      state.apiResting = true;
+      state.apiRestUntil = restUntilOf(huntTeam());
+    }
+    if (apiHunt && state.apiResting) {
+      finishRestByApi(settings);
+      return;
+    }
+    // 換地圖要等移動時間到；一開始就在移動中（例如手動按過回城）也一樣
+    if (apiHunt && !state.apiMoving && huntTeam().some((hero) => hero.actionState === 1)) {
+      state.apiMoving = true;
+      state.apiMoveUntil = restUntilOf(huntTeam());
+    }
+    if (apiHunt && state.apiMoving) {
+      finishMoveByApi(settings);
+      return;
+    }
+
+    if (!apiHunt && settings.selectorC && !state.clickedC) {
       if (clickBySelector(settings.selectorC)) {
         state.clickedC = true;
         setStatus(`第 ${state.cycleCount + 1} 輪：已點休息結束，稍後開始原地掛機`);
@@ -3941,6 +4382,19 @@
 
     if (state.clickCountA < settings.repeatCount && !state.needRest) {
       // 還沒到目標關卡就先移動，不算進原地掛機的次數，到了才開始照常掛機
+      if (apiHunt) {
+        if (pauseIfApiTeamInDanger(settings)) return;
+        const move = planApiMove(settings);
+        if (move && move.problem) {
+          setStatus(`移動：${move.problem}`);
+          state.timerId = backgroundTimer.setTimeout(() => tick(settings), randomGap(10000, 20000));
+        } else if (move) {
+          performApiMove(settings, move);
+        } else {
+          huntByApi(settings, '');
+        }
+        return;
+      }
       const move = planMove(settings);
       if (move) {
         clearItemSkips();
@@ -3960,12 +4414,20 @@
       return;
     }
 
+    if (apiHunt) {
+      restByApi(settings);
+      return;
+    }
     if (!clickBySelector(settings.selectorB)) {
       setStatus(`找不到「全隊休息」按鈕，稍後重試`);
       scheduleNext(settings);
       return;
     }
+    finishCycle(settings);
+  }
 
+  // 全隊休息之後：算一輪，要循環就等一下再開始下一輪
+  function finishCycle(settings) {
     state.cycleCount++;
     const reason = state.needRest ? '沒有道具' : `原地掛機 ${state.clickCountA} 次`;
     if (settings.loop) {
@@ -3982,8 +4444,54 @@
     }
   }
 
+  // 同一個瀏覽器（同一個帳號）的分頁共用 localStorage，拿來當鎖：執行中的分頁每次巡視都更新時間，
+  // 打怪、鍛造各一把鎖，所以一個打怪分頁＋一個鍛造分頁可以同時跑，兩個分頁做同一件事就不行
+  const RUN_LOCK_PREFIX = 'autoClickerV2RunLock:';
+  const RUN_LOCK_STALE_MILLISECONDS = 20000;
+
+  function runLockKey(forgeMode) {
+    return RUN_LOCK_PREFIX + (forgeMode ? 'forge' : 'hunt');
+  }
+
+  function otherTabRunning(forgeMode) {
+    const lock = readJsonStorage(runLockKey(forgeMode), null);
+    return lock && lock.tab !== tabKey && Date.now() - lock.at < RUN_LOCK_STALE_MILLISECONDS ? lock : null;
+  }
+
+  function releaseRunLock(forgeMode) {
+    const lock = readJsonStorage(runLockKey(forgeMode), null);
+    if (!lock || lock.tab !== tabKey) return;
+    try {
+      localStorage.removeItem(runLockKey(forgeMode));
+    } catch {
+      // 移不掉的話 20 秒後也會過期
+    }
+  }
+
+  // 執行中定時呼叫：還沒人拿就拿；別的分頁正在用同一把鎖（兩邊幾乎同時開始）就讓這邊停下
+  function keepRunLock() {
+    if (forgeRunner.running) {
+      if (otherTabRunning(true)) pauseForgeRunner('同一個帳號的另一個分頁也在鍛造，這個分頁的鍛造先停下');
+      else writeJsonStorage(runLockKey(true), { tab: tabKey, at: Date.now() });
+    }
+    if (!state.running) return;
+    if (otherTabRunning(state.forgeMode)) {
+      pauseWithAlert(`同一個帳號的另一個分頁也在${state.forgeMode ? '鍛造' : '打怪'}，這個分頁先停下`);
+      return;
+    }
+    writeJsonStorage(runLockKey(state.forgeMode), { tab: tabKey, at: Date.now() });
+  }
+
   function start(forgeMode = false) {
     const settings = readSettingsFromPanel();
+    if (forgeMode && settings.forgeByApiEnabled) {
+      startForgeRunner();
+      return;
+    }
+    if (otherTabRunning(forgeMode)) {
+      setStatus(`同一個帳號的另一個分頁正在${forgeMode ? '鍛造' : '打怪'}，這個分頁不啟動（要換到這裡跑，先停掉那一邊）`);
+      return;
+    }
     dashboard.alert = '';
     if (forgeMode) {
       const hasShop = Array.from({ length: FORGE_SHOP_COUNT }, (_, index) => forgeTarget(settings, index) > 0).some(Boolean);
@@ -3991,7 +4499,7 @@
         setStatus('請先在「鍛造」頁設定開始／完成鍛造按鈕，以及至少一個鍛造坊的切換按鈕與次數');
         return;
       }
-    } else if (!settings.selectorA || !settings.selectorB) {
+    } else if (!settings.huntByApiEnabled && (!settings.selectorA || !settings.selectorB)) {
       setStatus('請先在「主流程」設定原地掛機與全隊休息按鈕');
       return;
     }
@@ -4001,6 +4509,8 @@
     prepareAlerts(settings);
     state.running = true;
     state.forgeMode = forgeMode;
+    state.apiMoving = false;
+    keepRunLock();
     rememberTabRole(forgeMode);
     // 第一輪不點 C，C 只在重新循環時才點
     state.clickedC = true;
@@ -4025,6 +4535,7 @@
 
   // 手動停止、重新開始或其他原因暫停都走這裡，順便取消等待中的自動繼續
   function stop(message) {
+    if (state.running) releaseRunLock(state.forgeMode);
     state.running = false;
     state.verifyResumeMode = null;
     state.runId++;
@@ -4120,11 +4631,22 @@
   // 目標與「從哪裡進」的輸入框可以直接從區域表的名稱挑
   function refreshAreaList() {
     const settings = readSettingsFromPanel();
-    const names = configuredAreas(settings).map((area) => area.name);
+    const areas = configuredAreas(settings);
+    const names = areas.map((area) => area.name);
     if (settings.townName) names.unshift(settings.townName);
     panel.querySelector('#auto-clicker-areas').innerHTML = names
       .map((name) => `<option value="${name.replace(/"/g, '&quot;')}"></option>`)
       .join('');
+    const options = [
+      ...(settings.townName ? [[settings.townName, `${settings.townName}（回城）`]] : []),
+      ...areas.map((area) => [area.name, area.parent ? `${area.name}（${area.parent} ${area.parentStage} 層進）` : `${area.name}（大區）`]),
+    ];
+    const current = settings.stageTargetArea;
+    // 目前的目標不在區域表裡（例如改了名稱）也留著，看得出來要重選
+    if (current && !options.some(([name]) => name === current)) options.push([current, `${current}（區域表裡沒有）`]);
+    const select = panel.querySelector('[data-field="stageTargetArea"]');
+    select.innerHTML = options.map(([name, label]) => `<option value="${escapeHtml(name)}">${escapeHtml(label)}</option>`).join('');
+    select.value = current;
   }
 
   function refreshSlotButtons() {
@@ -4208,7 +4730,10 @@
       start(true);
     } else if (action === 'forge-stop') {
       // 只停鍛造；正在掛機時按到不會把掛機停掉
-      if (state.running && state.forgeMode) {
+      if (forgeRunner.running) {
+        stopForgeRunner('已停止鍛造');
+        clearAlert();
+      } else if (state.running && state.forgeMode) {
         stop('已停止鍛造');
         clearAlert();
       } else {
@@ -4486,14 +5011,16 @@
       const isHeroList = HERO_LIST_PATTERN.test(url);
       const isEquipmentList = !growthOnly && EQUIPMENT_LIST_PATTERN.test(url);
       const isForgeData = FORGE_START_PATTERN.test(url) || FORGE_COMPLETE_PATTERN.test(url) || ITEM_LIST_PATTERN.test(url);
+      const itemUseMatch = !growthOnly && url.match(ITEM_USE_PATTERN);
       const isOtherSite = /^https?:/i.test(url) && !url.startsWith(location.origin);
+      const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+      const isPlace = PLACE_API_PATTERN.test(url) && (method !== 'GET' || HUNT_INFO_PATTERN.test(url));
       const needsResponse = growthOnly
-        ? isHunt || growthHeroId || isHeroList || isForgeData
-        : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData;
+        ? isHunt || growthHeroId || isHeroList || isForgeData || isPlace
+        : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData || itemUseMatch || isPlace;
       if (!needsResponse || STATIC_ASSET_PATTERN.test(url) || isOtherSite) {
         return originalFetch.apply(this, args);
       }
-      const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
       // 只記標頭名稱不記值：看得出要不要另外帶 Authorization，又不會把憑證貼出去
       let headerNames = '';
       try {
@@ -4545,7 +5072,15 @@
               if (method === 'POST' && FORGE_START_PATTERN.test(url)) rememberForgeStart(requestBody, data);
               if (completeMatch) rememberForgeComplete(completeMatch[1], data).catch((error) => console.error('鍛造材料紀錄失敗', error));
             }
+            if (response.ok && isPlace) learnPlace(parseJsonText(responseText));
             if (growthOnly) return;
+            if (response.ok && itemUseMatch && readSettingsFromPanel().incomeEnabled) {
+              const data = parseJsonText(responseText);
+              // 回應帶最新的物品欄（items.items），先記名稱，吃完剛好用光的道具才查得到名字
+              if (data && data.items) rememberItemNames(Array.isArray(data.items) ? data : data.items);
+              const body = parseJsonText(requestBody) || {};
+              recordConsumption(itemName(itemUseMatch[1]), Number(body.quantity) || 1);
+            }
             if (response.ok && isEquipmentList) {
               try {
                 const equipments = JSON.parse(responseText).equipments || [];
@@ -4557,7 +5092,7 @@
             }
             if (response.ok && isHunt) {
               try {
-                handleHuntResponse(JSON.parse(responseText), requestBody);
+                handleHuntResponse(JSON.parse(responseText), requestBody, url);
               } catch {
                 // 回應格式不對就照舊讀畫面
               }
@@ -6605,7 +7140,9 @@
   // 換了試算表網址就從頭傳、從頭抓
   function loadCloudState(url) {
     const saved = readJsonStorage(CLOUD_STATE_KEY, null);
-    return saved && saved.url === url ? saved : { url, sentGrowth: [], sentEquipments: [], growthRow: 0, equipmentRow: 0 };
+    const fresh = { url, sentGrowth: [], sentEquipments: [], growthRow: 0, equipmentRow: 0 };
+    // 舊的同步紀錄沒有地圖這兩欄，補上就好，不用整個重來
+    return saved && saved.url === url ? { sentPlaces: [], placeRow: 0, ...saved } : { ...fresh, sentPlaces: [], placeRow: 0 };
   }
 
   function saveCloudState(saved) {
@@ -6693,6 +7230,37 @@
     return added;
   }
 
+  // 試算表的列：key, kind, zone, name, fromZone, fromStage, toZone, toStage, path
+  function cloudPlaceRows() {
+    const places = loadPlaces();
+    return [
+      ...Object.entries(places.zones).map(([zone, name]) => [`zone:${zone}`, 'zone', Number(zone), name, '', '', '', '', '']),
+      ...Object.entries(places.forks).map(([branch, fork]) => [`fork:${branch}:${fork.parent}:${fork.stage}`, 'fork', Number(branch), '', fork.parent, fork.stage, '', '', '']),
+    ];
+  }
+
+  // 自己學到的優先，雲端只補還不知道的
+  function importCloudPlaces(rows) {
+    if (!rows.length) return 0;
+    const places = loadPlaces();
+    let added = 0;
+    rows.forEach(([, kind, zone, name, from, fromStage]) => {
+      if (kind === 'zone' && name !== '' && places.zones[zone] === undefined && !Object.values(places.zones).includes(String(name))) {
+        places.zones[Number(zone)] = String(name);
+        added++;
+      }
+      if (kind === 'fork' && zone !== '' && !places.forks[zone]) {
+        places.forks[Number(zone)] = { parent: Number(from), stage: Number(fromStage) || 0 };
+        added++;
+      }
+    });
+    if (added) {
+      savePlaces(places);
+      addLearnedAreas(places);
+    }
+    return added;
+  }
+
   async function cloudRequest(url, options = {}) {
     // 字串 body 預設是 text/plain，瀏覽器不會先送 OPTIONS，Apps Script 也不支援 OPTIONS
     const response = await window.fetch(url, { ...options, cache: 'no-store', redirect: 'follow' });
@@ -6716,32 +7284,40 @@
       const sentEquipments = new Set(saved.sentEquipments.map(String));
       const growth = cloudGrowthRows().filter((row) => !sentGrowth.has(row[0]));
       const equipment = cloudEquipmentRows().filter((row) => !sentEquipments.has(String(row[0])));
+      const sentPlaces = new Set(saved.sentPlaces);
+      const places = cloudPlaceRows().filter((row) => !sentPlaces.has(row[0]));
       let uploaded = 0;
-      for (let start = 0; start < Math.max(growth.length, equipment.length); start += CLOUD_BATCH_ROWS) {
+      for (let start = 0; start < Math.max(growth.length, equipment.length, places.length); start += CLOUD_BATCH_ROWS) {
         const growthBatch = growth.slice(start, start + CLOUD_BATCH_ROWS);
         const equipmentBatch = equipment.slice(start, start + CLOUD_BATCH_ROWS);
+        const placeBatch = places.slice(start, start + CLOUD_BATCH_ROWS);
         const result = await cloudRequest(url, {
           method: 'POST',
-          body: JSON.stringify({ contributor: settings.cloudName || '未署名', growth: growthBatch, equipment: equipmentBatch }),
+          body: JSON.stringify({ contributor: settings.cloudName || '未署名', growth: growthBatch, equipment: equipmentBatch, places: placeBatch }),
         });
-        uploaded += (result.added.growth || 0) + (result.added.equipment || 0);
+        uploaded += (result.added.growth || 0) + (result.added.equipment || 0) + (result.added.places || 0);
         growthBatch.forEach((row) => sentGrowth.add(row[0]));
         equipmentBatch.forEach((row) => sentEquipments.add(String(row[0])));
+        // 舊版試算表沒有地圖分頁（回應裡沒有 places），先不記成已傳，更新試算表後會補傳
+        if (result.added.places !== undefined) placeBatch.forEach((row) => sentPlaces.add(row[0]));
         saved.sentGrowth = [...sentGrowth];
         saved.sentEquipments = [...sentEquipments];
+        saved.sentPlaces = [...sentPlaces];
         saveCloudState(saved);
       }
       let downloaded = 0;
       for (;;) {
-        const page = await cloudRequest(`${url}?after_growth=${saved.growthRow}&after_equipment=${saved.equipmentRow}`);
-        downloaded += importCloudGrowth(page.growth.rows) + importCloudEquipments(page.equipment.rows);
+        const page = await cloudRequest(`${url}?after_growth=${saved.growthRow}&after_equipment=${saved.equipmentRow}&after_places=${saved.placeRow}`);
+        const placePage = page.places || { rows: [], next: saved.placeRow };
+        downloaded += importCloudGrowth(page.growth.rows) + importCloudEquipments(page.equipment.rows) + importCloudPlaces(placePage.rows);
         saved.growthRow = page.growth.next;
         saved.equipmentRow = page.equipment.next;
+        saved.placeRow = placePage.next;
         saveCloudState(saved);
-        if (page.growth.rows.length < CLOUD_PAGE_ROWS && page.equipment.rows.length < CLOUD_PAGE_ROWS) break;
+        if (page.growth.rows.length < CLOUD_PAGE_ROWS && page.equipment.rows.length < CLOUD_PAGE_ROWS && placePage.rows.length < CLOUD_PAGE_ROWS) break;
       }
       const time = new Date().toLocaleTimeString('zh-TW', { hour12: false });
-      setCloudStatus(`上次同步 ${time}：上傳 ${uploaded} 筆、下載新增 ${downloaded} 筆；雲端共 ${saved.growthRow} 筆升級、${saved.equipmentRow} 件裝備`);
+      setCloudStatus(`上次同步 ${time}：上傳 ${uploaded} 筆、下載新增 ${downloaded} 筆；雲端共 ${saved.growthRow} 筆升級、${saved.equipmentRow} 件裝備、${saved.placeRow} 筆地圖`);
       if (downloaded && activeTab === 'growth') renderGrowthSummary();
       if (downloaded && activeTab === 'material') renderMaterialSummary();
     } catch (error) {
@@ -7502,47 +8078,132 @@
       .join(',');
   }
 
-  // API 鍛造：勾選的角色好了就收，閒著就用自己的配方開下一爐。
-  // 每個鍛造坊同時只能一個角色，開工時挑沒人在用的；一次巡只開一爐，像手動一樣慢慢來
+  // API 鍛造自己跑一條線，不佔用打怪的流程：同一個分頁可以一邊打怪一邊 API 鍛造。
+  // 不用定時巡：有空的角色就開爐，否則睡到最早那爐的完成時間（遊戲有給 actionCompleteTime）再來收
+  const forgeRunner = { running: false, runId: 0, timerId: null, started: 0, captchaWaiting: false, captchaCheckedAt: 0 };
+
+  function forgeLog(message) {
+    setStatus(`［鍛造］${message}`);
+  }
+
+  function scheduleForgeRunner(delay) {
+    backgroundTimer.clearTimeout(forgeRunner.timerId);
+    const runId = forgeRunner.runId;
+    forgeRunner.timerId = backgroundTimer.setTimeout(() => {
+      if (runId === forgeRunner.runId) forgeApiTick(readSettingsFromPanel());
+    }, delay);
+  }
+
+  function startForgeRunner() {
+    const settings = readSettingsFromPanel();
+    if (forgeRunner.running) {
+      forgeLog('已經在鍛造了');
+      return;
+    }
+    if (otherTabRunning(true)) {
+      forgeLog('同一個帳號的另一個分頁正在鍛造，這個分頁不啟動（要換到這裡跑，先停掉那一邊）');
+      return;
+    }
+    saveSettings(settings);
+    prepareAlerts(settings);
+    dashboard.alert = '';
+    forgeRunner.running = true;
+    forgeRunner.runId++;
+    forgeRunner.started = 0;
+    forgeRunner.captchaWaiting = false;
+    writeJsonStorage(runLockKey(true), { tab: tabKey, at: Date.now() });
+    rememberTabRole(!state.running);
+    forgeLog('開始 API 鍛造');
+    forgeApiTick(settings);
+  }
+
+  function stopForgeRunner(message) {
+    if (!forgeRunner.running) return;
+    forgeRunner.running = false;
+    forgeRunner.runId++;
+    forgeRunner.captchaWaiting = false;
+    backgroundTimer.clearTimeout(forgeRunner.timerId);
+    releaseRunLock(true);
+    if (message) forgeLog(message);
+  }
+
+  function pauseForgeRunner(message) {
+    stopForgeRunner(message);
+    dashboard.alert = `鍛造：${message}`;
+    alertUser(`鍛造：${message}`, { paused: true });
+  }
+
+  async function checkForgeCaptcha() {
+    if (!forgeRunner.running || !forgeRunner.captchaWaiting) return;
+    if (Date.now() - forgeRunner.captchaCheckedAt < CAPTCHA_POLL_MILLISECONDS) return;
+    forgeRunner.captchaCheckedAt = Date.now();
+    try {
+      const captcha = await requestGameApi('/api/captcha');
+      if (captcha && captcha.pendingCaptchaId) return;
+    } catch {
+      return;
+    }
+    if (!forgeRunner.running || !forgeRunner.captchaWaiting) return;
+    forgeRunner.captchaWaiting = false;
+    clearAlert();
+    forgeLog('驗證已完成，繼續鍛造');
+    forgeApiTick(readSettingsFromPanel());
+  }
+
+  // 還能再開爐就幾秒後再來；否則等最早完成的那爐（鍛造坊滿了就等任何一爐），到點再隨機晚幾秒，像人回來看
+  function nextForgeDelay(heroes, heroIds, canStartMore) {
+    if (canStartMore) return randomGap(3000, 8000);
+    const waitingForShop = heroes.some((hero) => heroIds.includes(hero.id) && !hero.actionState);
+    const times = heroes
+      .filter((hero) => hero.actionState === 5 && (waitingForShop || heroIds.includes(hero.id)))
+      .map((hero) => Date.parse(hero.actionCompleteTime))
+      .filter(Number.isFinite);
+    const next = times.length ? Math.min(...times) : Date.now() + 60000;
+    return Math.min(Math.max(next - Date.now(), 0) + randomGap(3000, 12000), 15 * 60000);
+  }
+
   async function forgeApiTick(settings) {
-    const runId = state.runId;
+    if (!forgeRunner.running || forgeRunner.captchaWaiting) return;
+    const runId = forgeRunner.runId;
+    const cancelled = () => runId !== forgeRunner.runId;
     const heroIds = forgeByApiHeroIds(settings);
     if (!heroIds.length) {
-      pauseWithAlert('API 鍛造還沒勾要鍛造的角色');
+      pauseForgeRunner('還沒勾要鍛造的角色');
       return;
     }
     try {
       let heroes = (await requestGameApi(HEROES_API)).heroes || [];
-      if (runId !== state.runId) return;
+      if (cancelled()) return;
       const actions = [];
       for (const hero of heroes.filter((candidate) => heroIds.includes(candidate.id) && candidate.actionState === 5 && candidate.canComplete)) {
         heroes = (await requestGameApi(`${HEROES_API}/${hero.id}/completeForge`, { method: 'POST' })).heroes || heroes;
-        if (runId !== state.runId) return;
+        if (cancelled()) return;
         actions.push(`${hero.name} 完成鍛造`);
         refreshGameView(FORGE_QUERY_KEYS);
-        await wait(randomGap(1000, 3000));
       }
       const forging = heroes.filter((hero) => hero.actionState === 5);
-      const limitReached = settings.forgeByApiCount > 0 && state.forgeApiStarted >= settings.forgeByApiCount;
-      if (limitReached) {
+      const limit = settings.forgeByApiCount;
+      const progress = () => (limit > 0 ? `${forgeRunner.started}/${limit}` : `${forgeRunner.started}`);
+      if (limit > 0 && forgeRunner.started >= limit) {
         if (!forging.some((hero) => heroIds.includes(hero.id))) {
-          stop(`API 鍛造完成，共開 ${state.forgeApiStarted} 爐`);
+          stopForgeRunner(`API 鍛造完成，共開 ${forgeRunner.started} 爐`);
           return;
         }
-        setStatus(`${actions.join('、') || '等最後幾爐完成'}（已開 ${state.forgeApiStarted}/${settings.forgeByApiCount}）`);
-        scheduleForge(settings);
+        const delay = nextForgeDelay(heroes, heroIds, false);
+        forgeLog(`${actions.join('、') || '等最後幾爐完成'}（已開 ${progress()} 爐，${Math.round(delay / 1000)} 秒後再看）`);
+        scheduleForgeRunner(delay);
         return;
       }
       const idle = heroes.find((hero) => heroIds.includes(hero.id) && !hero.actionState);
       const busyShops = new Set(forging.map((hero) => Number(hero.actionTarget)));
       const freeShop = Array.from({ length: FORGE_SHOP_COUNT }, (_, index) => index + 1).find((shop) => !busyShops.has(shop));
       if (idle && freeShop) {
-        // 開工後就不能吃體力藥，所以要在開工之前補
-        await ensureFreshHeroStats(settings, { forge: true });
-        if (runId !== state.runId) return;
+        // 開工後就不能吃體力藥，所以要在開工之前補；只用 API 補給，人不在鍛造頁也能補
+        heroes.forEach((hero) => state.heroStats.set(hero.id, hero));
+        state.heroStatsAt = Date.now();
         const supplyTarget = findSlotNeedingItem(settings, { forge: true });
-        if (supplyTarget) {
-          useItem(settings, supplyTarget);
+        if (supplyTarget && usesItemApi(settings, supplyTarget.group, supplyTarget.index)) {
+          useItem(settings, supplyTarget, { isCancelled: cancelled, onDone: () => scheduleForgeRunner(randomGap(1500, 3000)) });
           return;
         }
         const plan = forgeApiPlan(settings, idle.id);
@@ -7550,23 +8211,26 @@
         const { body, summary, forgesLeft } = await buildForgeRequest(plan, idle.id, freeShop).catch((error) => {
           throw new Error(`${idle.name}：${error.message}`);
         });
-        if (runId !== state.runId) return;
+        if (cancelled()) return;
         await sendForge(body);
-        state.forgeApiStarted++;
-        state.itemUsedSlots.clear();
+        forgeRunner.started++;
         actions.push(`${idle.name} 在鍛造坊 ${freeShop} 開始鍛造 ${summary}${forgesLeft === null ? '' : `，材料還夠 ${forgesLeft} 爐`}`);
       }
-      const progress = settings.forgeByApiCount > 0 ? `${state.forgeApiStarted}/${settings.forgeByApiCount}` : `${state.forgeApiStarted}`;
-      setStatus(`${actions.join('、') || (idle ? '鍛造坊都有人在用' : '角色都在鍛造中')}（已開 ${progress} 爐）`);
-      scheduleForge(settings);
+      const delay = nextForgeDelay(heroes, heroIds, Boolean(idle && freeShop));
+      forgeLog(`${actions.join('、') || (idle ? '鍛造坊都有人在用' : '角色都在鍛造中')}（已開 ${progress()} 爐，${Math.round(delay / 1000)} 秒後再看）`);
+      scheduleForgeRunner(delay);
     } catch (error) {
-      if (runId !== state.runId) return;
+      if (cancelled()) return;
       if (error.captchaRequired) {
-        pauseForCaptcha(settings);
+        forgeRunner.captchaWaiting = true;
+        forgeRunner.captchaCheckedAt = 0;
+        dashboard.alert = '鍛造：伺服器要求活人驗證';
+        alertUser('鍛造：伺服器要求活人驗證，完成後會自動繼續', { paused: true });
+        forgeLog('伺服器要求活人驗證，完成後會自動繼續');
         return;
       }
       // 材料不夠、配方有問題這類不會自己好，停下來讓人處理
-      pauseWithAlert(`API 鍛造停止：${error.message}`);
+      pauseForgeRunner(error.message);
     }
   }
 
@@ -7599,13 +8263,25 @@
     writeJsonStorage(INCOME_KEY, income);
   }
 
+  function recordConsumption(name, quantity) {
+    const income = loadIncome();
+    const start = Math.floor(Date.now() / INCOME_BUCKET_MILLISECONDS) * INCOME_BUCKET_MILLISECONDS;
+    const bucket = income.buckets[start] || (income.buckets[start] = { battles: 0, exp: 0, items: {} });
+    bucket.used = bucket.used || {};
+    bucket.used[name] = (bucket.used[name] || 0) + quantity;
+    saveIncome(income);
+    if (activeTab === 'income') renderIncome();
+  }
+
   function recordIncome(data) {
     const { report } = data;
     if (!report || !Array.isArray(report.messages)) return;
     let exp = 0;
+    // 「每位英雄獲得了 2 點經驗值」是每人各拿，要乘上隊伍人數
+    const teamSize = (data.huntInfo && Array.isArray(data.huntInfo.heroes) && data.huntInfo.heroes.length) || (state.huntTeamIds || []).length || 1;
     report.messages.forEach((message) => {
       const match = HUNT_EXP_PATTERN.exec(String(message.m || '').trim());
-      if (match) exp += messageNumber(match[2]);
+      if (match) exp += messageNumber(match[2]) * (/每位/.test(match[1]) ? teamSize : 1);
     });
     const income = loadIncome();
     const start = Math.floor(Date.now() / INCOME_BUCKET_MILLISECONDS) * INCOME_BUCKET_MILLISECONDS;
@@ -7642,7 +8318,7 @@
 
   function incomeSummary(from, to = Date.now()) {
     const income = loadIncome();
-    const summary = { battles: 0, exp: 0, itemCount: 0, items: {}, money: null };
+    const summary = { battles: 0, exp: 0, itemCount: 0, items: {}, usedCount: 0, used: {}, money: null };
     Object.entries(income.buckets).forEach(([start, bucket]) => {
       // 格子跟期間有重疊就算進來（10 分鐘一格，誤差最多 10 分鐘）
       if (Number(start) + INCOME_BUCKET_MILLISECONDS <= from || Number(start) > to) return;
@@ -7651,6 +8327,10 @@
       Object.entries(bucket.items).forEach(([name, quantity]) => {
         summary.items[name] = (summary.items[name] || 0) + quantity;
         summary.itemCount += quantity;
+      });
+      Object.entries(bucket.used || {}).forEach(([name, quantity]) => {
+        summary.used[name] = (summary.used[name] || 0) + quantity;
+        summary.usedCount += quantity;
       });
     });
     // 遊戲幣：期間開始前最後一筆（沒有就用期間內第一筆）到最新一筆的差
@@ -7667,9 +8347,35 @@
   }
 
   // 給總覽頁：近 1 小時與今天
+  // 總覽頁可以切換期間，所以各期間都給；每次回報都要重算 5 次，30 秒內沿用上次的
+  const INCOME_REPORT_FRESH_MILLISECONDS = 30000;
+  let cachedIncomeReport = { at: 0, report: null };
   function incomeReport() {
-    const brief = (summary) => ({ battles: summary.battles, exp: summary.exp, items: summary.itemCount, money: summary.money });
-    return { hour: brief(incomeSummary(Date.now() - 3600000)), today: brief(incomeSummary(new Date().setHours(0, 0, 0, 0))) };
+    if (cachedIncomeReport.report && Date.now() - cachedIncomeReport.at < INCOME_REPORT_FRESH_MILLISECONDS) return cachedIncomeReport.report;
+    const brief = (summary, from) => ({
+      battles: summary.battles,
+      exp: summary.exp,
+      items: summary.itemCount,
+      money: summary.money,
+      hours: (Date.now() - from) / 3600000,
+      topItems: Object.entries(summary.items)
+        .sort(([, first], [, second]) => second - first)
+        .slice(0, 8),
+      used: summary.usedCount,
+      topUsed: Object.entries(summary.used)
+        .sort(([, first], [, second]) => second - first)
+        .slice(0, 6),
+    });
+    const periods = {
+      hour: Date.now() - 3600000,
+      six: Date.now() - 6 * 3600000,
+      today: new Date().setHours(0, 0, 0, 0),
+      day: Date.now() - 24 * 3600000,
+      week: Date.now() - 7 * 24 * 3600000,
+    };
+    const report = Object.fromEntries(Object.entries(periods).map(([key, from]) => [key, brief(incomeSummary(from), from)]));
+    cachedIncomeReport = { at: Date.now(), report };
+    return report;
   }
 
   function renderIncome() {
@@ -7679,7 +8385,7 @@
       const summary = incomeSummary(from());
       const hours = Math.max(1 / 6, (Date.now() - from()) / 3600000);
       return `<tr style="${index === periodIndex ? 'background:#26262b' : ''}"><td>${label}</td><td>${summary.battles.toLocaleString()}</td><td>${summary.exp.toLocaleString()}</td>
-        <td>${Math.round(summary.exp / hours).toLocaleString()}</td><td>${summary.itemCount.toLocaleString()}</td>
+        <td>${Math.round(summary.exp / hours).toLocaleString()}</td><td>${summary.itemCount.toLocaleString()}</td><td>${summary.usedCount.toLocaleString()}</td>
         <td style="color:${summary.money === null ? '#a0a0aa' : summary.money >= 0 ? '#4ade80' : '#f87171'}">${formatSigned(summary.money)}</td></tr>`;
     }).join('');
     // 近 24 小時每小時的經驗長條
@@ -7699,13 +8405,19 @@
       .sort(([, first], [, second]) => second - first)
       .map(([name, quantity]) => `<tr><td>${escapeHtml(name)}</td><td>${quantity.toLocaleString()}</td></tr>`)
       .join('');
+    const used = Object.entries(selected.used)
+      .sort(([, first], [, second]) => second - first)
+      .map(([name, quantity]) => `<tr><td>${escapeHtml(name)}</td><td>${quantity.toLocaleString()}</td></tr>`)
+      .join('');
     panel.querySelector('[data-role="income"]').innerHTML = `
-      <table class="combat"><tr><th>期間</th><th>場</th><th>經驗</th><th>經驗/時</th><th>道具</th><th>💰</th></tr>${rows}</table>
+      <table class="combat"><tr><th>期間</th><th>場</th><th>經驗</th><th>經驗/時</th><th>撿到</th><th>吃掉</th><th>💰</th></tr>${rows}</table>
       <div class="hint">經驗＝整隊加總；💰＝遊戲幣餘額的淨變化（包含買東西花掉的），每 5 分鐘記一次</div>
       <div class="subhead">近 24 小時經驗（每小時）</div>
       <div style="display:flex;gap:1px;height:50px;align-items:flex-end">${bars}</div>
       <div class="subhead">撿到的道具（${INCOME_PERIODS[periodIndex][0]}）</div>
-      ${items ? `<table class="combat"><tr><th>道具</th><th>數量</th></tr>${items}</table>` : '<div class="hint">這段期間沒有撿到道具</div>'}`;
+      ${items ? `<table class="combat"><tr><th>道具</th><th>數量</th></tr>${items}</table>` : '<div class="hint">這段期間沒有撿到道具</div>'}
+      <div class="subhead">吃掉的補品（${INCOME_PERIODS[periodIndex][0]}）</div>
+      ${used ? `<table class="combat"><tr><th>道具</th><th>數量</th></tr>${used}</table>` : '<div class="hint">這段期間沒有吃補品</div>'}`;
   }
 
   // 狩獵統計：每個地點（地圖＋關卡）的場數、每人每場經驗、每場秒數、HP／體力耗損、前進成功率、掉落。
@@ -7714,7 +8426,10 @@
   const RECENT_LOOT_LIMIT = 50;
   // 兩場之間隔太久（停下來、換地圖、補給很久）就不算進每場秒數
   const HUNT_GAP_LIMIT_MILLISECONDS = 180000;
-  const LOOT_LINE_PATTERN = /(?:獲得了|拾獲了?|撿到了?|挖到了?|掉落了?)\s*(.+?)\s*[×xX*＊]\s*([\d,]+)\s*$/;
+  // 「獲得了兔皮 × 4」「獲得了兔皮」（沒寫數量＝1 個）「盜寶哥布林盜取了體力藥水 小」都算；偷到錢、收租金不算道具
+  const LOOT_LINE_PATTERN = /(?:獲得了|拾獲了?|撿到了?|挖到了?|掉落了?|盜取了)\s*(.+?)(?:\s*[×xX*＊]\s*([\d,]+))?\s*$/;
+  // 「獲得了 N 點…」這類數值句也不是道具
+  const LOOT_NOT_ITEM_PATTERN = /經驗|\d\s*(?:元|租金)\s*$|\d\s*點/;
   const HUNT_EXP_PATTERN = /^(.+?)獲得了\s*([\d,]+)\s*點經驗值/;
   const lastHunt = { place: '', at: 0, stage: null };
 
@@ -7734,17 +8449,16 @@
     return Number(String(text).replace(/,/g, '')) || 0;
   }
 
-  // 「獲得了 鐵礦 × 2」才算掉落；經驗值、幸運事件的傷害句沒有「× 數量」，不會被當成掉落
   function parseLoot(messages) {
     return messages
       .map((message) => String(message.m || '').trim())
-      .filter((text) => text && !/經驗/.test(text))
+      .filter((text) => text && !LOOT_NOT_ITEM_PATTERN.test(text))
       .map((text) => LOOT_LINE_PATTERN.exec(text))
       .filter(Boolean)
       .map((match) => [match[1].trim(), messageNumber(match[2]) || 1]);
   }
 
-  function recordHuntStats(data, requestBody, settings) {
+  function recordHuntStats(data, requestBody, settings, url = '') {
     const { report, huntInfo } = data;
     if (!report || !Array.isArray(report.messages) || !huntInfo) return;
     const battleStage = Number(report.stage) || Number(huntInfo.huntStage) || 0;
@@ -7774,8 +8488,13 @@
       stats.lossSamples++;
     });
     // 前進算在出發的那一層；剛開頁面還不知道前一層就不算
-    const body = parseJsonText(requestBody) || {};
-    if (body.type === 'forward' && lastHunt.stage) {
+    let huntType = (parseJsonText(requestBody) || {}).type;
+    try {
+      huntType = new URL(url, location.href).searchParams.get('type') || huntType;
+    } catch {
+      // 網址怪怪的就照送出的內容
+    }
+    if (huntType === 'forward' && lastHunt.stage) {
       const fromPlace = `${zoneName} ${lastHunt.stage}`;
       const from = saved.places[fromPlace] || (saved.places[fromPlace] = emptyPlaceStats());
       from.forwardTries++;
@@ -8161,7 +8880,11 @@
   }
   if (resumeAfterReload) {
     setStatus('總覽頁要求重新整理後自動開始，5 秒後開始');
-    backgroundTimer.setTimeout(() => start(resumeAfterReload === 'forge'), 5000);
+    backgroundTimer.setTimeout(() => {
+      const modes = resumeAfterReload.split(',');
+      if (modes.includes('hunt')) start(false);
+      if (modes.includes('forge')) start(true);
+    }, 5000);
   }
   // 每秒檢查血條、驗證框；同樣用背景計時器，分頁在背景時才不會變成一分鐘才檢查一次
   (function monitorLoop() {

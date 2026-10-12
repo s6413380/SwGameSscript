@@ -24,7 +24,7 @@ cloud-sheet.gs                  雲端共用用的 Google Apps Script（貼到 G
 3. 每個要掛機的瀏覽器（或瀏覽器設定檔）各做一次：
    a. 開 http://localhost:8787/auto-clicker-v2.loader.user.js
    b. Tampermonkey 會跳出安裝頁，按「安裝」。
-   c. 如果以前裝過「自動點擊按鈕 V2」完整版，到 Tampermonkey 管理頁把它停用或刪除，
+   c. 如果以前裝過「自動點擊按鈕 V2」或「器靈」完整版、或舊名「自動點擊按鈕 V2（載入器）」，到 Tampermonkey 管理頁把它們停用或刪除，
       不然舊版會先執行，載入器的新版會被擋掉。
 4. 打開遊戲頁面，右上角會出現黑色面板。第一次連 localhost 時瀏覽器可能會問
    「要不要允許存取區域網路裝置」，請按允許。
@@ -55,7 +55,7 @@ cloud-sheet.gs                  雲端共用用的 Google Apps Script（貼到 G
   http://localhost:8787/auto-clicker-v2.loader.user.js 按「重新安裝」。
 
 怎麼確認更新成功：
-- 遊戲面板標題會顯示版本，例如「自動點擊 V2 v2.4」；面板「紀錄」頁也會記「已載入 v2.4」。
+- 遊戲面板標題會顯示版本，例如「器靈 v2.54」；面板「紀錄」頁也會記「已載入 v2.54」。
 - 總覽頁每張卡片名字旁有版本號，還沒更新的分頁會標黃「v2.3 舊版」。
 
 

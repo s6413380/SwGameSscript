@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>多帳號總覽</title>
+<title>器靈 多帳號總覽</title>
 <style>
   :root { --bg:#111114; --card:#1b1b1f; --line:#3a3a40; --text:#fff; --muted:#a0a0aa;
     --good:#43a047; --warn:#f9a825; --bad:#e53935; --sp:#1e88e5; }
@@ -25,6 +25,14 @@
   .alert-text { color:#ffe066; font-weight:bold; margin:6px 0; }
   .hero { margin:6px 0; }
   .hero-line { display:flex; justify-content:space-between; gap:6px; font-size:13px; }
+  .income-board { margin:0 0 12px; padding:8px 10px; border:1px solid #2e2e34; border-radius:8px; background:#18181b; }
+  .income-board .periods button { margin-left:4px; }
+  .income-board .periods button.active { background:#3b82f6; border-color:#3b82f6; color:#fff; }
+  .income-board table { width:100%; border-collapse:collapse; margin-top:6px; font-size:13px; }
+  .income-board th, .income-board td { padding:3px 6px; border-bottom:1px solid #26262b; text-align:right; white-space:nowrap; }
+  .income-board th:first-child, .income-board td:first-child, .income-board th:last-child, .income-board td.items { text-align:left; }
+  .income-board td.items { white-space:normal; color:#a0a0aa; font-size:12px; }
+  .income-board tr.total td { font-weight:bold; border-top:2px solid #3a3a42; }
   .income { font-size:12px; margin:4px 0 2px; padding:3px 6px; border-radius:4px; background:#1c1c22; }
   .income b { color:#93c5fd; font-weight:normal; }
   .cond { display:inline-block; margin-left:4px; padding:0 4px; border-radius:3px; font-size:11px; color:#fff; }
@@ -61,13 +69,17 @@
 </head>
 <body>
 <header>
-  <h1>多帳號總覽</h1>
+  <h1>器靈 多帳號總覽</h1>
   <span class="total" id="total"></span>
-  <span class="muted" id="income-total"></span>
   <span class="muted" id="updated"></span>
   <button id="collapse-all">全部縮小</button><button id="expand-all">全部展開</button>
   <button id="reload-all" title="更新腳本後按這個：每個分頁重新整理，原本在跑的會自動接著跑">全部重新整理</button>
 </header>
+<section class="income-board" id="income-board" style="display:none">
+  <div class="periods"><b>收益</b><span id="income-periods"></span></div>
+  <table id="income-table"></table>
+  <div class="muted" style="font-size:12px;margin-top:4px">經驗＝整隊加總；💰＝遊戲幣餘額淨變化（含花掉的）；同一個帳號開兩個分頁只算一次</div>
+</section>
 <div class="grid" id="grid"><div class="muted" id="empty">目前沒有在線的分頁；在遊戲面板「提醒」頁勾選「回報到總覽頁」</div></div>
 <script>
   // 超過這麼久沒回報就當作分頁關掉或卡住，先不顯示，等它再回報時自然會回來
@@ -209,7 +221,9 @@
   function badgeHtml(data) {
     if (data.alert) return '<span class="badge bad">已暫停</span>';
     if (!data.running) return '<span class="badge stop">已停止</span>';
-    return `<span class="badge run">${data.forgeMode ? '鍛造中' : '掛機中'}</span>`;
+    // 新版會分開回報打怪、鍛造（同一個分頁可以一起跑）；舊版只看 forgeMode
+    const doing = 'huntRunning' in data ? [data.huntRunning ? '掛機中' : '', data.forgeRunning ? '鍛造中' : ''].filter(Boolean) : [data.forgeMode ? '鍛造中' : '掛機中'];
+    return `<span class="badge run">${doing.join('＋')}</span>`;
   }
 
   function signed(value) {
@@ -220,9 +234,100 @@
   function incomeHtml(data) {
     if (!data.income) return '';
     const part = (label, income) =>
-      `<b>${label}</b> ${income.battles} 場・經驗 ${income.exp.toLocaleString()}・道具 ${income.items.toLocaleString()}・💰 ${signed(income.money)}`;
+      `<b>${label}</b> ${income.battles} 場・經驗 ${income.exp.toLocaleString()}・撿到 ${income.items.toLocaleString()}${income.used === undefined ? '' : `・吃掉 ${income.used.toLocaleString()}`}・💰 ${signed(income.money)}`;
     return `<div class="income">${part('近1小時', data.income.hour)}<br>${part('今天', data.income.today)}</div>`;
   }
+
+  const INCOME_PERIODS = [
+    ['hour', '近1小時'],
+    ['six', '近6小時'],
+    ['today', '今天'],
+    ['day', '近24小時'],
+    ['week', '近7天'],
+  ];
+  const INCOME_PERIOD_STORAGE_KEY = 'monitorDashboardIncomePeriod';
+  let incomePeriod = 'today';
+  try {
+    incomePeriod = localStorage.getItem(INCOME_PERIOD_STORAGE_KEY) || 'today';
+  } catch {
+    // 記不住就用今天
+  }
+  let lastIncomeAccounts = [];
+
+  function itemsText(items) {
+    return items.map(([name, quantity]) => `${escapeHtml(name)}×${Number(quantity).toLocaleString()}`).join('、') || '-';
+  }
+
+  // 每個帳號一列：同帳號的分頁共用同一份紀錄，取最新回報的那個
+  function renderIncomeBoard(accounts) {
+    lastIncomeAccounts = accounts;
+    // 沒有這段期間資料的帳號也要列出來，並寫出原因，不然看起來像少算
+    const byAccount = new Map();
+    [...accounts]
+      .sort((first, second) => first.at - second.at)
+      .forEach((account) => {
+        const key = account.data.accountId ?? account.id;
+        const income = account.data.income && account.data.income[incomePeriod];
+        const previous = byAccount.get(key);
+        // 同帳號的分頁取有資料的那個；都有就取最新回報的
+        if (previous && previous.income && !income) return;
+        byAccount.set(key, { name: account.data.nickname, income, version: account.data.version, enabled: account.data.income !== null });
+      });
+    const board = document.getElementById('income-board');
+    const withIncome = [...byAccount.values()].filter(({ income }) => income);
+    board.style.display = byAccount.size ? '' : 'none';
+    if (!byAccount.size) return;
+    document.getElementById('income-periods').innerHTML = INCOME_PERIODS.map(
+      ([key, label]) => `<button class="small ${key === incomePeriod ? 'active' : ''}" data-income-period="${key}">${label}</button>`
+    ).join('');
+    const rows = withIncome.sort((first, second) => second.income.exp - first.income.exp);
+    const missing = [...byAccount.values()].filter(({ income }) => !income);
+    const missingReason = ({ version, enabled }) =>
+      !enabled ? '沒開「記錄收益」' : `腳本 v${version || '?'} 太舊，沒有這段期間的資料（更新到 v2.52 以上）`;
+    const total = { battles: 0, exp: 0, items: 0, used: 0, money: 0, hasMoney: false, hours: 0, itemMap: new Map(), usedMap: new Map() };
+    rows.forEach(({ income }) => {
+      total.battles += income.battles;
+      total.exp += income.exp;
+      total.items += income.items;
+      total.used += income.used || 0;
+      (income.topUsed || []).forEach(([name, quantity]) => total.usedMap.set(name, (total.usedMap.get(name) || 0) + quantity));
+      if (income.money !== null && income.money !== undefined) {
+        total.money += income.money;
+        total.hasMoney = true;
+      }
+      total.hours = Math.max(total.hours, income.hours || 0);
+      (income.topItems || []).forEach(([name, quantity]) => total.itemMap.set(name, (total.itemMap.get(name) || 0) + quantity));
+    });
+    const perHour = (exp, hours) => (hours ? Math.round(exp / Math.max(hours, 1 / 6)).toLocaleString() : '-');
+    const moneyCell = (value) => `<td style="color:${value === null || value === undefined ? '#a0a0aa' : value >= 0 ? '#4ade80' : '#f87171'}">${signed(value)}</td>`;
+    const row = (name, income, items, usedItems, className = '') => `<tr class="${className}"><td>${name}</td><td>${income.battles.toLocaleString()}</td><td>${income.exp.toLocaleString()}</td>
+      <td>${perHour(income.exp, income.hours)}</td><td>${income.items.toLocaleString()}</td><td>${income.used === undefined ? '-' : income.used.toLocaleString()}</td>${moneyCell(income.money)}<td class="items">${items}</td><td class="items">${usedItems}</td></tr>`;
+    document.getElementById('income-table').innerHTML =
+      '<tr><th>帳號</th><th>場</th><th>經驗</th><th>經驗/時</th><th>撿到</th><th>吃掉</th><th>💰</th><th>主要道具</th><th>吃掉的補品</th></tr>' +
+      rows.map(({ name, income }) => row(escapeHtml(name), income, itemsText(income.topItems || []), itemsText(income.topUsed || []))).join('') +
+      missing
+        .map((account) => `<tr><td>${escapeHtml(account.name)}</td><td colspan="6" style="text-align:center;color:#f59e0b">-</td><td class="items" colspan="2" style="color:#f59e0b">${escapeHtml(missingReason(account))}</td></tr>`)
+        .join('') +
+      row(
+        `合計（${rows.length} 個帳號${missing.length ? `，另有 ${missing.length} 個沒資料` : ''}）`,
+        { ...total, money: total.hasMoney ? total.money : null },
+        itemsText([...total.itemMap.entries()].sort(([, first], [, second]) => second - first).slice(0, 8)),
+        itemsText([...total.usedMap.entries()].sort(([, first], [, second]) => second - first).slice(0, 6)),
+        'total'
+      );
+  }
+
+  document.getElementById('income-board').addEventListener('click', (event) => {
+    const key = event.target.dataset.incomePeriod;
+    if (!key) return;
+    incomePeriod = key;
+    try {
+      localStorage.setItem(INCOME_PERIOD_STORAGE_KEY, key);
+    } catch {
+      // 記不住只影響下次開啟
+    }
+    renderIncomeBoard(lastIncomeAccounts);
+  });
 
   function viewHtml(account, now) {
     const data = account.data;
@@ -389,17 +494,7 @@
           .forEach((account) => moneyByAccount.set(account.data.accountId ?? account.id, Number(account.data.money || 0)));
         const total = [...moneyByAccount.values()].reduce((sum, money) => sum + money, 0);
         document.getElementById('total').textContent = `合計 💰 ${total.toLocaleString()}`;
-        const incomeByAccount = new Map();
-        [...accounts]
-          .sort((first, second) => first.at - second.at)
-          .forEach((account) => account.data.income && incomeByAccount.set(account.data.accountId ?? account.id, account.data.income.today));
-        const today = [...incomeByAccount.values()].reduce(
-          (sum, income) => ({ exp: sum.exp + income.exp, items: sum.items + income.items, money: sum.money + (income.money || 0) }),
-          { exp: 0, items: 0, money: 0 }
-        );
-        document.getElementById('income-total').textContent = incomeByAccount.size
-          ? `今天：經驗 ${today.exp.toLocaleString()}・道具 ${today.items.toLocaleString()}・💰 ${signed(today.money)}`
-          : '';
+        renderIncomeBoard(accounts);
       }
       const updated = document.getElementById('updated');
       updated.textContent = oldServer
