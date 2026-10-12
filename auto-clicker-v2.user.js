@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         器靈
 // @namespace    local.auto-clicker
-// @version      2.66
+// @version      2.67
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -697,7 +697,7 @@
 
     <div data-tab="forge">
       <div class="row"><button data-action="forge-start" style="font-weight:bold">開始鍛造</button><button data-action="forge-stop">停止鍛造</button></div>
-      <div class="hint">鍛造時只鍛造、不打怪；下方的「開始」只跑掛機</div>
+      <div class="hint">勾「用 API 鍛造」：鍛造自己跑，可以跟下方「開始」的掛機同時進行，人也不用待在鍛造頁。沒勾（按鈕鍛造）：要待在鍛造頁，跟掛機只能二選一，按其中一個開始會停掉另一個。下方「開始」只管掛機</div>
       <fieldset class="group">
         <legend>API 鍛造（用「配方」頁的配方）</legend>
         <label class="row"><input data-field="forgeByApiEnabled" type="checkbox" style="flex:none;width:auto"> <b>用 API 鍛造</b>（不用設下面的按鈕與鍛造坊）</label>
