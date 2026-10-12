@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         器靈
 // @namespace    local.auto-clicker
-// @version      2.63
+// @version      2.66
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -105,11 +105,11 @@
     { name: '黑暗山洞' },
     { name: '猛牛原', parent: '大草原', parentStage: 11 },
     { name: '草原秘徑', parent: '大草原', parentStage: 16 },
-    { name: '老鼠洞', parent: '黑暗山洞', parentStage: 11 },
+    { name: '老鼠洞', parent: '黑暗山洞', parentStage: 12 },
     { name: '迷霧森林', parent: '草原秘徑', parentStage: 27 },
   ];
   // 區域表預設內容改過就加一：已經存過設定的人也補上新的預設區域（只補一次，刪掉了不會再冒出來）
-  const AREA_PRESET_VERSION = 3;
+  const AREA_PRESET_VERSION = 4;
   const AREA_PRESET_KEY = 'autoClickerV2AreaPreset';
 
   function areaKey(areaIndex, name) {
@@ -139,6 +139,9 @@
     stageBack: '',
     stageBackText: '',
     stageFinishMove: '',
+    // 移動時間到了之後，隨機再等幾秒才按完成移動，不要每次都剛好準點
+    finishMoveMinSeconds: 1,
+    finishMoveMaxSeconds: 5,
     stageFinishMoveText: '',
     intervalMinSeconds: 8,
     intervalMaxSeconds: 20,
@@ -449,7 +452,14 @@
       delete saved.intervalSeconds;
     }
     const merged = { ...defaultSettings, ...saved };
-    if (saved && (Number(readJsonStorage(AREA_PRESET_KEY, 1)) || 1) < AREA_PRESET_VERSION) addMissingPresetAreas(merged);
+    const presetVersion = Number(readJsonStorage(AREA_PRESET_KEY, 1)) || 1;
+    if (saved && presetVersion < AREA_PRESET_VERSION) addMissingPresetAreas(merged);
+    // 第 3 版以前預設老鼠洞從黑暗山洞 11 層進，實際是 12；還是舊預設值的才改，自己改過的不動
+    if (saved && presetVersion < 4) {
+      Array.from({ length: AREA_COUNT }, (_, index) => index)
+        .filter((index) => merged[areaKey(index, 'Name')] === '老鼠洞' && merged[areaKey(index, 'Parent')] === '黑暗山洞' && Number(merged[areaKey(index, 'ParentStage')]) === 11)
+        .forEach((index) => (merged[areaKey(index, 'ParentStage')] = 12));
+    }
     writeJsonStorage(AREA_PRESET_KEY, AREA_PRESET_VERSION);
     return merged;
   }
@@ -672,6 +682,7 @@
       <div class="row">城鎮<input data-field="townName" placeholder="初始之鎮" style="width:90px;flex:none">${pickButtonHtml('stageTown', '回城', { text: true })}</div>
       <div class="hint">在城鎮時直接按目標大區（到第 1 關再前行）；目標填城鎮名稱＝回城</div>
       <div class="row">${pickButtonHtml('selectorD', '前行', { text: true })} ${pickButtonHtml('stageBack', '後退', { text: true })} ${pickButtonHtml('stageFinishMove', '完成移動', { text: true })}</div>
+      <label>移動時間到了再等 ${numberInput('finishMoveMinSeconds', 'min="0" step="0.5"')} ～ ${numberInput('finishMoveMaxSeconds', 'min="0" step="0.5"')} 秒（隨機）才完成移動</label>
       <div class="hint">畫面上出現可按的「完成移動」時一律先按，不管有沒有開自動移動</div>
       <fieldset class="group">
         <legend>區域表</legend>
@@ -1864,6 +1875,15 @@
     if (forgeRunner.running) releaseRunLock(true);
   });
 
+  // 畫面上讀不到位置（API 打怪不用停在狩獵頁、或沒設定關卡欄位）就用 API 拿到的位置
+  function apiLocationText(settings) {
+    const info = state.huntInfo;
+    if (!info || info.huntZone === undefined) return '';
+    if (Number(info.huntZone) === 0) return settings.townName || '城鎮';
+    const name = loadPlaces().zones[info.huntZone] || info.zoneName || `地圖 ${info.huntZone}`;
+    return `${name} ${info.huntStage}`;
+  }
+
   function dashboardReport(settings) {
     const location = settings.stageSelector ? readLocation(settings) : null;
     return {
@@ -1878,7 +1898,7 @@
       forgeRunning: (state.running && state.forgeMode) || forgeRunner.running,
       alert: dashboard.alert,
       status: statusElement.textContent,
-      location: location ? location.text : '',
+      location: location && location.text ? location.text : apiLocationText(settings),
       heroes: dashboard.team.map((hero) => {
         const { id, name, lv, exp, fullExp, hp, fullHp, sp, fullSp, perished } = hero;
         return { id, name, lv, exp, fullExp, hp, fullHp, sp, fullSp, perished, conditions: heroConditions(hero) };
@@ -3167,12 +3187,25 @@
 
   // selector 是位置路徑，換到別的畫面（例如鍛造）同一個位置可能是別顆按鈕；字不對就不按，
   // 否則每一步都會先誤按那顆按鈕、又只隔一個道具步驟就重來，後面的流程永遠輪不到
+  function finishMoveGap(settings) {
+    const minimum = Number(settings.finishMoveMinSeconds) || 0;
+    const maximum = Math.max(minimum, Number(settings.finishMoveMaxSeconds) || 0);
+    return randomGap(minimum * 1000, maximum * 1000);
+  }
+
+  // 回傳 false＝沒有完成移動可按；'waiting'＝出現了，還在等隨機的幾秒；true＝按了
   function clickFinishMoveIfReady(settings) {
     const text = settings.stageFinishMoveText || FINISH_MOVE_DEFAULT_TEXT;
     let button = findButton(settings.stageFinishMove, text, '');
     // selector 指到別顆時改成只用文字找，真正的「完成移動」出現時才按得到
     if (button && buttonText(button) !== text) button = findButton('', text, '');
-    if (!isClickable(button)) return false;
+    if (!isClickable(button)) {
+      state.finishMoveAt = 0;
+      return false;
+    }
+    if (!state.finishMoveAt) state.finishMoveAt = Date.now() + finishMoveGap(settings);
+    if (Date.now() < state.finishMoveAt) return 'waiting';
+    state.finishMoveAt = 0;
     button.click();
     return true;
   }
@@ -3977,8 +4010,10 @@
       return step(settings.stageTargetNumber);
     }
     const next = chain[index + 1];
-    if (stage !== next.parentStage) return step(next.parentStage);
     const nextId = zoneIdByName(places, next.name);
+    // 遊戲說這層就有這個分支的入口，區域表層數填錯也直接進
+    const forkHere = (Array.isArray(info.paths) ? info.paths : []).some((forkPath) => forkPath && (forkPath.zoneName === next.name || Number(forkPath.zoneId) === nextId));
+    if (!forkHere && stage !== next.parentStage) return step(next.parentStage);
     if (nextId === null) return { problem: `這層沒看到「${next.name}」的入口，確認區域表的進入層數` };
     return { from, label: `進入${next.name}`, path: `/api/moveForkPath/${nextId}` };
   }
@@ -4031,7 +4066,7 @@
 
   async function finishMoveByApi(settings) {
     if (Date.now() < state.apiMoveUntil) {
-      const delay = state.apiMoveUntil - Date.now() + randomGap(1000, 3000);
+      const delay = state.apiMoveUntil - Date.now() + finishMoveGap(settings);
       setStatus(`移動中，${Math.ceil(delay / 1000)} 秒後完成移動`);
       state.timerId = backgroundTimer.setTimeout(() => tick(settings), delay);
       return;
@@ -4308,7 +4343,14 @@
 
     const apiHunt = isApiHunt(settings);
     // 剛移動完要先按完成移動才能做其他事；按完只隔一個道具步驟就接著做，不用等整個間隔
-    if (!apiHunt && clickFinishMoveIfReady(settings)) {
+    const finishMove = !apiHunt && clickFinishMoveIfReady(settings);
+    if (finishMove === 'waiting') {
+      const delay = state.finishMoveAt - Date.now();
+      setStatus(`移動時間到了，${Math.ceil(delay / 1000)} 秒後按完成移動`);
+      state.timerId = backgroundTimer.setTimeout(() => tick(settings), Math.max(delay, 200));
+      return;
+    }
+    if (finishMove) {
       setStatus('已按完成移動');
       state.timerId = backgroundTimer.setTimeout(() => tick(settings), settings.itemStepSeconds * 1000);
       return;

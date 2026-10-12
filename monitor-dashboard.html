@@ -163,7 +163,8 @@
 
   // 縮小時只留一行重點：狩獵看位置與最低血量，鍛造看進度
   function briefText(data) {
-    if (data.role === 'forge') return data.forge && data.forge.progress ? `鍛造 ${data.forge.progress}` : '';
+    // 同一個分頁一邊打怪一邊鍛造時，鍛造分頁也要看得到在哪裡掛機
+    if (data.role === 'forge') return [data.huntRunning && data.location, data.forge && data.forge.progress ? `鍛造 ${data.forge.progress}` : ''].filter(Boolean).join('・');
     const lowest = data.heroes.reduce((min, hero) => Math.min(min, percent(hero.hp, hero.fullHp)), 100);
     return [data.location, data.heroes.length ? `最低血 ${Math.floor(lowest)}%` : ''].filter(Boolean).join('・');
   }
@@ -344,7 +345,7 @@
         ${versionHtml(data.version)}</span>
         <span><span class="money">💰 ${Number(data.money || 0).toLocaleString()}</span>
         <button class="small" data-toggle title="縮小／展開">${collapsed.has(account.id) ? '＋' : '－'}</button></span></div>
-      <div>${badgeHtml(data)} <span class="muted">${forge ? '' : `${escapeHtml(data.location)}・`}${age} 秒前</span></div>
+      <div>${badgeHtml(data)} <span class="muted">${data.location && (!forge || data.huntRunning) ? `${escapeHtml(data.location)}・` : ''}${age} 秒前</span></div>
       ${data.alert ? `<div class="alert-text">⚠ ${escapeHtml(data.alert)}</div>` : ''}
       <div class="brief muted" data-role="brief">${escapeHtml(briefText(data))}</div>
       <div data-role="detail">
