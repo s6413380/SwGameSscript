@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         器靈
 // @namespace    local.auto-clicker
-// @version      2.61
+// @version      2.63
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -740,8 +740,10 @@
       <label class="row"><input data-field="expPauseEnabled" type="checkbox" style="flex:none;width:auto"> 經驗 ≥
         ${numberInput('expPausePercent', 'min="0" max="100" step="0.1"')}% 就暫停（等你手動練等）</label>
       <div class="row">經驗條<input data-field="expSelectors" placeholder="逐條按「加入」"><button data-pick="expSelectors" data-pick-mode="ratio-append">加入</button><button data-clear="expSelectors">清除</button></div>
-      <div class="row">異常狀態（中毒、燒傷…）提醒<select data-field="statusAlertLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">不處理</option><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select>
-        暫停<select data-field="statusPauseLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">不處理</option><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select></div>
+      <label>異常狀態（中毒、燒傷…）</label>
+      <div class="row">　🔔 只提醒、繼續打：<select data-field="statusAlertLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">不處理</option><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select></div>
+      <div class="row">　⏸ 暫停：<select data-field="statusPauseLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">不處理</option><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select></div>
+      <div class="hint">例：提醒選「輕度以上」、暫停選「重度」＝輕度、中度只響提醒，重度才停下來</div>
       <label class="row"><input data-field="verifyEnabled" type="checkbox" style="flex:none;width:auto"> 畫面出現驗證框就暫停</label>
       <div class="row">關鍵字<input data-field="verifyKeyword" placeholder="驗證框上的文字"></div>
       <label class="row"><input data-field="verifyAutoResume" type="checkbox" style="flex:none;width:auto"> 驗證框消失後自動繼續（只在因驗證框暫停時）</label>
@@ -4003,6 +4005,7 @@
       const data = await requestGameApi(move.path, { method: 'POST' });
       if (runId !== state.runId) return;
       state.apiHuntFailures = 0;
+      refreshGameView(HUNT_QUERY_KEYS);
       rememberApiPlace(data && data.huntZone !== undefined ? data : data && data.huntInfo);
       if (move.path === '/api/move/0') state.apiDirectMoveFailed = false;
       setStatus(`${move.from}：API ${move.label}`);
@@ -4038,6 +4041,7 @@
       const data = await requestGameApi('/api/move/complete', { method: 'POST' });
       if (runId !== state.runId) return;
       state.apiHuntFailures = 0;
+      refreshGameView(HUNT_QUERY_KEYS);
       state.apiMoving = false;
       rememberApiPlace(data && data.huntZone !== undefined ? data : data && data.huntInfo);
       const places = loadPlaces();
@@ -4081,6 +4085,7 @@
       const data = await requestGameApi(`/api/hunt${type ? `?type=${type}` : ''}`, { method: 'POST' });
       if (runId !== state.runId) return;
       state.apiHuntFailures = 0;
+      refreshGameView(HUNT_QUERY_KEYS);
       clearItemSkips();
       if (!type) state.clickCountA++;
       setStatus(
@@ -4106,6 +4111,7 @@
       const data = await requestGameApi('/api/heroes/restAll', { method: 'POST' });
       if (runId !== state.runId) return;
       state.apiHuntFailures = 0;
+      refreshGameView(HUNT_QUERY_KEYS);
       state.apiResting = true;
       state.apiRestUntil = restUntilOf(data && data.heroes);
       if (data && data.huntZone !== undefined) state.huntInfo = data;
@@ -4129,6 +4135,7 @@
       const data = await requestGameApi('/api/heroes/restAll/complete', { method: 'POST' });
       if (runId !== state.runId) return;
       state.apiHuntFailures = 0;
+      refreshGameView(HUNT_QUERY_KEYS);
       state.apiResting = false;
       const info = data && data.huntInfo;
       if (info) {
@@ -7971,6 +7978,8 @@
   // 遊戲前端用 TanStack Query 快取 API 資料（角色列表 16 秒自己重抓，道具、材料不會）；
   // 腳本直接打 API 時遊戲不知道資料變了，要叫它重抓，鍛造頁的材料數量、角色狀態才會跟著變
   const FORGE_QUERY_KEYS = [['heroes'], ['items'], ['equipments']];
+  // API 打怪後遊戲畫面不知道：隊伍與位置（heroes）、戰報、金錢（profile）、同地圖玩家、掉落的裝備和道具都要重抓；只會重抓畫面上正在用的
+  const HUNT_QUERY_KEYS = [['heroes'], ['reports', 'hunt'], ['profile'], ['zone', 'users'], ['equipments'], ['items']];
   let gameQueryClient = null;
 
   // React 把根節點的 fiber 掛在容器元素的 __reactContainer$… 屬性上，往下找 QueryClientProvider 的 client
