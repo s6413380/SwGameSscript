@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         器靈
 // @namespace    local.auto-clicker
-// @version      2.67
+// @version      2.72
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -57,13 +57,14 @@
     ['log', '紀錄'],
     ['api', 'API'],
     ['backup', '備份'],
+    ['transfer', '轉移'],
   ];
   // 分頁太多，先選大類再選分頁；大類裡記住上次看的分頁
   const TAB_GROUPS = [
     ['hunt', '打怪', ['main', 'health', 'resource', 'move', 'equip', 'pause']],
     ['forging', '鍛造', ['forge', 'recipe', 'material']],
     ['stats', '統計', ['income', 'combat', 'huntStats', 'growth']],
-    ['other', '其他', ['pick', 'alert', 'cloud', 'log', 'api', 'backup']],
+    ['other', '其他', ['pick', 'transfer', 'alert', 'cloud', 'log', 'api', 'backup']],
   ];
   const TAB_STORAGE_KEY = 'autoClickerV2Tab';
   const GROUP_TABS_STORAGE_KEY = 'autoClickerV2GroupTabs';
@@ -223,6 +224,8 @@
     qualityPickMaxMilliseconds: 800,
     dashboardEnabled: false,
     dashboardUrl: 'http://localhost:8787',
+    // 轉金幣時請對方掛單用的材料（掛 1 個，價格＝要轉的金額）
+    transferMine: '泥土',
     autoUpdateEnabled: true,
   };
   SUPPLY_GROUPS.forEach(({ id }) => {
@@ -887,6 +890,24 @@
       <div class="row"><span data-role="cloud-status" class="hint" style="flex:1"></span><button data-action="cloud-sync-now">立即同步</button></div>
     </div>
 
+    <div data-tab="transfer">
+      <div class="hint">用拍賣在自己的帳號之間轉移：這邊按下去後，另一個帳號會自動掛單或買下。兩個帳號的遊戲分頁都要開著、「總覽」回報要打開、中繼站要開著。防搶：買方先待命（每 0.5 秒查拍賣），確定待命了才掛單，一出現就買；掛單留言放一組暗號，買方核對賣家、價格、暗號都對才買</div>
+      <div class="row">對象帳號<select data-role="transfer-target" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select><button data-action="transfer-refresh">重新讀取</button></div>
+      <fieldset class="group">
+        <legend>轉金幣給對方</legend>
+        <div class="row">金額 <input data-role="transfer-amount" type="number" min="1" style="width:100px;flex:none"> <button data-action="transfer-money" style="font-weight:bold">轉出</button></div>
+        <div class="row">對方掛單用的材料<input data-field="transferMine" placeholder="泥土" style="width:80px;flex:none"> ×1</div>
+        <div class="hint">做法：請對方把 1 個材料掛成這個價格，這個帳號再買下。拍賣沒有手續費，金額全部到對方；別人不會花大錢買 1 個泥土，不怕被搶</div>
+      </fieldset>
+      <fieldset class="group">
+        <legend>轉角色給對方</legend>
+        <div class="row"><select data-role="transfer-hero" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
+        <div class="row">價格 <input data-role="transfer-hero-price" type="number" min="1" style="width:100px;flex:none"> <button data-action="transfer-hero" style="font-weight:bold">掛單並讓對方買</button></div>
+        <div class="hint">價格是對方要付的錢（會轉到這個帳號）。按下去會先跳確認；對方沒待命就不掛單，掛上去 20 秒內沒被買走會自動撤回</div>
+      </fieldset>
+      <div data-role="transfer-log" class="hint"></div>
+    </div>
+
     <div data-tab="backup">
       <div>把目前所有設定匯出，到其他瀏覽器或電腦再匯入。</div>
       <div class="row"><button data-action="export-file">匯出成檔案</button><button data-action="export-copy">複製到剪貼簿</button></div>
@@ -991,6 +1012,36 @@
     if (event.target.dataset.action === 'dismiss-alert') clearAlert();
   });
 
+  // 瀏覽器內建的 confirm 開著時整個分頁的程式都會停住（掛機、鍛造跟著卡），執行中要問的事改用這個
+  const confirmDialog = document.createElement('div');
+  confirmDialog.setAttribute('data-auto-clicker', '');
+  confirmDialog.innerHTML = `
+    <div data-role="confirm-message" style="white-space:pre-line;margin:0 0 14px;font-size:14px;text-align:left"></div>
+    <button data-confirm="yes" style="font-weight:bold;margin-right:8px">確定</button><button data-confirm="no">取消</button>
+  `;
+  Object.assign(confirmDialog.style, {
+    display: 'none', position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+    zIndex: 2147483647, background: '#fff', color: '#222', border: '3px solid #3b82f6', borderRadius: '10px',
+    padding: '18px 22px', minWidth: '300px', maxWidth: '420px', font: '13px sans-serif', textAlign: 'center',
+    boxShadow: '0 8px 30px rgba(0,0,0,.4)',
+  });
+  document.body.appendChild(confirmDialog);
+  let resolveConfirm = null;
+  confirmDialog.addEventListener('click', (event) => {
+    if (!event.target.dataset.confirm || !resolveConfirm) return;
+    confirmDialog.style.display = 'none';
+    resolveConfirm(event.target.dataset.confirm === 'yes');
+    resolveConfirm = null;
+  });
+
+  function askConfirm(message) {
+    // 上一個還沒回答就當作取消
+    if (resolveConfirm) resolveConfirm(false);
+    confirmDialog.querySelector('[data-role="confirm-message"]').textContent = message;
+    confirmDialog.style.display = 'block';
+    return new Promise((resolve) => (resolveConfirm = resolve));
+  }
+
   const MINIMIZED_STORAGE_KEY = 'autoClickerV2Minimized';
   const panelBody = panel.querySelector('[data-role="body"]');
   const miniStatusElement = panel.querySelector('[data-role="mini-status"]');
@@ -1047,6 +1098,7 @@
     }
     if (tabId === 'huntStats') renderHuntStats();
     if (tabId === 'income') renderIncome();
+    if (tabId === 'transfer') refreshTransferChoices(readSettingsFromPanel()).catch((error) => transferLog(`讀取帳號或角色失敗（${error.message}）`));
     panel.querySelectorAll('[data-tab]').forEach((section) => {
       section.style.display = section.dataset.tab === tabId ? '' : 'none';
     });
@@ -1911,6 +1963,9 @@
       townName: settings.townName,
       areas: configuredAreas(settings).map((area) => area.name),
       lastCommand: dashboard.lastCommand,
+      // 轉移時賣方看這個確認買方已經待命，才掛單
+      transferArmed: transferWatch.arm ? transferWatch.arm.token : '',
+      transferRefused: transferWatch.refused,
       forge: forgeReport(settings),
     };
   }
@@ -1949,6 +2004,269 @@
     return message;
   }
 
+  // 帳號之間轉移：用拍賣掛單、另一個帳號買下（拍賣沒有手續費，價格全數到賣方）。
+  // 帳號之間的指令走總覽中繼站：每個分頁每 5 秒回報一次時順便拿指令，所以兩邊的分頁都要開著、總覽回報要打開。
+  // 防搶：買方先「待命」（每 0.5 秒查一次拍賣），確定買方待命了賣方才掛單，買方看到就馬上買，空窗不到 1 秒。
+  // 掛單留言放一組暗號，買方核對賣家、價格、暗號都對才買，不會買到別人的單
+  const TRANSFER_TARGET_FRESH_MILLISECONDS = 30000;
+  const TRANSFER_ARM_MILLISECONDS = 60000;
+  const TRANSFER_POLL_MILLISECONDS = 500;
+  // 等買方回報「待命中」最多這麼久；買方每 5 秒回報一次，留一點餘裕
+  const TRANSFER_ARM_WAIT_MILLISECONDS = 15000;
+  // 掛上去這麼久還沒被買走就撤回，不要一直公開掛著
+  const TRANSFER_SOLD_WAIT_MILLISECONDS = 20000;
+  // refused：買方拒絕待命的原因（例如錢不夠），回報給賣方看，賣方就不掛單
+  const transferWatch = { arm: null, timerId: null, refused: null };
+
+  function transferLog(message) {
+    setStatus(`［轉移］${message}`);
+    panel.querySelector('[data-role="transfer-log"]').textContent = message;
+  }
+
+  function transferToken() {
+    return `#${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  // 同一個帳號可能開好幾個分頁，取最近回報的那個
+  async function relayAccounts(settings) {
+    const response = await window.fetch(`${dashboardBaseUrl(settings)}/status`, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`中繼站回應 HTTP ${response.status}`);
+    const { accounts = [] } = await response.json();
+    const byAccount = new Map();
+    accounts
+      .filter((account) => account.data && account.data.accountId)
+      .sort((first, second) => first.at - second.at)
+      .forEach((account) =>
+        byAccount.set(Number(account.data.accountId), {
+          accountId: Number(account.data.accountId),
+          nickname: account.data.nickname,
+          relayId: account.id,
+          at: account.at,
+          transferArmed: account.data.transferArmed || '',
+          transferRefused: account.data.transferRefused || null,
+        })
+      );
+    return [...byAccount.values()];
+  }
+
+  async function findRelayAccount(settings, accountId) {
+    const target = (await relayAccounts(settings)).find((account) => account.accountId === Number(accountId));
+    if (!target || Date.now() - target.at > TRANSFER_TARGET_FRESH_MILLISECONDS) {
+      throw new Error('對方帳號的分頁沒有在回報（要開著遊戲、面板「總覽」回報要打開、中繼站要開著）');
+    }
+    return target;
+  }
+
+  async function sendRelayCommand(settings, accountId, command) {
+    const target = await findRelayAccount(settings, accountId);
+    const response = await window.fetch(`${dashboardBaseUrl(settings)}/command?id=${encodeURIComponent(target.relayId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify(command),
+    });
+    if (!response.ok) throw new Error(`送指令給對方失敗（HTTP ${response.status}）`);
+    return target;
+  }
+
+  async function waitUntilArmed(settings, accountId, token) {
+    const deadline = Date.now() + TRANSFER_ARM_WAIT_MILLISECONDS;
+    while (Date.now() < deadline) {
+      const target = (await relayAccounts(settings)).find((account) => account.accountId === Number(accountId));
+      if (target && target.transferArmed === token) return;
+      if (target && target.transferRefused && target.transferRefused.token === token) throw new Error(`對方沒辦法買：${target.transferRefused.reason}`);
+      await wait(500);
+    }
+    throw new Error('對方沒有回報「待命中」，沒有掛單（對方分頁的總覽回報有打開嗎？）');
+  }
+
+  async function findOwnTrade(kind, token) {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const trades = (await requestGameApi(`/api/trades?type=${kind}&own=true`))[kind] || [];
+      const trade = trades.find((candidate) => candidate.message === token);
+      if (trade) return trade;
+      await wait(1000);
+    }
+    return null;
+  }
+
+  // 買方待命：知道暗號、賣家、價格，每 0.5 秒查一次拍賣，一出現就買
+  async function armTransfer(command) {
+    // 先確認買得起，買不起就回報原因，賣方不會掛單
+    const profile = await requestGameApi(PROFILE_API);
+    if (profile.money < Number(command.price)) {
+      const reason = `錢不夠（只有 $${profile.money.toLocaleString()}，要 $${Number(command.price).toLocaleString()}）`;
+      transferWatch.refused = { token: command.token, reason };
+      dashboard.reportedAt = 0;
+      throw new Error(`轉移：${reason}，不待命`);
+    }
+    transferWatch.refused = null;
+    backgroundTimer.clearTimeout(transferWatch.timerId);
+    transferWatch.arm = { ...command, until: Date.now() + TRANSFER_ARM_MILLISECONDS };
+    dashboard.reportedAt = 0;
+    pollArmedTransfer();
+    const message = `轉移：待命中，對方一掛單就買（最多等 ${TRANSFER_ARM_MILLISECONDS / 1000} 秒）`;
+    transferLog(message);
+    return message;
+  }
+
+  function disarmTransfer(message) {
+    backgroundTimer.clearTimeout(transferWatch.timerId);
+    transferWatch.arm = null;
+    dashboard.reportedAt = 0;
+    transferLog(message);
+  }
+
+  async function pollArmedTransfer() {
+    const arm = transferWatch.arm;
+    if (!arm) return;
+    if (Date.now() > arm.until) {
+      disarmTransfer('轉移：等不到對方掛單，已停止待命');
+      return;
+    }
+    try {
+      const trades = (await requestGameApi(`/api/trades?type=${arm.kind}`))[arm.kind] || [];
+      if (transferWatch.arm !== arm) return;
+      const trade = trades.find((candidate) => candidate.message === arm.token && Number(candidate.sellerId) === Number(arm.sellerId));
+      if (trade) {
+        if (Number(trade.price) !== Number(arm.price)) {
+          disarmTransfer(`轉移：掛單價格 $${Number(trade.price).toLocaleString()} 跟約定的 $${Number(arm.price).toLocaleString()} 不一樣，不買`);
+          return;
+        }
+        // 搶時間：不排進動作隊伍（打怪的動作間隔會拖慢），直接送
+        const result = await sendGameRequest(`/api/trades/${trade.id}/buy`, { method: 'POST' });
+        refreshGameView([['profile'], ['market'], ['heroes'], ['items']]);
+        disarmTransfer(`轉移：買下 ${trade.name}（$${Number(trade.price).toLocaleString()}），剩 $${Number(result.money).toLocaleString()}`);
+        return;
+      }
+    } catch (error) {
+      // 偶爾查詢失敗就下一輪再試；買失敗（例如被別人先買走）就停
+      if (/\/buy|HTTP 4/.test(error.message)) {
+        disarmTransfer(`轉移：買不到（${error.message}）`);
+        return;
+      }
+    }
+    transferWatch.timerId = backgroundTimer.setTimeout(pollArmedTransfer, TRANSFER_POLL_MILLISECONDS);
+  }
+
+  // 收錢的一方：照對方的要求把 1 個材料掛成約定的價格（付錢的一方已經在待命）
+  async function listForMoneyTransfer(command) {
+    const mines = (await requestGameApi(ITEMS_API)).mines || [];
+    const mine = mines.find((candidate) => (candidate.name || itemName(candidate.id)) === command.mine && (Number(candidate.available ?? candidate.quantity) || 0) >= 1);
+    if (!mine) throw new Error(`轉移：沒有可以掛單的「${command.mine}」`);
+    const price = Number(command.price);
+    await sendGameRequest(`${ITEMS_API}/${mine.id}/sell`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ price, quantity: 1, message: command.token }),
+    });
+    const message = `轉移：已把 ${command.mine}×1 掛成 $${price.toLocaleString()}，等對方買下`;
+    transferLog(message);
+    return message;
+  }
+
+  function selectedTransferTarget() {
+    const select = panel.querySelector('[data-role="transfer-target"]');
+    const option = select.selectedOptions[0];
+    if (!option || !option.value) throw new Error('先選對象帳號（按「重新讀取」列出開著的帳號）');
+    return { accountId: Number(option.value), nickname: option.dataset.nickname };
+  }
+
+  async function startMoneyTransfer(settings) {
+    const target = selectedTransferTarget();
+    const amount = Math.floor(Number(panel.querySelector('[data-role="transfer-amount"]').value) || 0);
+    if (amount < 1) throw new Error('金額要大於 0');
+    const mine = settings.transferMine || '泥土';
+    const profile = await requestGameApi(PROFILE_API);
+    if (profile.money < amount) throw new Error(`錢不夠：只有 $${profile.money.toLocaleString()}`);
+    await findRelayAccount(settings, target.accountId);
+    if (
+      !(await askConfirm(
+        `確定要轉 $${amount.toLocaleString()} 給「${target.nickname}」？\n\n做法：請「${target.nickname}」把 1 個${mine}掛成 $${amount.toLocaleString()}，這個帳號馬上買下。\n拍賣沒有手續費，金額會全部到對方。`
+      ))
+    ) {
+      transferLog('已取消');
+      return;
+    }
+    const token = transferToken();
+    // 自己先待命再叫對方掛，對方一掛上就買
+    await armTransfer({ kind: 'mines', token, price: amount, sellerId: target.accountId });
+    await sendRelayCommand(settings, target.accountId, { type: 'transferList', mine, price: amount, token });
+    transferLog(`已請「${target.nickname}」掛單，這個帳號待命中，一掛上就買（約 5～10 秒）`);
+  }
+
+  async function startHeroTransfer(settings) {
+    const target = selectedTransferTarget();
+    const heroId = Number(panel.querySelector('[data-role="transfer-hero"]').value);
+    const price = Math.floor(Number(panel.querySelector('[data-role="transfer-hero-price"]').value) || 0);
+    if (!heroId) throw new Error('先選要轉移的角色');
+    if (price < 1) throw new Error('先設定價格（對方要付的錢，會轉到這個帳號）');
+    const heroes = (await requestGameApi(HEROES_API)).heroes || [];
+    const hero = heroes.find((candidate) => candidate.id === heroId);
+    if (!hero) throw new Error('找不到這個角色，按「重新讀取」再選一次');
+    if (hero.actionState) throw new Error(`「${hero.name}」正在行動中（鍛造、移動…），先停下來再轉`);
+    const huntTeam = (await requestGameApi(HUNT_INFO_API)).heroes || [];
+    if (huntTeam.some((member) => member.id === hero.id)) throw new Error(`「${hero.name}」在狩獵隊伍裡，先換下來再轉`);
+    await findRelayAccount(settings, target.accountId);
+    if (
+      !(await askConfirm(
+        `確定把「${hero.name}」（Lv ${hero.lv} ${hero.type}）以 $${price.toLocaleString()} 掛上拍賣，由「${target.nickname}」買走？\n\n會先讓對方待命，確定對方準備好才掛單，對方一看到就買（空窗約 1 秒）；${TRANSFER_SOLD_WAIT_MILLISECONDS / 1000} 秒內沒被買走會自動撤回。`
+      ))
+    ) {
+      transferLog('已取消');
+      return;
+    }
+    const profile = await requestGameApi(PROFILE_API);
+    const token = transferToken();
+    await sendRelayCommand(settings, target.accountId, { type: 'transferArm', kind: 'heroes', token, price, sellerId: profile.id });
+    transferLog(`等「${target.nickname}」待命…`);
+    // 對方沒待命就不掛，避免掛上去沒人買、被別人撿走
+    await waitUntilArmed(settings, target.accountId, token);
+    await sendGameRequest(`${HEROES_API}/${hero.id}/sell`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ price, message: token }),
+    });
+    transferLog(`「${hero.name}」已掛單 $${price.toLocaleString()}，「${target.nickname}」待命中`);
+    refreshGameView([['heroes'], ['market']]);
+    const deadline = Date.now() + TRANSFER_SOLD_WAIT_MILLISECONDS;
+    while (Date.now() < deadline) {
+      await wait(1500);
+      if (!(await findOwnTrade('heroes', token))) {
+        transferLog(`「${hero.name}」已被「${target.nickname}」買走（$${price.toLocaleString()}）`);
+        return;
+      }
+    }
+    await requestGameApi(`${HEROES_API}/${hero.id}/cancelTrade`, { method: 'POST' }).catch(() => {});
+    refreshGameView([['heroes'], ['market']]);
+    throw new Error(`${TRANSFER_SOLD_WAIT_MILLISECONDS / 1000} 秒內對方沒買走，已撤回掛單`);
+  }
+
+  async function refreshTransferChoices(settings) {
+    const targetSelect = panel.querySelector('[data-role="transfer-target"]');
+    const heroSelect = panel.querySelector('[data-role="transfer-hero"]');
+    const [accounts, profile, heroes, huntInfo] = await Promise.all([
+      relayAccounts(settings).catch(() => []),
+      requestGameApi(PROFILE_API),
+      requestGameApi(HEROES_API).then((data) => data.heroes || []),
+      requestGameApi(HUNT_INFO_API).catch(() => ({})),
+    ]);
+    const huntTeamIds = new Set((huntInfo.heroes || []).map((hero) => hero.id));
+    const others = accounts.filter((account) => account.accountId !== Number(profile.id));
+    const chosen = targetSelect.value;
+    targetSelect.innerHTML =
+      `<option value="">${others.length ? '選對象帳號' : '沒有其他帳號在回報'}</option>` +
+      others.map((account) => `<option value="${account.accountId}" data-nickname="${escapeHtml(account.nickname)}">${escapeHtml(account.nickname)}（${account.accountId}）</option>`).join('');
+    targetSelect.value = others.some((account) => String(account.accountId) === chosen) ? chosen : '';
+    heroSelect.innerHTML =
+      '<option value="">選要轉移的角色</option>' +
+      heroes
+        .map((hero) => {
+          const busy = hero.actionState ? '（行動中，不能轉）' : huntTeamIds.has(hero.id) ? '（狩獵隊伍中，不能轉）' : '';
+          return `<option value="${hero.id}" ${busy ? 'disabled' : ''}>${escapeHtml(hero.name)}　Lv ${hero.lv} ${escapeHtml(hero.type || '')}${busy}</option>`;
+        })
+        .join('');
+  }
+
   async function runDashboardCommand(command) {
     const settings = readSettingsFromPanel();
     switch (command.type) {
@@ -1983,6 +2301,10 @@
       }
       case 'heal':
         return healOnceByApi(Number(command.heroId), command.group);
+      case 'transferList':
+        return listForMoneyTransfer(command);
+      case 'transferArm':
+        return armTransfer(command);
       case 'reload':
         try {
           if (command.autoStart && resumeModes()) sessionStorage.setItem(RESUME_AFTER_RELOAD_KEY, resumeModes());
@@ -4797,6 +5119,14 @@
       saveSettings(readSettingsFromPanel());
     } else if (action === 'forge-api-heroes') {
       showForgeApiHeroChoices().catch((error) => setStatus(`讀取角色失敗（${error.message}）`));
+    } else if (action === 'transfer-refresh') {
+      refreshTransferChoices(readSettingsFromPanel())
+        .then(() => transferLog('已重新讀取'))
+        .catch((error) => transferLog(`讀取失敗（${error.message}）`));
+    } else if (action === 'transfer-money') {
+      startMoneyTransfer(readSettingsFromPanel()).catch((error) => transferLog(`轉金幣失敗：${error.message}`));
+    } else if (action === 'transfer-hero') {
+      startHeroTransfer(readSettingsFromPanel()).catch((error) => transferLog(`轉角色失敗：${error.message}`));
     } else if (action === 'growth-viewer') {
       openGrowthViewer();
     } else if (action === 'material-viewer') {
@@ -5064,9 +5394,10 @@
       const isOtherSite = /^https?:/i.test(url) && !url.startsWith(location.origin);
       const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
       const isPlace = PLACE_API_PATTERN.test(url) && (method !== 'GET' || HUNT_INFO_PATTERN.test(url));
+      const isMoney = !growthOnly && PLACE_API_PATTERN.test(url) && (method !== 'GET' || MONEY_API_PATTERN.test(url));
       const needsResponse = growthOnly
         ? isHunt || growthHeroId || isHeroList || isForgeData || isPlace
-        : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData || itemUseMatch || isPlace;
+        : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData || itemUseMatch || isPlace || isMoney;
       if (!needsResponse || STATIC_ASSET_PATTERN.test(url) || isOtherSite) {
         return originalFetch.apply(this, args);
       }
@@ -5123,6 +5454,12 @@
             }
             if (response.ok && isPlace) learnPlace(parseJsonText(responseText));
             if (growthOnly) return;
+            if (response.ok && isMoney && readSettingsFromPanel().incomeEnabled) {
+              const data = parseJsonText(responseText);
+              if (data && typeof data.money === 'number') {
+                recordMoneyChange(data.money, url, method, isHunt && method === 'POST' ? huntMessageMoney(data.report && data.report.messages) : {});
+              }
+            }
             if (response.ok && itemUseMatch && readSettingsFromPanel().incomeEnabled) {
               const data = parseJsonText(responseText);
               // 回應帶最新的物品欄（items.items），先記名稱，吃完剛好用光的道具才查得到名字
@@ -8367,9 +8704,78 @@
     }
   }
 
+  // 收支：每次看到遊戲幣餘額（狩獵回應、/api/profile、其他動作的回應）就跟上一次看到的比，差額照來源分類。
+  // 狩獵只認戰報裡寫明的錢（收租金、盜取）；拍賣（交易所）的錢另外記、不算進收支。別人買走你上架的東西是被動入帳，
+  // 發生在兩次看到餘額之間、沒有對應的動作，所以這種不明入帳都當成拍賣售出。
+  // 上一次的餘額存在 localStorage，同帳號開好幾個分頁也只算一次
+  const LAST_MONEY_KEY = 'autoClickerV2LastMoney';
+  // 太久沒看到餘額（例如關機一晚）中間發生什麼分不出來，那段差額就不歸類
+  const MONEY_GAP_LIMIT_MILLISECONDS = 30 * 60000;
+  const HUNT_MONEY_PATTERN = /(收到了|盜取了|獲得了|撿到了?)\s*([\d,]+)\s*(元|租金|金幣)\s*$/;
+  const MARKET_API_PATTERN = /\/api\/(?:trades|market|releasedHeroMarket)/;
+  const MONEY_API_PATTERN = /\/api\/profile(?:[?#]|$)/;
+
+  function huntMessageMoney(messages) {
+    const parts = {};
+    (messages || []).forEach((message) => {
+      const match = HUNT_MONEY_PATTERN.exec(String(message.m || '').trim());
+      if (!match) return;
+      const label = match[3] === '租金' ? '租金' : match[1] === '盜取了' ? '盜取' : '撿到錢';
+      parts[label] = (parts[label] || 0) + messageNumber(match[2]);
+    });
+    return parts;
+  }
+
+  function moneySourceLabel(path) {
+    if (/\/attack/.test(path)) return '打劫';
+    if (/recycle/i.test(path)) return '回收';
+    if (/\/api\/forge|complete(?:Forge|Action)/.test(path)) return '鍛造';
+    if (/\/api\/(?:items|mines)/.test(path)) return '道具';
+    if (/\/api\/equipments/.test(path)) return '裝備';
+    if (/\/api\/casino/i.test(path)) return '賭場';
+    return path.replace(/^\/api\//, '').split('/')[0] || '其他';
+  }
+
+  function recordMoneyChange(money, url, method, known = {}) {
+    const last = readJsonStorage(LAST_MONEY_KEY, null);
+    writeJsonStorage(LAST_MONEY_KEY, { money, at: Date.now() });
+    if (!last || typeof last.money !== 'number' || Date.now() - last.at > MONEY_GAP_LIMIT_MILLISECONDS) return;
+    const delta = money - last.money;
+    const path = new URL(url, location.href).pathname;
+    const changes = [];
+    let rest = delta;
+    if (method !== 'GET' && MARKET_API_PATTERN.test(path)) {
+      changes.push(['market', '拍賣', delta]);
+      rest = 0;
+    } else {
+      Object.entries(known).forEach(([label, amount]) => {
+        changes.push(['in', label, amount]);
+        rest -= amount;
+      });
+      // 狩獵以外的動作（回收、鍛造、買東西…）差額就是這個動作造成的
+      if (method !== 'GET' && !HUNT_API_PATTERN.test(path) && rest) {
+        changes.push([rest > 0 ? 'in' : 'out', moneySourceLabel(path), rest]);
+        rest = 0;
+      }
+    }
+    if (rest > 0) changes.push(['market', '不明入帳（多半是拍賣售出）', rest]);
+    else if (rest < 0) changes.push(['out', '不明支出（被搶等）', rest]);
+    if (!changes.some(([, , amount]) => amount)) return;
+    const income = loadIncome();
+    const start = Math.floor(Date.now() / INCOME_BUCKET_MILLISECONDS) * INCOME_BUCKET_MILLISECONDS;
+    const bucket = income.buckets[start] || (income.buckets[start] = { battles: 0, exp: 0, items: {} });
+    changes.forEach(([kind, label, amount]) => {
+      if (!amount) return;
+      const field = kind === 'market' ? 'moneyMarket' : kind === 'in' ? 'moneyIn' : 'moneyOut';
+      bucket[field] = bucket[field] || {};
+      bucket[field][label] = (bucket[field][label] || 0) + (kind === 'out' ? -amount : amount);
+    });
+    saveIncome(income);
+  }
+
   function incomeSummary(from, to = Date.now()) {
     const income = loadIncome();
-    const summary = { battles: 0, exp: 0, itemCount: 0, items: {}, usedCount: 0, used: {}, money: null };
+    const summary = { battles: 0, exp: 0, itemCount: 0, items: {}, usedCount: 0, used: {}, money: null, moneyIn: {}, moneyOut: {}, moneyMarket: {}, earned: 0, spent: 0, market: 0 };
     Object.entries(income.buckets).forEach(([start, bucket]) => {
       // 格子跟期間有重疊就算進來（10 分鐘一格，誤差最多 10 分鐘）
       if (Number(start) + INCOME_BUCKET_MILLISECONDS <= from || Number(start) > to) return;
@@ -8383,7 +8789,14 @@
         summary.used[name] = (summary.used[name] || 0) + quantity;
         summary.usedCount += quantity;
       });
+      [['moneyIn', 'earned'], ['moneyOut', 'spent'], ['moneyMarket', 'market']].forEach(([field, totalField]) => {
+        Object.entries(bucket[field] || {}).forEach(([label, amount]) => {
+          summary[field][label] = (summary[field][label] || 0) + amount;
+          summary[totalField] += amount;
+        });
+      });
     });
+    summary.net = summary.earned - summary.spent;
     // 遊戲幣：期間開始前最後一筆（沒有就用期間內第一筆）到最新一筆的差
     const samples = income.money.filter(([time]) => time <= to);
     const before = [...samples].reverse().find(([time]) => time <= from) || samples.find(([time]) => time >= from);
@@ -8408,6 +8821,12 @@
       exp: summary.exp,
       items: summary.itemCount,
       money: summary.money,
+      earned: summary.earned,
+      spent: summary.spent,
+      net: summary.net,
+      market: summary.market,
+      topIn: Object.entries(summary.moneyIn).sort(([, first], [, second]) => second - first).slice(0, 5),
+      topOut: Object.entries(summary.moneyOut).sort(([, first], [, second]) => second - first).slice(0, 5),
       hours: (Date.now() - from) / 3600000,
       topItems: Object.entries(summary.items)
         .sort(([, first], [, second]) => second - first)
@@ -8437,7 +8856,8 @@
       const hours = Math.max(1 / 6, (Date.now() - from()) / 3600000);
       return `<tr style="${index === periodIndex ? 'background:#26262b' : ''}"><td>${label}</td><td>${summary.battles.toLocaleString()}</td><td>${summary.exp.toLocaleString()}</td>
         <td>${Math.round(summary.exp / hours).toLocaleString()}</td><td>${summary.itemCount.toLocaleString()}</td><td>${summary.usedCount.toLocaleString()}</td>
-        <td style="color:${summary.money === null ? '#a0a0aa' : summary.money >= 0 ? '#4ade80' : '#f87171'}">${formatSigned(summary.money)}</td></tr>`;
+        <td style="color:#4ade80">${formatSigned(summary.earned)}</td><td style="color:#f87171">${summary.spent ? `-${Math.round(summary.spent).toLocaleString()}` : '0'}</td>
+        <td style="color:${summary.net >= 0 ? '#4ade80' : '#f87171'};font-weight:bold">${formatSigned(summary.net)}</td></tr>`;
     }).join('');
     // 近 24 小時每小時的經驗長條
     const hourly = Array.from({ length: 24 }, (_, index) => {
@@ -8460,9 +8880,18 @@
       .sort(([, first], [, second]) => second - first)
       .map(([name, quantity]) => `<tr><td>${escapeHtml(name)}</td><td>${quantity.toLocaleString()}</td></tr>`)
       .join('');
+    const moneyRow = (label, amount, color, note = '') =>
+      `<tr><td>${escapeHtml(label)}${note}</td><td style="color:${color}">${formatSigned(amount)}</td></tr>`;
+    const moneyRows = [
+      ...Object.entries(selected.moneyIn).sort(([, first], [, second]) => second - first).map(([label, amount]) => moneyRow(label, amount, '#4ade80')),
+      ...Object.entries(selected.moneyOut).sort(([, first], [, second]) => second - first).map(([label, amount]) => moneyRow(label, -amount, '#f87171')),
+      ...Object.entries(selected.moneyMarket).map(([label, amount]) => moneyRow(label, amount, '#a0a0aa', '（不計）')),
+    ].join('');
     panel.querySelector('[data-role="income"]').innerHTML = `
-      <table class="combat"><tr><th>期間</th><th>場</th><th>經驗</th><th>經驗/時</th><th>撿到</th><th>吃掉</th><th>💰</th></tr>${rows}</table>
-      <div class="hint">經驗＝整隊加總；💰＝遊戲幣餘額的淨變化（包含買東西花掉的），每 5 分鐘記一次</div>
+      <table class="combat"><tr><th>期間</th><th>場</th><th>經驗</th><th>經驗/時</th><th>撿到</th><th>吃掉</th><th>收入</th><th>支出</th><th>純收益</th></tr>${rows}</table>
+      <div class="hint">經驗＝整隊加總。收入／支出照來源分：狩獵只算戰報寫明的錢（租金、盜取），回收、鍛造、買東西照動作算；拍賣的錢不算（含不明入帳，多半是拍賣售出）。純收益＝收入－支出</div>
+      <div class="subhead">錢的來源（${INCOME_PERIODS[periodIndex][0]}）</div>
+      ${moneyRows ? `<table class="combat"><tr><th>來源</th><th>金額</th></tr>${moneyRows}</table>` : '<div class="hint">這段期間沒有錢的進出（改版後才開始記）</div>'}
       <div class="subhead">近 24 小時經驗（每小時）</div>
       <div style="display:flex;gap:1px;height:50px;align-items:flex-end">${bars}</div>
       <div class="subhead">撿到的道具（${INCOME_PERIODS[periodIndex][0]}）</div>

@@ -235,7 +235,7 @@
   function incomeHtml(data) {
     if (!data.income) return '';
     const part = (label, income) =>
-      `<b>${label}</b> ${income.battles} 場・經驗 ${income.exp.toLocaleString()}・撿到 ${income.items.toLocaleString()}${income.used === undefined ? '' : `・吃掉 ${income.used.toLocaleString()}`}・💰 ${signed(income.money)}`;
+      `<b>${label}</b> ${income.battles} 場・經驗 ${income.exp.toLocaleString()}・撿到 ${income.items.toLocaleString()}${income.used === undefined ? '' : `・吃掉 ${income.used.toLocaleString()}`}・${income.net === undefined ? `💰 ${signed(income.money)}` : `純收益 ${signed(income.net)}`}`;
     return `<div class="income">${part('近1小時', data.income.hour)}<br>${part('今天', data.income.today)}</div>`;
   }
 
@@ -285,33 +285,44 @@
     const missing = [...byAccount.values()].filter(({ income }) => !income);
     const missingReason = ({ version, enabled }) =>
       !enabled ? '沒開「記錄收益」' : `腳本 v${version || '?'} 太舊，沒有這段期間的資料（更新到 v2.52 以上）`;
-    const total = { battles: 0, exp: 0, items: 0, used: 0, money: 0, hasMoney: false, hours: 0, itemMap: new Map(), usedMap: new Map() };
+    const total = { battles: 0, exp: 0, items: 0, used: 0, earned: 0, spent: 0, net: 0, market: 0, hasLedger: false, hours: 0, itemMap: new Map(), usedMap: new Map(), inMap: new Map(), outMap: new Map() };
     rows.forEach(({ income }) => {
       total.battles += income.battles;
       total.exp += income.exp;
       total.items += income.items;
       total.used += income.used || 0;
       (income.topUsed || []).forEach(([name, quantity]) => total.usedMap.set(name, (total.usedMap.get(name) || 0) + quantity));
-      if (income.money !== null && income.money !== undefined) {
-        total.money += income.money;
-        total.hasMoney = true;
+      // 舊版腳本沒有收支分類（只有餘額變化），不算進合計
+      if (income.net !== undefined) {
+        ['earned', 'spent', 'net', 'market'].forEach((field) => (total[field] += income[field] || 0));
+        total.hasLedger = true;
+        (income.topIn || []).forEach(([label, amount]) => total.inMap.set(label, (total.inMap.get(label) || 0) + amount));
+        (income.topOut || []).forEach(([label, amount]) => total.outMap.set(label, (total.outMap.get(label) || 0) + amount));
       }
       total.hours = Math.max(total.hours, income.hours || 0);
       (income.topItems || []).forEach(([name, quantity]) => total.itemMap.set(name, (total.itemMap.get(name) || 0) + quantity));
     });
     const perHour = (exp, hours) => (hours ? Math.round(exp / Math.max(hours, 1 / 6)).toLocaleString() : '-');
-    const moneyCell = (value) => `<td style="color:${value === null || value === undefined ? '#a0a0aa' : value >= 0 ? '#4ade80' : '#f87171'}">${signed(value)}</td>`;
+    const moneyCell = (value, style = '') => `<td style="color:${value === null || value === undefined ? '#a0a0aa' : value >= 0 ? '#4ade80' : '#f87171'};${style}">${signed(value)}</td>`;
+    const sourcesText = (entries) => entries.map(([label, amount]) => `${escapeHtml(label)} ${Math.round(amount).toLocaleString()}`).join('、') || '-';
+    // 舊版腳本只有餘額變化，收支欄位顯示 -
+    const ledgerCells = (income) =>
+      income.net === undefined
+        ? '<td>-</td><td>-</td><td>-</td><td>-</td>'
+        : `${moneyCell(income.earned)}${moneyCell(income.spent ? -income.spent : 0)}${moneyCell(income.net, 'font-weight:bold')}<td style="color:#a0a0aa">${signed(income.market)}</td>`;
     const row = (name, income, items, usedItems, className = '') => `<tr class="${className}"><td>${name}</td><td>${income.battles.toLocaleString()}</td><td>${income.exp.toLocaleString()}</td>
-      <td>${perHour(income.exp, income.hours)}</td><td>${income.items.toLocaleString()}</td><td>${income.used === undefined ? '-' : income.used.toLocaleString()}</td>${moneyCell(income.money)}<td class="items">${items}</td><td class="items">${usedItems}</td></tr>`;
+      <td>${perHour(income.exp, income.hours)}</td><td>${income.items.toLocaleString()}</td><td>${income.used === undefined ? '-' : income.used.toLocaleString()}</td>${ledgerCells(income)}<td class="items">${income.net === undefined ? '-' : `收 ${sourcesText(income.topIn || [])}<br>支 ${sourcesText(income.topOut || [])}`}</td><td class="items">${items}</td><td class="items">${usedItems}</td></tr>`;
     document.getElementById('income-table').innerHTML =
-      '<tr><th>帳號</th><th>場</th><th>經驗</th><th>經驗/時</th><th>撿到</th><th>吃掉</th><th>💰</th><th>主要道具</th><th>吃掉的補品</th></tr>' +
+      '<tr><th>帳號</th><th>場</th><th>經驗</th><th>經驗/時</th><th>撿到</th><th>吃掉</th><th>收入</th><th>支出</th><th>純收益</th><th title="拍賣與不明入帳，不算進純收益">拍賣（不計）</th><th>錢的來源</th><th>主要道具</th><th>吃掉的補品</th></tr>' +
       rows.map(({ name, income }) => row(escapeHtml(name), income, itemsText(income.topItems || []), itemsText(income.topUsed || []))).join('') +
       missing
-        .map((account) => `<tr><td>${escapeHtml(account.name)}</td><td colspan="6" style="text-align:center;color:#f59e0b">-</td><td class="items" colspan="2" style="color:#f59e0b">${escapeHtml(missingReason(account))}</td></tr>`)
+        .map((account) => `<tr><td>${escapeHtml(account.name)}</td><td colspan="9" style="text-align:center;color:#f59e0b">-</td><td class="items" colspan="3" style="color:#f59e0b">${escapeHtml(missingReason(account))}</td></tr>`)
         .join('') +
       row(
         `合計（${rows.length} 個帳號${missing.length ? `，另有 ${missing.length} 個沒資料` : ''}）`,
-        { ...total, money: total.hasMoney ? total.money : null },
+        total.hasLedger
+          ? { ...total, topIn: [...total.inMap.entries()].sort(([, first], [, second]) => second - first), topOut: [...total.outMap.entries()].sort(([, first], [, second]) => second - first) }
+          : { ...total, net: undefined },
         itemsText([...total.itemMap.entries()].sort(([, first], [, second]) => second - first).slice(0, 8)),
         itemsText([...total.usedMap.entries()].sort(([, first], [, second]) => second - first).slice(0, 6)),
         'total'
