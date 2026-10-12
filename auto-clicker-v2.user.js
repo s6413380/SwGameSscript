@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         器靈
 // @namespace    local.auto-clicker
-// @version      2.72
+// @version      2.74
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -226,6 +226,8 @@
     dashboardUrl: 'http://localhost:8787',
     // 轉金幣時請對方掛單用的材料（掛 1 個，價格＝要轉的金額）
     transferMine: '泥土',
+    // 對方不在中繼站上時，透過雲端試算表接收「請掛單」的要求（每 30 秒看一次）
+    transferCloudEnabled: false,
     autoUpdateEnabled: true,
   };
   SUPPLY_GROUPS.forEach(({ id }) => {
@@ -893,17 +895,21 @@
     <div data-tab="transfer">
       <div class="hint">用拍賣在自己的帳號之間轉移：這邊按下去後，另一個帳號會自動掛單或買下。兩個帳號的遊戲分頁都要開著、「總覽」回報要打開、中繼站要開著。防搶：買方先待命（每 0.5 秒查拍賣），確定待命了才掛單，一出現就買；掛單留言放一組暗號，買方核對賣家、價格、暗號都對才買</div>
       <div class="row">對象帳號<select data-role="transfer-target" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select><button data-action="transfer-refresh">重新讀取</button></div>
+      <div class="row">或輸入對方帳號 ID<input data-role="transfer-target-id" type="number" min="1" placeholder="對方面板上看得到" style="width:110px;flex:none"></div>
+      <div class="hint" data-role="transfer-me"></div>
       <fieldset class="group">
         <legend>轉金幣給對方</legend>
         <div class="row">金額 <input data-role="transfer-amount" type="number" min="1" style="width:100px;flex:none"> <button data-action="transfer-money" style="font-weight:bold">轉出</button></div>
         <div class="row">對方掛單用的材料<input data-field="transferMine" placeholder="泥土" style="width:80px;flex:none"> ×1</div>
         <div class="hint">做法：請對方把 1 個材料掛成這個價格，這個帳號再買下。拍賣沒有手續費，金額全部到對方；別人不會花大錢買 1 個泥土，不怕被搶</div>
+        <label class="row"><input data-field="transferCloudEnabled" type="checkbox" style="flex:none;width:auto"> 接受雲端轉帳（每 30 秒看一次雲端有沒有要這個帳號掛單）</label>
+        <div class="hint">對方在中繼站上就直接傳（幾秒）；不在（例如在別台電腦）就透過雲端試算表慢慢傳：收錢那邊要勾上面這格，約 30～60 秒掛單，這邊最多等 3 分鐘、掛上就買</div>
       </fieldset>
       <fieldset class="group">
         <legend>轉角色給對方</legend>
         <div class="row"><select data-role="transfer-hero" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
         <div class="row">價格 <input data-role="transfer-hero-price" type="number" min="1" style="width:100px;flex:none"> <button data-action="transfer-hero" style="font-weight:bold">掛單並讓對方買</button></div>
-        <div class="hint">價格是對方要付的錢（會轉到這個帳號）。按下去會先跳確認；對方沒待命就不掛單，掛上去 20 秒內沒被買走會自動撤回</div>
+        <div class="hint">價格是對方要付的錢（會轉到這個帳號）。按下去會先跳確認；對方沒待命就不掛單，掛上去 20 秒內沒被買走會自動撤回。對方不在中繼站上就走雲端：對方要勾「接受雲端轉帳」，兩邊的掛機、鍛造先停下來等（最多約 2.5 分鐘），完成後自動恢復</div>
       </fieldset>
       <div data-role="transfer-log" class="hint"></div>
     </div>
@@ -2101,19 +2107,22 @@
     }
     transferWatch.refused = null;
     backgroundTimer.clearTimeout(transferWatch.timerId);
-    transferWatch.arm = { ...command, until: Date.now() + TRANSFER_ARM_MILLISECONDS };
+    transferWatch.arm = { ...command, until: Date.now() + (command.waitMilliseconds || TRANSFER_ARM_MILLISECONDS) };
     dashboard.reportedAt = 0;
     pollArmedTransfer();
-    const message = `轉移：待命中，對方一掛單就買（最多等 ${TRANSFER_ARM_MILLISECONDS / 1000} 秒）`;
+    const message = `轉移：待命中，對方一掛單就買（最多等 ${(command.waitMilliseconds || TRANSFER_ARM_MILLISECONDS) / 1000} 秒）`;
     transferLog(message);
     return message;
   }
 
   function disarmTransfer(message) {
+    const arm = transferWatch.arm;
     backgroundTimer.clearTimeout(transferWatch.timerId);
     transferWatch.arm = null;
     dashboard.reportedAt = 0;
     transferLog(message);
+    // 雲端轉角色待命時停掉的掛機、鍛造，結束就恢復
+    if (arm && arm.onEnd) arm.onEnd();
   }
 
   async function pollArmedTransfer() {
@@ -2145,7 +2154,7 @@
         return;
       }
     }
-    transferWatch.timerId = backgroundTimer.setTimeout(pollArmedTransfer, TRANSFER_POLL_MILLISECONDS);
+    transferWatch.timerId = backgroundTimer.setTimeout(pollArmedTransfer, arm.pollMilliseconds || TRANSFER_POLL_MILLISECONDS);
   }
 
   // 收錢的一方：照對方的要求把 1 個材料掛成約定的價格（付錢的一方已經在待命）
@@ -2164,11 +2173,117 @@
     return message;
   }
 
+  const TRANSFER_TARGETS_KEY = 'autoClickerV2TransferTargets';
+
   function selectedTransferTarget() {
+    const typedId = Number(panel.querySelector('[data-role="transfer-target-id"]').value) || 0;
+    if (typedId) {
+      const known = readJsonStorage(TRANSFER_TARGETS_KEY, {});
+      return { accountId: typedId, nickname: known[typedId] || `帳號 ${typedId}` };
+    }
     const select = panel.querySelector('[data-role="transfer-target"]');
     const option = select.selectedOptions[0];
-    if (!option || !option.value) throw new Error('先選對象帳號（按「重新讀取」列出開著的帳號）');
+    if (!option || !option.value) throw new Error('先選對象帳號，或輸入對方的帳號 ID');
     return { accountId: Number(option.value), nickname: option.dataset.nickname };
+  }
+
+  function rememberTransferTarget(target) {
+    const known = readJsonStorage(TRANSFER_TARGETS_KEY, {});
+    if (target.nickname && !target.nickname.startsWith('帳號 ')) known[target.accountId] = target.nickname;
+    else if (!known[target.accountId]) known[target.accountId] = '';
+    writeJsonStorage(TRANSFER_TARGETS_KEY, known);
+  }
+
+  // 雲端轉帳：對方不在中繼站上（例如在別台電腦）時，改用雲端試算表的 transfers 分頁慢慢傳話。
+  // 付錢的一方寫一筆「請掛單」，收錢的一方每 30 秒看一次，看到給自己的就掛單，付錢的一方一直在等，掛上就買。
+  // 轉錢不怕被搶（沒人會花大錢買 1 個泥土），慢一點沒關係；只寫新事件不改舊列，試算表那端不用處理更新
+  const TRANSFER_CLOUD_POLL_MILLISECONDS = 30000;
+  const TRANSFER_CLOUD_EXPIRE_MILLISECONDS = 180000;
+  const TRANSFER_CLOUD_BUY_POLL_MILLISECONDS = 2000;
+  // 雲端轉角色：賣方最多等買方回「已待命」這麼久；買方只接這段時間內的要求，避免賣方已經放棄了還在等
+  const TRANSFER_CLOUD_HERO_WAIT_MILLISECONDS = 150000;
+  const TRANSFER_CLOUD_HERO_ACCEPT_MILLISECONDS = 120000;
+  const TRANSFER_CLOUD_ANSWER_POLL_MILLISECONDS = 5000;
+  const TRANSFER_REQUEST_EVENTS = ['request', 'heroRequest'];
+  // 同一個帳號開好幾個分頁時，處理過的要求記在共用的地方，不會重複掛單
+  const TRANSFER_HANDLED_KEY = 'autoClickerV2TransferHandled';
+  // 第一次只抓最後幾筆，不用從頭讀整張表
+  const transferCloud = { checkedAt: 0, row: -50, busy: false, accountId: 0 };
+
+  function cloudUrlOf(settings) {
+    const url = settings.cloudUrl || DEFAULT_CLOUD_URL;
+    if (!/^https:\/\/script\.google\.com\//.test(url)) throw new Error('還沒設定雲端試算表網址（其他 → 雲端）');
+    return url;
+  }
+
+  async function postTransferEvent(settings, transfer, eventName) {
+    const result = await cloudRequest(cloudUrlOf(settings), {
+      method: 'POST',
+      body: JSON.stringify({
+        contributor: settings.cloudName || '未署名',
+        transfers: [[`${transfer.id}:${eventName}`, transfer.id, transfer.from, transfer.to, transfer.amount, transfer.mine, transfer.token, eventName, Date.now()]],
+      }),
+    });
+    if (!result.added || result.added.transfers === undefined) throw new Error('雲端試算表是舊版，沒有轉帳分頁（要更新 Apps Script 並重新部署）');
+  }
+
+  async function checkCloudTransfers(settings) {
+    if (tabShutDown || !settings.transferCloudEnabled || transferCloud.busy) return;
+    if (Date.now() - transferCloud.checkedAt < TRANSFER_CLOUD_POLL_MILLISECONDS) return;
+    transferCloud.checkedAt = Date.now();
+    transferCloud.busy = true;
+    try {
+      const url = cloudUrlOf(settings);
+      if (!transferCloud.accountId) transferCloud.accountId = Number((await requestGameApi(PROFILE_API)).id);
+      const page = await cloudRequest(`${url}?only=transfers&after_transfers=${transferCloud.row}`);
+      if (!page.transfers) return;
+      transferCloud.row = page.transfers.next;
+      const events = page.transfers.rows.map(([, id, from, to, amount, mine, token, eventName, at]) => ({
+        id: String(id), from: Number(from), to: Number(to), amount: Number(amount), mine: String(mine), token: String(token), event: String(eventName), at: Number(at),
+      }));
+      const closed = new Set(events.filter((item) => !TRANSFER_REQUEST_EVENTS.includes(item.event)).map((item) => item.id));
+      const handled = new Set(readJsonStorage(TRANSFER_HANDLED_KEY, []));
+      const requests = events.filter(
+        (item) =>
+          TRANSFER_REQUEST_EVENTS.includes(item.event) &&
+          item.to === transferCloud.accountId &&
+          !closed.has(item.id) &&
+          !handled.has(item.id) &&
+          Date.now() - item.at < (item.event === 'heroRequest' ? TRANSFER_CLOUD_HERO_ACCEPT_MILLISECONDS : TRANSFER_CLOUD_EXPIRE_MILLISECONDS)
+      );
+      for (const request of requests) {
+        handled.add(request.id);
+        writeJsonStorage(TRANSFER_HANDLED_KEY, [...handled].slice(-200));
+        if (request.event === 'heroRequest') {
+          await armForCloudHero(settings, request);
+          continue;
+        }
+        try {
+          await listForMoneyTransfer({ mine: request.mine, price: request.amount, token: request.token });
+          await postTransferEvent(settings, request, 'listed').catch(() => {});
+          // 對方等太久放棄的話，單會一直掛著；時間到還在就撤回
+          backgroundTimer.setTimeout(() => cancelLeftoverTransfer(request.token), TRANSFER_CLOUD_EXPIRE_MILLISECONDS);
+        } catch (error) {
+          transferLog(`雲端轉帳掛單失敗：${error.message}`);
+          await postTransferEvent(settings, request, 'failed').catch(() => {});
+        }
+      }
+    } catch {
+      // 雲端偶爾連不上，下次再看
+    } finally {
+      transferCloud.busy = false;
+    }
+  }
+
+  async function cancelLeftoverTransfer(token) {
+    try {
+      const trade = await findOwnTrade('mines', token);
+      if (!trade) return;
+      await requestGameApi(`/api/trades/${trade.id}/cancel?own=true`, { method: 'POST' });
+      transferLog('雲端轉帳：對方沒來買，已撤回掛單');
+    } catch (error) {
+      transferLog(`雲端轉帳：撤回掛單失敗（${error.message}），請到市場自己撤回`);
+    }
   }
 
   async function startMoneyTransfer(settings) {
@@ -2178,20 +2293,88 @@
     const mine = settings.transferMine || '泥土';
     const profile = await requestGameApi(PROFILE_API);
     if (profile.money < amount) throw new Error(`錢不夠：只有 $${profile.money.toLocaleString()}`);
-    await findRelayAccount(settings, target.accountId);
+    if (target.accountId === Number(profile.id)) throw new Error('不能轉給自己');
+    // 對方在中繼站上就直接傳；不在就走雲端
+    const viaRelay = await findRelayAccount(settings, target.accountId).then(() => true, () => false);
+    if (!viaRelay) cloudUrlOf(settings);
     if (
       !(await askConfirm(
-        `確定要轉 $${amount.toLocaleString()} 給「${target.nickname}」？\n\n做法：請「${target.nickname}」把 1 個${mine}掛成 $${amount.toLocaleString()}，這個帳號馬上買下。\n拍賣沒有手續費，金額會全部到對方。`
+        `確定要轉 $${amount.toLocaleString()} 給「${target.nickname}」？\n\n做法：請「${target.nickname}」把 1 個${mine}掛成 $${amount.toLocaleString()}，這個帳號買下。\n拍賣沒有手續費，金額會全部到對方。\n${viaRelay ? '對方在中繼站上，幾秒內完成。' : '對方不在中繼站上，透過雲端傳話：對方要勾「接受雲端轉帳」，約 30～60 秒，最多等 3 分鐘。'}`
       ))
     ) {
       transferLog('已取消');
       return;
     }
+    rememberTransferTarget(target);
     const token = transferToken();
-    // 自己先待命再叫對方掛，對方一掛上就買
-    await armTransfer({ kind: 'mines', token, price: amount, sellerId: target.accountId });
-    await sendRelayCommand(settings, target.accountId, { type: 'transferList', mine, price: amount, token });
-    transferLog(`已請「${target.nickname}」掛單，這個帳號待命中，一掛上就買（約 5～10 秒）`);
+    if (viaRelay) {
+      // 自己先待命再叫對方掛，對方一掛上就買
+      await armTransfer({ kind: 'mines', token, price: amount, sellerId: target.accountId });
+      await sendRelayCommand(settings, target.accountId, { type: 'transferList', mine, price: amount, token });
+      transferLog(`已請「${target.nickname}」掛單，這個帳號待命中，一掛上就買（約 5～10 秒）`);
+      return;
+    }
+    const transfer = { id: `${profile.id}-${Date.now()}`, from: Number(profile.id), to: target.accountId, amount, mine, token };
+    await armTransfer({ kind: 'mines', token, price: amount, sellerId: target.accountId, waitMilliseconds: TRANSFER_CLOUD_EXPIRE_MILLISECONDS, pollMilliseconds: TRANSFER_CLOUD_BUY_POLL_MILLISECONDS });
+    try {
+      await postTransferEvent(settings, transfer, 'request');
+    } catch (error) {
+      disarmTransfer(`雲端轉帳失敗：${error.message}`);
+      return;
+    }
+    transferLog(`已透過雲端請「${target.nickname}」掛單；對方約 30～60 秒內掛上，這個帳號會自動買下（最多等 3 分鐘）`);
+  }
+
+  // 雲端轉角色要等比較久：兩邊先把掛機、鍛造停下來專心等，結束後照原本的狀態再開
+  function pauseScriptsForTransfer() {
+    const huntWasRunning = state.running && !state.forgeMode;
+    const forgeWasRunning = (state.running && state.forgeMode) || forgeRunner.running;
+    if (state.running) stop('轉移角色中，掛機先停下');
+    if (forgeRunner.running) stopForgeRunner('轉移角色中，鍛造先停下');
+    let resumed = false;
+    return () => {
+      if (resumed) return;
+      resumed = true;
+      if (huntWasRunning) start(false);
+      if (forgeWasRunning) start(true);
+    };
+  }
+
+  // 輪詢雲端，等這筆轉移出現指定的事件（例如對方回「已待命」）
+  async function waitCloudEvent(settings, transferId, eventNames, timeoutMilliseconds) {
+    const deadline = Date.now() + timeoutMilliseconds;
+    while (Date.now() < deadline) {
+      await wait(TRANSFER_CLOUD_ANSWER_POLL_MILLISECONDS);
+      try {
+        const page = await cloudRequest(`${cloudUrlOf(settings)}?only=transfers&after_transfers=-100`);
+        const row = ((page.transfers && page.transfers.rows) || []).find(([, id, , , , , , eventName]) => String(id) === transferId && eventNames.includes(String(eventName)));
+        if (row) return { event: String(row[7]), note: String(row[5]) };
+      } catch {
+        // 雲端偶爾連不上，繼續等
+      }
+    }
+    return null;
+  }
+
+  async function listHeroAndWaitSold(hero, price, token, nickname) {
+    await sendGameRequest(`${HEROES_API}/${hero.id}/sell`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ price, message: token }),
+    });
+    transferLog(`「${hero.name}」已掛單 $${price.toLocaleString()}，「${nickname}」待命中`);
+    refreshGameView([['heroes'], ['market']]);
+    const deadline = Date.now() + TRANSFER_SOLD_WAIT_MILLISECONDS;
+    while (Date.now() < deadline) {
+      await wait(1500);
+      if (!(await findOwnTrade('heroes', token))) {
+        transferLog(`「${hero.name}」已被「${nickname}」買走（$${price.toLocaleString()}）`);
+        return true;
+      }
+    }
+    await requestGameApi(`${HEROES_API}/${hero.id}/cancelTrade`, { method: 'POST' }).catch(() => {});
+    refreshGameView([['heroes'], ['market']]);
+    return false;
   }
 
   async function startHeroTransfer(settings) {
@@ -2206,39 +2389,61 @@
     if (hero.actionState) throw new Error(`「${hero.name}」正在行動中（鍛造、移動…），先停下來再轉`);
     const huntTeam = (await requestGameApi(HUNT_INFO_API)).heroes || [];
     if (huntTeam.some((member) => member.id === hero.id)) throw new Error(`「${hero.name}」在狩獵隊伍裡，先換下來再轉`);
-    await findRelayAccount(settings, target.accountId);
+    const profile = await requestGameApi(PROFILE_API);
+    if (target.accountId === Number(profile.id)) throw new Error('不能轉給自己');
+    // 對方在中繼站上就直接傳（幾秒）；不在就走雲端（兩邊腳本先停，慢慢等）
+    const viaRelay = await findRelayAccount(settings, target.accountId).then(() => true, () => false);
+    if (!viaRelay) cloudUrlOf(settings);
     if (
       !(await askConfirm(
-        `確定把「${hero.name}」（Lv ${hero.lv} ${hero.type}）以 $${price.toLocaleString()} 掛上拍賣，由「${target.nickname}」買走？\n\n會先讓對方待命，確定對方準備好才掛單，對方一看到就買（空窗約 1 秒）；${TRANSFER_SOLD_WAIT_MILLISECONDS / 1000} 秒內沒被買走會自動撤回。`
+        `確定把「${hero.name}」（Lv ${hero.lv} ${hero.type}）以 $${price.toLocaleString()} 掛上拍賣，由「${target.nickname}」買走？\n\n會先讓對方待命，確定對方準備好才掛單，對方一看到就買（空窗約 1 秒）；${TRANSFER_SOLD_WAIT_MILLISECONDS / 1000} 秒內沒被買走會自動撤回。\n${
+          viaRelay
+            ? '對方在中繼站上，幾秒內完成。'
+            : `對方不在中繼站上，透過雲端傳話：對方要勾「接受雲端轉帳」。兩邊的掛機、鍛造會先停下來等（最多約 ${TRANSFER_CLOUD_HERO_WAIT_MILLISECONDS / 60000} 分鐘），完成後自動恢復。`
+        }`
       ))
     ) {
       transferLog('已取消');
       return;
     }
-    const profile = await requestGameApi(PROFILE_API);
+    rememberTransferTarget(target);
     const token = transferToken();
-    await sendRelayCommand(settings, target.accountId, { type: 'transferArm', kind: 'heroes', token, price, sellerId: profile.id });
-    transferLog(`等「${target.nickname}」待命…`);
-    // 對方沒待命就不掛，避免掛上去沒人買、被別人撿走
-    await waitUntilArmed(settings, target.accountId, token);
-    await sendGameRequest(`${HEROES_API}/${hero.id}/sell`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ price, message: token }),
-    });
-    transferLog(`「${hero.name}」已掛單 $${price.toLocaleString()}，「${target.nickname}」待命中`);
-    refreshGameView([['heroes'], ['market']]);
-    const deadline = Date.now() + TRANSFER_SOLD_WAIT_MILLISECONDS;
-    while (Date.now() < deadline) {
-      await wait(1500);
-      if (!(await findOwnTrade('heroes', token))) {
-        transferLog(`「${hero.name}」已被「${target.nickname}」買走（$${price.toLocaleString()}）`);
-        return;
-      }
+    if (viaRelay) {
+      await sendRelayCommand(settings, target.accountId, { type: 'transferArm', kind: 'heroes', token, price, sellerId: profile.id });
+      transferLog(`等「${target.nickname}」待命…`);
+      // 對方沒待命就不掛，避免掛上去沒人買、被別人撿走
+      await waitUntilArmed(settings, target.accountId, token);
+      if (!(await listHeroAndWaitSold(hero, price, token, target.nickname))) throw new Error(`${TRANSFER_SOLD_WAIT_MILLISECONDS / 1000} 秒內對方沒買走，已撤回掛單`);
+      return;
     }
-    await requestGameApi(`${HEROES_API}/${hero.id}/cancelTrade`, { method: 'POST' }).catch(() => {});
-    refreshGameView([['heroes'], ['market']]);
-    throw new Error(`${TRANSFER_SOLD_WAIT_MILLISECONDS / 1000} 秒內對方沒買走，已撤回掛單`);
+    const transfer = { id: `${profile.id}-${Date.now()}`, from: Number(profile.id), to: target.accountId, amount: price, mine: hero.name, token };
+    const resume = pauseScriptsForTransfer();
+    try {
+      await postTransferEvent(settings, transfer, 'heroRequest');
+      transferLog(`已透過雲端請「${target.nickname}」待命，兩邊腳本先停下來等（對方約 30～60 秒回應）`);
+      const answer = await waitCloudEvent(settings, transfer.id, ['armed', 'refused'], TRANSFER_CLOUD_HERO_WAIT_MILLISECONDS);
+      if (!answer) throw new Error('對方一直沒回應（分頁有開著、有勾「接受雲端轉帳」嗎？），沒有掛單');
+      if (answer.event === 'refused') throw new Error(`對方沒辦法買：${answer.note}，沒有掛單`);
+      const sold = await listHeroAndWaitSold(hero, price, token, target.nickname);
+      await postTransferEvent(settings, transfer, sold ? 'done' : 'cancelled').catch(() => {});
+      if (!sold) throw new Error(`${TRANSFER_SOLD_WAIT_MILLISECONDS / 1000} 秒內對方沒買走，已撤回掛單`);
+    } finally {
+      resume();
+    }
+  }
+
+  // 收到雲端「請待命買角色」：先把自己的掛機、鍛造停下，待命買；買到、等不到或失敗都會恢復
+  async function armForCloudHero(settings, request) {
+    const resume = pauseScriptsForTransfer();
+    try {
+      await armTransfer({ kind: 'heroes', token: request.token, price: request.amount, sellerId: request.from, waitMilliseconds: TRANSFER_CLOUD_HERO_WAIT_MILLISECONDS, onEnd: resume });
+      await postTransferEvent(settings, request, 'armed');
+      transferLog(`雲端轉角色：待命買「${request.mine}」（$${request.amount.toLocaleString()}），掛機、鍛造先停下`);
+    } catch (error) {
+      if (transferWatch.arm && transferWatch.arm.token === request.token) disarmTransfer(`雲端轉角色失敗：${error.message}`);
+      resume();
+      await postTransferEvent(settings, { ...request, mine: error.message.replace(/^轉移：/, '') }, 'refused').catch(() => {});
+    }
   }
 
   async function refreshTransferChoices(settings) {
@@ -2252,11 +2457,19 @@
     ]);
     const huntTeamIds = new Set((huntInfo.heroes || []).map((hero) => hero.id));
     const others = accounts.filter((account) => account.accountId !== Number(profile.id));
+    const known = readJsonStorage(TRANSFER_TARGETS_KEY, {});
+    const remembered = Object.entries(known)
+      .filter(([id]) => Number(id) !== Number(profile.id) && !others.some((account) => account.accountId === Number(id)))
+      .map(([id, nickname]) => ({ accountId: Number(id), nickname: nickname || `帳號 ${id}`, cloud: true }));
+    const choices = [...others, ...remembered];
     const chosen = targetSelect.value;
     targetSelect.innerHTML =
-      `<option value="">${others.length ? '選對象帳號' : '沒有其他帳號在回報'}</option>` +
-      others.map((account) => `<option value="${account.accountId}" data-nickname="${escapeHtml(account.nickname)}">${escapeHtml(account.nickname)}（${account.accountId}）</option>`).join('');
-    targetSelect.value = others.some((account) => String(account.accountId) === chosen) ? chosen : '';
+      `<option value="">${choices.length ? '選對象帳號' : '沒有其他帳號在回報（可以直接輸入對方 ID）'}</option>` +
+      choices
+        .map((account) => `<option value="${account.accountId}" data-nickname="${escapeHtml(account.nickname)}">${escapeHtml(account.nickname)}（${account.accountId}）${account.cloud ? '・雲端' : ''}</option>`)
+        .join('');
+    panel.querySelector('[data-role="transfer-me"]').textContent = `這個帳號：${profile.nickname}，ID ${profile.id}（給對方輸入用）`;
+    targetSelect.value = choices.some((account) => String(account.accountId) === chosen) ? chosen : '';
     heroSelect.innerHTML =
       '<option value="">選要轉移的角色</option>' +
       heroes
@@ -4179,6 +4392,7 @@
     syncGrowth(settings);
     syncCloud(settings);
     sampleMoney(settings);
+    checkCloudTransfers(settings);
     keepRunLock();
     checkForgeCaptcha();
     if (!state.running) reloadForUpdateIfIdle();

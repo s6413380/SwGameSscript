@@ -7,6 +7,8 @@ const SHEETS = {
   equipment: ['equipmentId', 'type', 'quality', 'atk', 'def', 'int', 'lck', 'wgt', 'fullDur', 'fullSlots', 'recyclePrice', 'enchantments', 'materials', 'forger', 'craftedTime', 'name', 'contributor', 'uploadedAt'],
   // 地圖編號與換地圖的路線（kind = zone / route），API 打怪換地圖用
   places: ['key', 'kind', 'zone', 'name', 'fromZone', 'fromStage', 'toZone', 'toStage', 'path', 'contributor', 'uploadedAt'],
+  // 帳號之間轉帳的傳話（event = request / listed / failed），只新增不修改
+  transfers: ['key', 'transferId', 'from', 'to', 'amount', 'mine', 'token', 'event', 'at', 'contributor', 'uploadedAt'],
 };
 // 跟遊戲腳本的 CLOUD_PAGE_ROWS 要一樣，腳本靠「拿到的列數少於這個」判斷已經抓完
 const PAGE_ROWS = 3000;
@@ -30,12 +32,15 @@ function jsonOutput(data) {
 }
 
 // ?after_growth=N&after_equipment=M&after_places=K：從第 N 筆之後開始給，腳本記住看到哪裡，下次只抓新的
+// ?only=transfers：只讀轉帳分頁（每 30 秒看一次，不用連其他分頁一起讀）；after 給負數＝只要最後幾筆
 function doGet(event) {
   const result = {};
-  Object.keys(SHEETS).forEach((name) => {
-    const after = Math.max(0, Number(event.parameter['after_' + name]) || 0);
+  const only = event.parameter.only;
+  Object.keys(SHEETS).filter((name) => !only || name === only).forEach((name) => {
     const sheet = sheetFor(name);
     const total = sheet.getLastRow() - 1;
+    const asked = Number(event.parameter['after_' + name]) || 0;
+    const after = asked < 0 ? Math.max(0, total + asked) : asked;
     const count = Math.max(0, Math.min(PAGE_ROWS, total - after));
     // 上傳時間不用給腳本
     const rows = count ? sheet.getRange(2 + after, 1, count, SHEETS[name].length - 1).getValues() : [];
