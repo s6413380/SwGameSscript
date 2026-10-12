@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         器靈
 // @namespace    local.auto-clicker
-// @version      2.60
+// @version      2.61
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -664,7 +664,7 @@
     <div data-tab="move">
       <label class="row"><input data-field="stageEnabled" type="checkbox" style="flex:none;width:auto"> 自動移動到目標關卡（到之前不原地掛機）</label>
       <div class="row">關卡欄位<input data-field="stageSelector" placeholder="顯示目前位置的文字"><button data-pick="stageSelector" data-pick-mode="element">選取</button></div>
-      <div class="row">目標<select data-field="stageTargetArea" style="width:150px;flex:none"></select>
+      <div class="row">目標<select data-field="stageTargetArea" style="width:150px;flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select>
         第 ${numberInput('stageTargetNumber', 'min="0"')} 關</div>
       <div class="hint">選項來自下面的區域表。目標是分支時關卡填 0＝進去就開始刷；大區填 0＝進到大區就好。
         API 打怪不用設定下面的按鈕：換大區會先回城再前往，分支裡可以再有分支（母區域填分支名稱）；不在目標那條路上就直接去目標大區第 1 層，再一路走進去。走到分支入口時遊戲會告訴腳本有哪些分支，區域表沒有的會自動補上</div>
