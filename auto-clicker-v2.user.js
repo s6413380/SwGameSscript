@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         器靈
 // @namespace    local.auto-clicker
-// @version      2.74
+// @version      2.75
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -228,6 +228,8 @@
     transferMine: '泥土',
     // 對方不在中繼站上時，透過雲端試算表接收「請掛單」的要求（每 30 秒看一次）
     transferCloudEnabled: false,
+    // 雲端轉角色要這個帳號付錢，預設每次都要按同意；這裡列的帳號 ID（自己的其他帳號）免問
+    transferTrustedIds: '',
     autoUpdateEnabled: true,
   };
   SUPPLY_GROUPS.forEach(({ id }) => {
@@ -908,8 +910,9 @@
       <fieldset class="group">
         <legend>轉角色給對方</legend>
         <div class="row"><select data-role="transfer-hero" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
+        <div class="row">免問的帳號 ID<input data-field="transferTrustedIds" placeholder="自己的其他帳號，逗號分隔" style="flex:1;min-width:0"></div>
         <div class="row">價格 <input data-role="transfer-hero-price" type="number" min="1" style="width:100px;flex:none"> <button data-action="transfer-hero" style="font-weight:bold">掛單並讓對方買</button></div>
-        <div class="hint">價格是對方要付的錢（會轉到這個帳號）。按下去會先跳確認；對方沒待命就不掛單，掛上去 20 秒內沒被買走會自動撤回。對方不在中繼站上就走雲端：對方要勾「接受雲端轉帳」，兩邊的掛機、鍛造先停下來等（最多約 2.5 分鐘），完成後自動恢復</div>
+        <div class="hint">價格是對方要付的錢（會轉到這個帳號）。按下去會先跳確認；對方沒待命就不掛單，掛上去 20 秒內沒被買走會自動撤回。對方不在中繼站上就走雲端：對方要勾「接受雲端轉帳」，兩邊的掛機、鍛造先停下來等（最多約 2.5 分鐘），完成後自動恢復。收到雲端轉角色會跳視窗問要不要接受（要付錢），80 秒沒按就拒絕；「免問的帳號 ID」填自己的其他帳號就不用每次按</div>
       </fieldset>
       <div data-role="transfer-log" class="hint"></div>
     </div>
@@ -1040,12 +1043,21 @@
     resolveConfirm = null;
   });
 
-  function askConfirm(message) {
+  function askConfirm(message, timeoutMilliseconds = 0) {
     // 上一個還沒回答就當作取消
     if (resolveConfirm) resolveConfirm(false);
     confirmDialog.querySelector('[data-role="confirm-message"]').textContent = message;
     confirmDialog.style.display = 'block';
-    return new Promise((resolve) => (resolveConfirm = resolve));
+    return new Promise((resolve) => {
+      resolveConfirm = resolve;
+      if (!timeoutMilliseconds) return;
+      backgroundTimer.setTimeout(() => {
+        if (resolveConfirm !== resolve) return;
+        confirmDialog.style.display = 'none';
+        resolveConfirm = null;
+        resolve(false);
+      }, timeoutMilliseconds);
+    });
   }
 
   const MINIMIZED_STORAGE_KEY = 'autoClickerV2Minimized';
@@ -2238,8 +2250,9 @@
       const page = await cloudRequest(`${url}?only=transfers&after_transfers=${transferCloud.row}`);
       if (!page.transfers) return;
       transferCloud.row = page.transfers.next;
-      const events = page.transfers.rows.map(([, id, from, to, amount, mine, token, eventName, at]) => ({
+      const events = page.transfers.rows.map(([, id, from, to, amount, mine, token, eventName, at, contributor]) => ({
         id: String(id), from: Number(from), to: Number(to), amount: Number(amount), mine: String(mine), token: String(token), event: String(eventName), at: Number(at),
+        contributor: String(contributor || ''),
       }));
       const closed = new Set(events.filter((item) => !TRANSFER_REQUEST_EVENTS.includes(item.event)).map((item) => item.id));
       const handled = new Set(readJsonStorage(TRANSFER_HANDLED_KEY, []));
@@ -2433,7 +2446,28 @@
   }
 
   // 收到雲端「請待命買角色」：先把自己的掛機、鍛造停下，待命買；買到、等不到或失敗都會恢復
+  // 雲端試算表是共用的，網址拿到的人都能寫要求；要這個帳號付錢的事一定要本人同意（或是信任的自己帳號）
+  const TRANSFER_HERO_CONFIRM_MILLISECONDS = 80000;
+
   async function armForCloudHero(settings, request) {
+    const trusted = String(settings.transferTrustedIds || '')
+      .split(/[,，\s]+/)
+      .map(Number)
+      .filter(Boolean);
+    if (!trusted.includes(request.from)) {
+      panel.style.display = '';
+      if (settings.alertSoundEnabled) playBeeps(settings.alertVolume);
+      const sender = `帳號 ${request.from}${request.contributor ? `（雲端署名：${request.contributor}）` : ''}`;
+      const accepted = await askConfirm(
+        `${sender} 想透過雲端把角色「${request.mine}」轉給這個帳號。\n這個帳號要付 $${request.amount.toLocaleString()}（付給對方）。\n\n要接受嗎？${TRANSFER_HERO_CONFIRM_MILLISECONDS / 1000} 秒內沒回答就當作拒絕。\n不認識這個帳號就按取消。`,
+        TRANSFER_HERO_CONFIRM_MILLISECONDS
+      );
+      if (!accepted) {
+        transferLog(`雲端轉角色：已拒絕 ${sender} 的「${request.mine}」（$${request.amount.toLocaleString()}）`);
+        await postTransferEvent(settings, { ...request, mine: '對方拒絕或沒有回應' }, 'refused').catch(() => {});
+        return;
+      }
+    }
     const resume = pauseScriptsForTransfer();
     try {
       await armTransfer({ kind: 'heroes', token: request.token, price: request.amount, sellerId: request.from, waitMilliseconds: TRANSFER_CLOUD_HERO_WAIT_MILLISECONDS, onEnd: resume });
