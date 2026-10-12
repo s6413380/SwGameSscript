@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         自動點擊按鈕 V2
 // @namespace    local.auto-clicker
-// @version      2.49
+// @version      2.51
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
-// @updateURL    http://localhost:8787/auto-clicker-v2.user.js
-// @downloadURL  http://localhost:8787/auto-clicker-v2.user.js
+// @updateURL    https://raw.githubusercontent.com/s6413380/SwGameSscript/main/auto-clicker-v2.user.js
+// @downloadURL  https://raw.githubusercontent.com/s6413380/SwGameSscript/main/auto-clicker-v2.user.js
 // ==/UserScript==
 
 (function () {
@@ -49,6 +49,7 @@
     ['material', '材料統計'],
     ['combat', '戰鬥'],
     ['huntStats', '樓層'],
+    ['income', '收益'],
     ['growth', '成長'],
     ['pick', '勾選'],
     ['alert', '提醒'],
@@ -61,7 +62,7 @@
   const TAB_GROUPS = [
     ['hunt', '打怪', ['main', 'health', 'resource', 'move', 'equip', 'pause']],
     ['forging', '鍛造', ['forge', 'recipe', 'material']],
-    ['stats', '統計', ['combat', 'huntStats', 'growth']],
+    ['stats', '統計', ['income', 'combat', 'huntStats', 'growth']],
     ['other', '其他', ['pick', 'alert', 'cloud', 'log', 'api', 'backup']],
   ];
   const TAB_STORAGE_KEY = 'autoClickerV2Tab';
@@ -179,6 +180,7 @@
     // 換過名字：舊版存的「關閉」不會蓋掉現在的預設開啟
     cloudSyncEnabled: true,
     huntStatsEnabled: true,
+    incomeEnabled: true,
     // 「材料」頁直接鍛造：配方（名稱×數量、…）、裝備名稱（名稱每天影響數值，自己取）、第幾個鍛造坊
     forgeRecipe: '',
     // 統計時扣掉名稱影響（只算對得到社群測名表的裝備）
@@ -822,6 +824,12 @@
       <div class="row"><button data-action="material-refresh">更新裝備資料</button></div>
     </div>
 
+    <div data-tab="income">
+      <label class="row"><input data-field="incomeEnabled" type="checkbox" style="flex:none;width:auto"> 記錄經驗、道具與遊戲幣收益</label>
+      <div class="row">道具明細看<select data-role="income-period" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">近 1 小時</option><option value="1">近 6 小時</option><option value="2">今天</option><option value="3">近 24 小時</option><option value="4">近 7 天</option></select></div>
+      <div data-role="income" style="font-size:12px"></div>
+    </div>
+
     <div data-tab="huntStats">
       <label class="row"><input data-field="huntStatsEnabled" type="checkbox" style="flex:none;width:auto"> 記錄每層的經驗、耗損、前進與掉落</label>
       <div class="row">稀有道具<input data-field="lootRareNames" placeholder="名稱包含這些字就提醒，逗號分隔"></div>
@@ -997,6 +1005,7 @@
       if (!mineStock.length) refreshMineStock().then(renderRecipePicker).catch(() => {});
     }
     if (tabId === 'huntStats') renderHuntStats();
+    if (tabId === 'income') renderIncome();
     panel.querySelectorAll('[data-tab]').forEach((section) => {
       section.style.display = section.dataset.tab === tabId ? '' : 'none';
     });
@@ -1641,6 +1650,9 @@
   const GITHUB_VERSION_URL = 'https://raw.githubusercontent.com/s6413380/SwGameSscript/main/version.txt';
   const GITHUB_UPDATE_CHECK_MILLISECONDS = 10 * 60000;
 
+  // 為了哪一版重新整理過；重新整理後還是舊版，代表這個分頁的主程式不是從載入器來的，重新整理也沒用
+  const UPDATE_TRIED_KEY = 'autoClickerV2UpdateTried';
+
   async function fetchVersionText(url) {
     const response = await window.fetch(url, { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -1691,6 +1703,16 @@
       if (!autoUpdate.loadedVersion) {
         autoUpdate.loadedVersion = version;
       } else if (compareVersions(version, autoUpdate.loadedVersion) > 0) {
+        let triedVersion = '';
+        try {
+          triedVersion = sessionStorage.getItem(UPDATE_TRIED_KEY) || '';
+        } catch {
+          // 讀不到就照常重新整理
+        }
+        if (triedVersion === version) {
+          setStatus(`有新版 ${version}，但重新整理後還是 ${SCRIPT_VERSION}：這個分頁不是用載入器載入，請在 Tampermonkey 移除「自動點擊按鈕 V2」完整版、改裝載入器`);
+          return;
+        }
         autoUpdate.pendingVersion = version;
         setStatus(`發現新版 ${version}，等這一步做完就重新整理`);
         reloadForUpdateIfIdle();
@@ -1709,6 +1731,11 @@
       if (state.running) sessionStorage.setItem(RESUME_AFTER_RELOAD_KEY, state.forgeMode ? 'forge' : 'hunt');
     } catch {
       // 記不住就只重新整理，不自動開始
+    }
+    try {
+      sessionStorage.setItem(UPDATE_TRIED_KEY, autoUpdate.pendingVersion);
+    } catch {
+      // 記不住頂多多重新整理一次
     }
     backgroundTimer.clearTimeout(state.timerId);
     setStatus(`更新到 ${autoUpdate.pendingVersion}，重新整理中`);
@@ -1740,6 +1767,7 @@
       dashboard.profileTriedAt = Date.now();
       const profile = await requestGameApi(PROFILE_API);
       dashboard.profile = { id: profile.id, nickname: profile.nickname, money: profile.money };
+      if (readSettingsFromPanel().incomeEnabled) recordMoney(profile.money);
     }
     if (tabRole() === 'forge') {
       if (Date.now() - dashboard.forgeHeroesTriedAt > DASHBOARD_TEAM_FRESH_MILLISECONDS) {
@@ -1805,6 +1833,7 @@
         return { id, name, lv, exp, fullExp, hp, fullHp, sp, fullSp, perished, conditions: heroConditions(hero) };
       }),
       teamAt: dashboard.teamAt,
+      income: settings.incomeEnabled ? incomeReport() : null,
       controls: Object.fromEntries(
         [...REMOTE_CHECKBOX_FIELDS, ...REMOTE_NUMBER_FIELDS, 'stageTargetArea', 'stageTargetNumber'].map((field) => [field, settings[field]])
       ),
@@ -2369,6 +2398,10 @@
     if (Array.isArray(heroes) && !state.forgeMode) checkHeroConditions(heroes, settings);
     if (settings.combatEnabled) recordBattleFromApi(data.report);
     if (settings.huntStatsEnabled) recordHuntStats(data, requestBody, settings);
+    if (settings.incomeEnabled) {
+      recordIncome(data);
+      if (activeTab === 'income') renderIncome();
+    }
   }
 
   // 手動換裝時打開裝備欄到按脫下約 2 秒、脫下後挑新裝備再按裝備約 10 秒，照這個節奏等
@@ -3704,6 +3737,7 @@
     checkForUpdate(settings);
     syncGrowth(settings);
     syncCloud(settings);
+    sampleMoney(settings);
     if (!state.running) reloadForUpdateIfIdle();
     announceVerificationSolved(settings);
     if (state.running) shouldPause(settings);
@@ -7536,6 +7570,144 @@
     }
   }
 
+  // 收益：每 10 分鐘一格記狩獵場數、隊伍拿到的經驗、撿到的道具；遊戲幣用帳號餘額的變化（含花掉的，是淨變化）。
+  // 存在這個瀏覽器，同一個帳號的分頁共用；保留 8 天
+  const INCOME_KEY = 'autoClickerV2Income';
+  const INCOME_BUCKET_MILLISECONDS = 10 * 60000;
+  const INCOME_KEEP_MILLISECONDS = 8 * 24 * 3600000;
+  const MONEY_SAMPLE_MILLISECONDS = 5 * 60000;
+  const INCOME_PERIODS = [
+    ['近 1 小時', () => Date.now() - 3600000],
+    ['近 6 小時', () => Date.now() - 6 * 3600000],
+    ['今天', () => new Date().setHours(0, 0, 0, 0)],
+    ['近 24 小時', () => Date.now() - 24 * 3600000],
+    ['近 7 天', () => Date.now() - 7 * 24 * 3600000],
+  ];
+  const incomeState = { moneySampledAt: 0 };
+
+  function loadIncome() {
+    const saved = readJsonStorage(INCOME_KEY, null);
+    return saved && saved.buckets ? saved : { buckets: {}, money: [] };
+  }
+
+  function saveIncome(income) {
+    const keepFrom = Date.now() - INCOME_KEEP_MILLISECONDS;
+    Object.keys(income.buckets).forEach((start) => {
+      if (Number(start) < keepFrom) delete income.buckets[start];
+    });
+    income.money = income.money.filter(([time]) => time >= keepFrom);
+    writeJsonStorage(INCOME_KEY, income);
+  }
+
+  function recordIncome(data) {
+    const { report } = data;
+    if (!report || !Array.isArray(report.messages)) return;
+    let exp = 0;
+    report.messages.forEach((message) => {
+      const match = HUNT_EXP_PATTERN.exec(String(message.m || '').trim());
+      if (match) exp += messageNumber(match[2]);
+    });
+    const income = loadIncome();
+    const start = Math.floor(Date.now() / INCOME_BUCKET_MILLISECONDS) * INCOME_BUCKET_MILLISECONDS;
+    const bucket = income.buckets[start] || (income.buckets[start] = { battles: 0, exp: 0, items: {} });
+    bucket.battles++;
+    bucket.exp += exp;
+    parseLoot(report.messages).forEach(([name, quantity]) => {
+      bucket.items[name] = (bucket.items[name] || 0) + quantity;
+    });
+    saveIncome(income);
+  }
+
+  // 同樣的餘額 1 分鐘內不重複記
+  function recordMoney(money) {
+    if (typeof money !== 'number') return;
+    const income = loadIncome();
+    const last = income.money[income.money.length - 1];
+    if (last && last[1] === money && Date.now() - last[0] < 60000) return;
+    income.money.push([Date.now(), money]);
+    saveIncome(income);
+  }
+
+  async function sampleMoney(settings) {
+    if (tabShutDown || !settings.incomeEnabled || Date.now() - incomeState.moneySampledAt < MONEY_SAMPLE_MILLISECONDS) return;
+    incomeState.moneySampledAt = Date.now();
+    try {
+      const profile = await requestGameApi(PROFILE_API);
+      dashboard.profile = { id: profile.id, nickname: profile.nickname, money: profile.money };
+      recordMoney(profile.money);
+    } catch {
+      // 讀不到就下次再記
+    }
+  }
+
+  function incomeSummary(from, to = Date.now()) {
+    const income = loadIncome();
+    const summary = { battles: 0, exp: 0, itemCount: 0, items: {}, money: null };
+    Object.entries(income.buckets).forEach(([start, bucket]) => {
+      // 格子跟期間有重疊就算進來（10 分鐘一格，誤差最多 10 分鐘）
+      if (Number(start) + INCOME_BUCKET_MILLISECONDS <= from || Number(start) > to) return;
+      summary.battles += bucket.battles;
+      summary.exp += bucket.exp;
+      Object.entries(bucket.items).forEach(([name, quantity]) => {
+        summary.items[name] = (summary.items[name] || 0) + quantity;
+        summary.itemCount += quantity;
+      });
+    });
+    // 遊戲幣：期間開始前最後一筆（沒有就用期間內第一筆）到最新一筆的差
+    const samples = income.money.filter(([time]) => time <= to);
+    const before = [...samples].reverse().find(([time]) => time <= from) || samples.find(([time]) => time >= from);
+    const latest = samples[samples.length - 1];
+    if (before && latest && latest[0] > before[0]) summary.money = latest[1] - before[1];
+    return summary;
+  }
+
+  function formatSigned(value) {
+    if (value === null) return '-';
+    return `${value >= 0 ? '+' : ''}${Math.round(value).toLocaleString()}`;
+  }
+
+  // 給總覽頁：近 1 小時與今天
+  function incomeReport() {
+    const brief = (summary) => ({ battles: summary.battles, exp: summary.exp, items: summary.itemCount, money: summary.money });
+    return { hour: brief(incomeSummary(Date.now() - 3600000)), today: brief(incomeSummary(new Date().setHours(0, 0, 0, 0))) };
+  }
+
+  function renderIncome() {
+    const periodSelect = panel.querySelector('[data-role="income-period"]');
+    const periodIndex = Number(periodSelect.value) || 0;
+    const rows = INCOME_PERIODS.map(([label, from], index) => {
+      const summary = incomeSummary(from());
+      const hours = Math.max(1 / 6, (Date.now() - from()) / 3600000);
+      return `<tr style="${index === periodIndex ? 'background:#26262b' : ''}"><td>${label}</td><td>${summary.battles.toLocaleString()}</td><td>${summary.exp.toLocaleString()}</td>
+        <td>${Math.round(summary.exp / hours).toLocaleString()}</td><td>${summary.itemCount.toLocaleString()}</td>
+        <td style="color:${summary.money === null ? '#a0a0aa' : summary.money >= 0 ? '#4ade80' : '#f87171'}">${formatSigned(summary.money)}</td></tr>`;
+    }).join('');
+    // 近 24 小時每小時的經驗長條
+    const hourly = Array.from({ length: 24 }, (_, index) => {
+      const end = Date.now() - (23 - index) * 3600000;
+      return { end, exp: incomeSummary(end - 3600000, end - 1).exp };
+    });
+    const maxExp = Math.max(1, ...hourly.map(({ exp }) => exp));
+    const bars = hourly
+      .map(
+        ({ end, exp }) =>
+          `<div title="${new Date(end).getHours()} 點前一小時：${exp.toLocaleString()} 經驗" style="flex:1;align-self:flex-end;height:${Math.max(2, (exp / maxExp) * 100)}%;background:${exp ? '#60a5fa' : '#33333a'}"></div>`
+      )
+      .join('');
+    const selected = incomeSummary(INCOME_PERIODS[periodIndex][1]());
+    const items = Object.entries(selected.items)
+      .sort(([, first], [, second]) => second - first)
+      .map(([name, quantity]) => `<tr><td>${escapeHtml(name)}</td><td>${quantity.toLocaleString()}</td></tr>`)
+      .join('');
+    panel.querySelector('[data-role="income"]').innerHTML = `
+      <table class="combat"><tr><th>期間</th><th>場</th><th>經驗</th><th>經驗/時</th><th>道具</th><th>💰</th></tr>${rows}</table>
+      <div class="hint">經驗＝整隊加總；💰＝遊戲幣餘額的淨變化（包含買東西花掉的），每 5 分鐘記一次</div>
+      <div class="subhead">近 24 小時經驗（每小時）</div>
+      <div style="display:flex;gap:1px;height:50px;align-items:flex-end">${bars}</div>
+      <div class="subhead">撿到的道具（${INCOME_PERIODS[periodIndex][0]}）</div>
+      ${items ? `<table class="combat"><tr><th>道具</th><th>數量</th></tr>${items}</table>` : '<div class="hint">這段期間沒有撿到道具</div>'}`;
+  }
+
   // 狩獵統計：每個地點（地圖＋關卡）的場數、每人每場經驗、每場秒數、HP／體力耗損、前進成功率、掉落。
   // 全部從 /api/hunt 的回應算，不讀畫面；存在這個瀏覽器
   const HUNT_STATS_KEY = 'autoClickerV2HuntStats';
@@ -7836,6 +8008,7 @@
   panel.querySelector('[data-role="growth-type"]').addEventListener('change', renderGrowthSummary);
   panel.querySelector('[data-role="material-mode"]').addEventListener('change', renderMaterialSummary);
   panel.querySelector('[data-role="hunt-stats-place"]').addEventListener('change', renderHuntStats);
+  panel.querySelector('[data-role="income-period"]').addEventListener('change', renderIncome);
   panel.querySelector('[data-field="forgeRecipeType"]').addEventListener('change', renderRecipes);
   panel.querySelector('[data-role="recipe-forger"]').addEventListener('change', renderRecipes);
   panel.querySelector('[data-field="forgeRecipe"]').addEventListener('change', renderRecipePicker);

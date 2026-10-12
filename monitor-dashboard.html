@@ -25,6 +25,8 @@
   .alert-text { color:#ffe066; font-weight:bold; margin:6px 0; }
   .hero { margin:6px 0; }
   .hero-line { display:flex; justify-content:space-between; gap:6px; font-size:13px; }
+  .income { font-size:12px; margin:4px 0 2px; padding:3px 6px; border-radius:4px; background:#1c1c22; }
+  .income b { color:#93c5fd; font-weight:normal; }
   .cond { display:inline-block; margin-left:4px; padding:0 4px; border-radius:3px; font-size:11px; color:#fff; }
   .cond.s1 { background:#854d0e; }
   .cond.s2 { background:#c2410c; }
@@ -61,6 +63,7 @@
 <header>
   <h1>多帳號總覽</h1>
   <span class="total" id="total"></span>
+  <span class="muted" id="income-total"></span>
   <span class="muted" id="updated"></span>
   <button id="collapse-all">全部縮小</button><button id="expand-all">全部展開</button>
   <button id="reload-all" title="更新腳本後按這個：每個分頁重新整理，原本在跑的會自動接著跑">全部重新整理</button>
@@ -209,6 +212,18 @@
     return `<span class="badge run">${data.forgeMode ? '鍛造中' : '掛機中'}</span>`;
   }
 
+  function signed(value) {
+    return value === null || value === undefined ? '-' : `${value >= 0 ? '+' : ''}${Math.round(value).toLocaleString()}`;
+  }
+
+  // 收益：近 1 小時與今天的經驗、道具、遊戲幣淨變化（遊戲幣含花掉的）
+  function incomeHtml(data) {
+    if (!data.income) return '';
+    const part = (label, income) =>
+      `<b>${label}</b> ${income.battles} 場・經驗 ${income.exp.toLocaleString()}・道具 ${income.items.toLocaleString()}・💰 ${signed(income.money)}`;
+    return `<div class="income">${part('近1小時', data.income.hour)}<br>${part('今天', data.income.today)}</div>`;
+  }
+
   function viewHtml(account, now) {
     const data = account.data;
     const age = Math.round((now - account.at) / 1000);
@@ -229,6 +244,7 @@
       <div class="brief muted" data-role="brief">${escapeHtml(briefText(data))}</div>
       <div data-role="detail">
       ${body}
+      ${incomeHtml(data)}
       <div class="status">${escapeHtml(data.status)}</div>
       ${data.lastCommand ? `<div class="status">上一個指令：${escapeHtml(data.lastCommand)}</div>` : ''}
       ${account.pending ? `<div class="status">還有 ${account.pending} 個指令等分頁取走</div>` : ''}
@@ -373,6 +389,17 @@
           .forEach((account) => moneyByAccount.set(account.data.accountId ?? account.id, Number(account.data.money || 0)));
         const total = [...moneyByAccount.values()].reduce((sum, money) => sum + money, 0);
         document.getElementById('total').textContent = `合計 💰 ${total.toLocaleString()}`;
+        const incomeByAccount = new Map();
+        [...accounts]
+          .sort((first, second) => first.at - second.at)
+          .forEach((account) => account.data.income && incomeByAccount.set(account.data.accountId ?? account.id, account.data.income.today));
+        const today = [...incomeByAccount.values()].reduce(
+          (sum, income) => ({ exp: sum.exp + income.exp, items: sum.items + income.items, money: sum.money + (income.money || 0) }),
+          { exp: 0, items: 0, money: 0 }
+        );
+        document.getElementById('income-total').textContent = incomeByAccount.size
+          ? `今天：經驗 ${today.exp.toLocaleString()}・道具 ${today.items.toLocaleString()}・💰 ${signed(today.money)}`
+          : '';
       }
       const updated = document.getElementById('updated');
       updated.textContent = oldServer
