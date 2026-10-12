@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         器靈
 // @namespace    local.auto-clicker
-// @version      2.80
+// @version      2.84
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -111,6 +111,7 @@
   ];
   // 區域表預設內容改過就加一：已經存過設定的人也補上新的預設區域（只補一次，刪掉了不會再冒出來）
   const AREA_PRESET_VERSION = 4;
+  const LOOT_RARE_PAUSE_OFF_KEY = 'autoClickerV2LootRarePauseOff';
   const AREA_PRESET_KEY = 'autoClickerV2AreaPreset';
 
   function areaKey(areaIndex, name) {
@@ -150,6 +151,20 @@
     loop: false,
     loopDelaySeconds: 30,
     healthPausePercent: 20,
+    // 避難：血量低於緊急暫停的 % 時先換到這個關卡掛機，到了還是低才暫停
+    healthEscapeEnabled: false,
+    healthEscapeArea: '',
+    healthEscapeNumber: 1,
+    // 避難：同地圖有紅名或黑名單玩家就換到這個關卡掛機
+    playerEscapeEnabled: false,
+    playerEscapeRed: true,
+    playerBlacklist: '',
+    playerEscapeArea: '',
+    playerEscapeNumber: 1,
+    // 避難關卡也有危險玩家（或沒設避難關卡）時往回退一關，退到還是有就再退
+    playerEscapeBack: true,
+    // 這些關卡的危險玩家不理（前幾層常有小號紅名），例如「1-2」「大草原1-2」「老鼠洞」
+    playerIgnoreStages: '',
     resourcePausePercent: 20,
     deathPauseEnabled: true,
     // 異常狀態（中毒、燒傷…）：0＝不處理、1＝輕度以上、2＝中度以上、3＝重度
@@ -220,7 +235,7 @@
     forgeRecipeRepeat: 0,
     // 掉落名稱包含這些字就提醒（逗號分隔）
     lootRareNames: '英雄券',
-    lootRarePause: true,
+    lootRarePause: false,
     // 留空＝用內建的共用試算表
     cloudUrl: '',
     cloudName: '',
@@ -325,6 +340,12 @@
 
   const state = {
     running: false,
+    // 避難用：同地圖玩家、上次讀的時間、正在因血量低走去避難關卡、已提醒過的危險玩家
+    zoneUsers: [],
+    zoneUsersAt: 0,
+    healthEscaping: false,
+    playerAlertKey: '',
+    playerEscapeTarget: '',
     timerId: null,
     clickedC: false,
     clickCountA: 0,
@@ -472,6 +493,12 @@
         .forEach((index) => (merged[areaKey(index, 'ParentStage')] = 12));
     }
     writeJsonStorage(AREA_PRESET_KEY, AREA_PRESET_VERSION);
+    // 舊版預設撿到稀有道具就暫停，改成預設只提醒；已經存過的設定也改一次，之後自己再勾就照自己的
+    if (saved && !readJsonStorage(LOOT_RARE_PAUSE_OFF_KEY, false)) {
+      merged.lootRarePause = false;
+      saveSettings(merged);
+    }
+    writeJsonStorage(LOOT_RARE_PAUSE_OFF_KEY, true);
     return merged;
   }
 
@@ -592,6 +619,11 @@
       </div>`;
   }
 
+  function escapeTargetHtml(prefix) {
+    return `<select data-field="${prefix}Area" data-area-select style="width:150px;flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select>
+      第 ${numberInput(`${prefix}Number`, 'min="0"')} 關`;
+  }
+
   function numberInput(key, attributes) {
     return `<input data-field="${key}" type="number" ${attributes} style="flex:none;width:44px">`;
   }
@@ -685,7 +717,7 @@
     <div data-tab="move">
       <label class="row"><input data-field="stageEnabled" type="checkbox" style="flex:none;width:auto"> 自動移動到目標關卡（到之前不原地掛機）</label>
       <div class="row">關卡欄位<input data-field="stageSelector" placeholder="顯示目前位置的文字"><button data-pick="stageSelector" data-pick-mode="element">選取</button></div>
-      <div class="row">目標<select data-field="stageTargetArea" style="width:150px;flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select>
+      <div class="row">目標<select data-field="stageTargetArea" data-area-select style="width:150px;flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select>
         第 ${numberInput('stageTargetNumber', 'min="0"')} 關</div>
       <div class="hint">選項來自下面的區域表。目標是分支時關卡填 0＝進去就開始刷；大區填 0＝進到大區就好。
         API 打怪不用設定下面的按鈕：換大區會先回城再前往，分支裡可以再有分支（母區域填分支名稱）；不在目標那條路上就直接去目標大區第 1 層，再一路走進去。走到分支入口時遊戲會告訴腳本有哪些分支，區域表沒有的會自動補上</div>
@@ -715,7 +747,7 @@
         <div class="row">開 ${numberInput('forgeByApiCount', 'min="0"')} 爐（0＝不限）<button data-action="forge-api-heroes">讀取角色</button></div>
         <label class="row"><input data-field="forgeAutoNameEnabled" type="checkbox" style="flex:none;width:auto"> <b>每天自動換名稱</b>：過 00:00 先暫停開爐，等測名表有好名稱再換上繼續</label>
         <div class="row">每 ${numberInput('forgeAutoNameMinutes', 'min="1"')} 分鐘抓一次測名表，六圍平均 ≥ ${numberInput('forgeAutoNamePercent', 'min="0" max="100" step="0.5"')} % 就用（0＝有資料就用最高的）</div>
-        <div class="hint">換名稱時勾選角色的名稱、配方頁的名稱都會換成今天六圍平均最高的（同名稱測過好幾次取平均）。暫停期間做好的爐照樣收。當天手動開始的就用目前的名稱，下一個 00:00 才換</div>
+        <div class="hint">換名稱時勾選角色的名稱、配方頁的名稱都會換成今天六圍平均最高的（同名稱測過好幾次取平均）。暫停期間做好的爐照樣收。手動開始、重整頁面也一樣：今天的名稱還沒定就先等。當天自己改過名稱就用自己的，下一個 00:00 才換</div>
         <div class="subhead">鍛造計畫（勾選的角色接下來會鍛造什麼）</div>
         <div data-role="forge-plan-overview" style="font-size:12px"></div>
         <label class="row"><input data-field="forgeFillGameForm" type="checkbox" style="flex:none;width:auto"> 送出前把類型、名稱、材料也填到遊戲的鍛造頁（停在鍛造頁、而且下面按鈕區設過該鍛造坊的「切換」按鈕才會切過去填）</label>
@@ -771,6 +803,20 @@
       <div class="row">　🔔 只提醒、繼續打：<select data-field="statusAlertLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">不處理</option><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select></div>
       <div class="row">　⏸ 暫停：<select data-field="statusPauseLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">不處理</option><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select></div>
       <div class="hint">例：提醒選「輕度以上」、暫停選「重度」＝輕度、中度只響提醒，重度才停下來</div>
+      <div class="row">撿到稀有道具提醒<input data-field="lootRareNames" placeholder="名稱包含這些字就提醒，逗號分隔"></div>
+      <label class="row"><input data-field="lootRarePause" type="checkbox" style="flex:none;width:auto"> 撿到稀有道具時暫停掛機（沒勾就只提醒）</label>
+      <fieldset class="group">
+        <legend>避難：換關卡掛機</legend>
+        <label class="row"><input data-field="healthEscapeEnabled" type="checkbox" style="flex:none;width:auto"> 血量低於上面「緊急暫停」的 % 時，不暫停、改去</label>
+        <div class="row">${escapeTargetHtml('healthEscape')}</div>
+        <label class="row"><input data-field="playerEscapeEnabled" type="checkbox" style="flex:none;width:auto"> 同地圖有危險玩家時改去</label>
+        <div class="row">${escapeTargetHtml('playerEscape')}</div>
+        <label class="row"><input data-field="playerEscapeRed" type="checkbox" style="flex:none;width:auto"> 紅名玩家算危險</label>
+        <div class="row">黑名單<input data-field="playerBlacklist" placeholder="玩家暱稱或 ID，逗號分隔"></div>
+        <label class="row"><input data-field="playerEscapeBack" type="checkbox" style="flex:none;width:auto"> 避難關卡也有危險玩家時退回前一關（還有就再退）</label>
+        <div class="row">不理會的關卡<input data-field="playerIgnoreStages" placeholder="例：1-2 或 大草原1-2、老鼠洞"></div>
+        <div class="hint">觸發時把「移動」頁的目標改成這裡並打開自動移動，走過去後照常掛機，不會自己改回來。血量：到了避難關卡血量還是低才暫停（死亡照樣馬上暫停）。玩家：每 15 秒看一次同地圖的玩家（城鎮不看）；移動途中路過的關卡不管，到了目標關卡才看；避難關卡沒選就直接從目前的關卡往回退；退到第 1 關還有就只提醒。不理會的關卡：只寫數字＝每個區域的那幾關，加區域名稱＝只限那個區域，只寫區域名稱＝整個區域</div>
+      </fieldset>
       <label class="row"><input data-field="verifyEnabled" type="checkbox" style="flex:none;width:auto"> 畫面出現驗證框就暫停</label>
       <div class="row">關鍵字<input data-field="verifyKeyword" placeholder="驗證框上的文字"></div>
       <label class="row"><input data-field="verifyAutoResume" type="checkbox" style="flex:none;width:auto"> 驗證框消失後自動繼續（只在因驗證框暫停時）</label>
@@ -889,8 +935,6 @@
 
     <div data-tab="huntStats">
       <label class="row"><input data-field="huntStatsEnabled" type="checkbox" style="flex:none;width:auto"> 記錄每層的經驗、耗損、前進與掉落</label>
-      <div class="row">稀有道具<input data-field="lootRareNames" placeholder="名稱包含這些字就提醒，逗號分隔"></div>
-      <label class="row"><input data-field="lootRarePause" type="checkbox" style="flex:none;width:auto"> 撿到稀有道具時暫停掛機（沒勾就只提醒）</label>
       <div class="row"><select data-role="hunt-stats-place" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select><button data-action="hunt-stats-clear">清除統計</button></div>
       <div data-role="hunt-stats" style="font-size:12px"></div>
     </div>
@@ -3363,10 +3407,143 @@
   function pauseIfHealthLow(settings) {
     const healthPercents = readGroupPercents(settings, 'health');
     if (!healthPercents.some((percent) => typeof percent === 'number' && percent < settings.healthPausePercent)) {
+      state.healthEscaping = false;
       return false;
     }
-    pauseWithAlert(`血條低於 ${settings.healthPausePercent}%，緊急暫停（按開始繼續）`);
+    return handleLowHealth(settings, `血條低於 ${settings.healthPausePercent}%`);
+  }
+
+  // 避難：把移動目標換成設定的關卡，自動移動會接手走過去
+  function isEscapeTarget(settings, prefix) {
+    return settings.stageTargetArea === settings[`${prefix}Area`] && Number(settings.stageTargetNumber) === Number(settings[`${prefix}Number`]);
+  }
+
+  function escapeTo(settings, prefix, reason) {
+    moveTargetTo(settings[`${prefix}Area`], Number(settings[`${prefix}Number`]) || 0, reason);
+  }
+
+  function moveTargetTo(area, stage, reason) {
+    setPanelField('stageEnabled', true);
+    setPanelField('stageTargetArea', area);
+    setPanelField('stageTargetNumber', stage);
+    const label = targetLabel(readSettingsFromPanel());
+    const message = `${reason}，改去 ${label} 掛機`;
+    setStatus(message);
+    alertUser(message);
+    return label;
+  }
+
+  // 目前所在的區域與關卡；城鎮或看不出來回傳 null
+  function currentPlace(settings) {
+    if (isApiHunt(settings)) {
+      const info = state.huntInfo;
+      if (!info || info.huntZone === undefined || Number(info.huntZone) === 0) return null;
+      return { area: loadPlaces().zones[info.huntZone] || info.zoneName || '', stage: Number(info.huntStage) || 0 };
+    }
+    const location = settings.stageSelector ? readLocation(settings) : null;
+    return location && location.area ? { area: location.area.name, stage: location.number || 0 } : null;
+  }
+
+  // 前一關：分支的關卡號碼接在母區域後面，退到入口之前就回到母區域（分支裡的分支一路往上找）
+  function previousStage(settings, place) {
+    if (!place || place.stage <= 1) return null;
+    const stage = place.stage - 1;
+    const areas = configuredAreas(settings);
+    let area = areas.find((candidate) => candidate.name === place.area);
+    while (area && area.parent && stage < Number(area.parentStage)) {
+      const parentName = area.parent;
+      area = areas.find((candidate) => candidate.name === parentName) || { name: parentName };
+    }
+    return { area: area ? area.name : place.area, stage };
+  }
+
+  function isIgnoredPlace(settings, place) {
+    if (!place) return false;
+    return String(settings.playerIgnoreStages || '')
+      .split(/[,，、]/)
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .some((entry) => {
+        const [, area, from, to] = /^(.*?)\s*(?:(\d+)\s*(?:[-~～]\s*(\d+))?)?$/.exec(entry);
+        if (area.trim() && area.trim() !== place.area) return false;
+        if (!from) return Boolean(area.trim());
+        return place.stage >= Number(from) && place.stage <= Number(to || from);
+      });
+  }
+
+  // 判斷不了位置（找不到關卡欄位之類）就當作到了，免得血量低卻一直不暫停
+  function arrivedAtTarget(settings) {
+    const move = isApiHunt(settings) ? planApiMove(settings) : planMove(settings);
+    return move === null || Boolean(move.problem);
+  }
+
+  // 血量過低：有設避難就先離開這個關卡，走到避難關卡血量還是低才暫停；回傳 true＝已暫停
+  function handleLowHealth(settings, reason) {
+    if (settings.healthEscapeEnabled && settings.healthEscapeArea) {
+      if (!isEscapeTarget(settings, 'healthEscape')) {
+        state.healthEscaping = true;
+        escapeTo(settings, 'healthEscape', reason);
+        return false;
+      }
+      // 移動中不會打怪，先讓它走完（途中照常補血）
+      if (state.healthEscaping && !arrivedAtTarget(settings)) return false;
+    }
+    pauseWithAlert(`${reason}，緊急暫停（按開始繼續）`);
     return true;
+  }
+
+  // 紅名（遊戲的 nameColor：0 一般、1 橘名、2 紅名）或黑名單玩家跟自己在同一個地方，就換關卡
+  const ZONE_USERS_API = '/api/zoneUsers';
+  const RED_NAME_COLOR = 2;
+  const ZONE_USERS_FRESH_MILLISECONDS = 15000;
+
+  function dangerousPlayers(settings) {
+    const blacklist = String(settings.playerBlacklist || '')
+      .split(/[,，、]/)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    const ownId = dashboard.profile && dashboard.profile.id;
+    return (state.zoneUsers || []).filter(
+      (user) =>
+        user.id !== ownId &&
+        ((settings.playerEscapeRed && user.nameColor === RED_NAME_COLOR) || blacklist.includes(String(user.id)) || blacklist.includes(String(user.nickname || '').trim()))
+    );
+  }
+
+  // 回傳 true＝換了目標，這一步先不做別的
+  function escapeFromPlayers(settings) {
+    // 還在往目標走（路過的關卡，或剛換目標正在走）就不管，到了目標才看
+    if (!settings.playerEscapeEnabled || !arrivedAtTarget(settings)) return false;
+    const place = currentPlace(settings);
+    const found = isIgnoredPlace(settings, place) ? [] : dangerousPlayers(settings);
+    if (!found.length) {
+      state.playerAlertKey = '';
+      return false;
+    }
+    const names = found.map((user) => `${user.nickname || user.id}${user.nameColor === RED_NAME_COLOR ? '（紅名）' : ''}`).join('、');
+    const reason = `同地圖有危險玩家：${names}`;
+    // 目標是自己剛換的（已經避難或退過）就不再回避難關卡，免得在兩個有人的地方來回跑
+    const escaped = state.playerEscapeTarget === targetLabel(settings) || isEscapeTarget(settings, 'playerEscape');
+    if (!escaped && settings.playerEscapeArea) {
+      escapeTo(settings, 'playerEscape', reason);
+      state.playerEscapeTarget = targetLabel(readSettingsFromPanel());
+      return true;
+    }
+    const back = settings.playerEscapeBack ? previousStage(settings, place) : null;
+    if (back) {
+      state.playerEscapeTarget = moveTargetTo(back.area, back.stage, `${reason}，往回退一關`);
+      return true;
+    }
+    if (state.playerAlertKey !== names) {
+      state.playerAlertKey = names;
+      alertUser(`${reason}（${settings.playerEscapeBack ? '已經退到第 1 關' : '已經在避難關卡'}，留在原地）`);
+    }
+    return false;
+  }
+
+  async function refreshZoneUsers() {
+    const data = await requestGameApi(ZONE_USERS_API);
+    state.zoneUsers = (data && data.users) || [];
   }
 
   // 只在原地掛機前檢查：休息中體力本來就低，在監控迴圈裡檢查會一休息就停。
@@ -4488,9 +4665,9 @@
       return true;
     }
     if (settings.healthPausePercent > 0 && team.some((hero) => percent(hero.hp, hero.fullHp) < settings.healthPausePercent)) {
-      pauseWithAlert(`有角色血量低於 ${settings.healthPausePercent}%，已暫停`);
-      return true;
+      return handleLowHealth(settings, `有角色血量低於 ${settings.healthPausePercent}%`);
     }
+    state.healthEscaping = false;
     if (settings.resourcePausePercent > 0 && team.some((hero) => percent(hero.sp, hero.fullSp) < settings.resourcePausePercent)) {
       pauseWithAlert(`有角色體力低於 ${settings.resourcePausePercent}%，已暫停`);
       return true;
@@ -4965,6 +5142,23 @@
       return;
     }
 
+    // 休息、移動中也要看：紅名可能趁休息時打過來，先換好目標，休息完就走
+    const inTown = isApiHunt(settings) && state.huntInfo && Number(state.huntInfo.huntZone) === 0;
+    if (settings.playerEscapeEnabled && !inTown && Date.now() - state.zoneUsersAt > ZONE_USERS_FRESH_MILLISECONDS) {
+      const runId = state.runId;
+      state.zoneUsersAt = Date.now();
+      refreshZoneUsers()
+        .catch((error) => setStatus(`讀取同地圖玩家失敗（${error.message}）`))
+        .then(() => {
+          if (runId === state.runId) tick(settings);
+        });
+      return;
+    }
+    if (!inTown && escapeFromPlayers(settings)) {
+      state.timerId = backgroundTimer.setTimeout(() => tick(settings), 0);
+      return;
+    }
+
     // API 打怪：上一輪全隊休息後，到時間就完成休息；一開始就在休息中（例如手動按過）也一樣
     if (apiHunt && !state.apiResting && huntTeam().some((hero) => hero.actionState === 2)) {
       state.apiResting = true;
@@ -5294,12 +5488,14 @@
       ...(settings.townName ? [[settings.townName, `${settings.townName}（回城）`]] : []),
       ...areas.map((area) => [area.name, area.parent ? `${area.name}（${area.parent} ${area.parentStage} 層進）` : `${area.name}（大區）`]),
     ];
-    const current = settings.stageTargetArea;
-    // 目前的目標不在區域表裡（例如改了名稱）也留著，看得出來要重選
-    if (current && !options.some(([name]) => name === current)) options.push([current, `${current}（區域表裡沒有）`]);
-    const select = panel.querySelector('[data-field="stageTargetArea"]');
-    select.innerHTML = options.map(([name, label]) => `<option value="${escapeHtml(name)}">${escapeHtml(label)}</option>`).join('');
-    select.value = current;
+    panel.querySelectorAll('[data-area-select]').forEach((select) => {
+      const current = settings[select.dataset.field];
+      const choices = [...(select.dataset.field === 'stageTargetArea' ? [] : [['', '（未設定）']]), ...options];
+      // 目前的目標不在區域表裡（例如改了名稱）也留著，看得出來要重選
+      if (current && !choices.some(([name]) => name === current)) choices.push([current, `${current}（區域表裡沒有）`]);
+      select.innerHTML = choices.map(([name, label]) => `<option value="${escapeHtml(name)}">${escapeHtml(label)}</option>`).join('');
+      select.value = current;
+    });
   }
 
   function refreshSlotButtons() {
@@ -8952,7 +9148,9 @@
 
   // API 鍛造自己跑一條線，不佔用打怪的流程：同一個分頁可以一邊打怪一邊 API 鍛造。
   // 不用定時巡：有空的角色就開爐，否則睡到最早那爐的完成時間（遊戲有給 actionCompleteTime）再來收
-  const forgeRunner = { running: false, runId: 0, timerId: null, started: 0, captchaWaiting: false, captchaCheckedAt: 0, failures: 0, nameDay: '', nameWaiting: '' };
+  const forgeRunner = { running: false, runId: 0, timerId: null, started: 0, captchaWaiting: false, captchaCheckedAt: 0, failures: 0, nameWaiting: '' };
+  // 名稱是哪一天定的（自動換上或手動改名稱）；存起來，重開腳本、重整頁面後才知道今天的名稱定了沒
+  const FORGE_NAME_DAY_KEY = 'autoClickerV2ForgeNameDay';
   // 遊戲回錯誤或連線失敗時重試幾次才停（例如伺服器偶爾 502、掛機剛好同時動到同一個角色）
   const FORGE_RETRY_LIMIT = 5;
   // 鍛造坊數量＝基本 2 間＋擴建次數（/api/profile 的 forgeExpanded）；當成 6 間的話，真的都滿時會送到不存在的鍛造坊被拒
@@ -8996,7 +9194,7 @@
     const bestText = `今天最高「${best.name}」六圍 ${(best.score * 100).toFixed(1)}%`;
     if (best.score * 100 < settings.forgeAutoNamePercent) return `${bestText}，還沒到 ${settings.forgeAutoNamePercent}%`;
     applyForgeName(best.name);
-    forgeRunner.nameDay = localDayKey(Date.now());
+    writeJsonStorage(FORGE_NAME_DAY_KEY, localDayKey(Date.now()));
     forgeRunner.nameWaiting = '';
     forgeLog(`換成${bestText}，繼續鍛造`);
     return null;
@@ -9031,8 +9229,6 @@
     forgeRunner.runId++;
     forgeRunner.started = 0;
     forgeRunner.failures = 0;
-    // 手動開始就是要用目前的名稱，下一個 00:00 才換
-    forgeRunner.nameDay = localDayKey(Date.now());
     forgeRunner.nameWaiting = '';
     forgeRunner.captchaWaiting = false;
     writeJsonStorage(runLockKey(true), { tab: tabKey, at: Date.now() });
@@ -9123,7 +9319,7 @@
         scheduleForgeRunner(delay);
         return;
       }
-      if (settings.forgeAutoNameEnabled && forgeRunner.nameDay !== localDayKey(Date.now())) {
+      if (settings.forgeAutoNameEnabled && readJsonStorage(FORGE_NAME_DAY_KEY, '') !== localDayKey(Date.now())) {
         const waiting = await pickTodayForgeName(settings);
         if (cancelled()) return;
         if (waiting) {
@@ -9870,6 +10066,10 @@
     if (event.target.dataset.pickChoice) updatePickFromChoices(event.target.dataset.pickChoice);
     if (event.target.dataset.forgeApiHero !== undefined) updateForgeApiHeroesFromChoices();
     if (event.target.dataset.forgePlan) updateForgeApiPlansFromChoices();
+    // 自己改了名稱＝今天就用這個名稱，自動換名稱等到下一個 00:00
+    if (event.isTrusted && (event.target.dataset.field === 'forgeRecipeName' || event.target.dataset.forgePlan === 'name')) {
+      writeJsonStorage(FORGE_NAME_DAY_KEY, localDayKey(Date.now()));
+    }
     // 改數量就當作要用這個材料
     if (event.target.dataset.recipeQty !== undefined) {
       const checkbox = [...panel.querySelectorAll('[data-recipe-mine]')].find((input) => input.dataset.recipeMine === event.target.dataset.recipeQty);
