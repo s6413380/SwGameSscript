@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         器靈
 // @namespace    local.auto-clicker
-// @version      2.77
+// @version      2.80
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -210,6 +210,10 @@
     // 每個角色自己的 { type, recipe, name }（JSON）；鍛造師數值不同，最好的配方也不同
     forgeByApiPlans: '{}',
     forgeByApiCount: 0,
+    // 名稱效果每天 00:00 換：過了 00:00 先不開新爐，每隔幾分鐘抓測名表，有六圍平均 ≥ 這個 % 的名稱就換上繼續
+    forgeAutoNameEnabled: false,
+    forgeAutoNameMinutes: 10,
+    forgeAutoNamePercent: 80,
     forgeRecipeName: '',
     forgeRecipeTarget: 1,
     // 配方頁直接連續鍛造幾爐（0＝鍛到材料不夠為止）
@@ -709,6 +713,11 @@
         <legend>API 鍛造（用「配方」頁的配方）</legend>
         <label class="row"><input data-field="forgeByApiEnabled" type="checkbox" style="flex:none;width:auto"> <b>用 API 鍛造</b>（不用設下面的按鈕與鍛造坊）</label>
         <div class="row">開 ${numberInput('forgeByApiCount', 'min="0"')} 爐（0＝不限）<button data-action="forge-api-heroes">讀取角色</button></div>
+        <label class="row"><input data-field="forgeAutoNameEnabled" type="checkbox" style="flex:none;width:auto"> <b>每天自動換名稱</b>：過 00:00 先暫停開爐，等測名表有好名稱再換上繼續</label>
+        <div class="row">每 ${numberInput('forgeAutoNameMinutes', 'min="1"')} 分鐘抓一次測名表，六圍平均 ≥ ${numberInput('forgeAutoNamePercent', 'min="0" max="100" step="0.5"')} % 就用（0＝有資料就用最高的）</div>
+        <div class="hint">換名稱時勾選角色的名稱、配方頁的名稱都會換成今天六圍平均最高的（同名稱測過好幾次取平均）。暫停期間做好的爐照樣收。當天手動開始的就用目前的名稱，下一個 00:00 才換</div>
+        <div class="subhead">鍛造計畫（勾選的角色接下來會鍛造什麼）</div>
+        <div data-role="forge-plan-overview" style="font-size:12px"></div>
         <label class="row"><input data-field="forgeFillGameForm" type="checkbox" style="flex:none;width:auto"> 送出前把類型、名稱、材料也填到遊戲的鍛造頁（停在鍛造頁、而且下面按鈕區設過該鍛造坊的「切換」按鈕才會切過去填）</label>
         <input data-field="forgeByApiHeroIds" type="hidden"><input data-field="forgeByApiPlans" type="hidden">
         <div data-role="forge-api-heroes" style="font-size:12px;max-height:150px;overflow:auto"></div>
@@ -1116,6 +1125,10 @@
     }
     if (tabId === 'huntStats') renderHuntStats();
     if (tabId === 'income') renderIncome();
+    if (tabId === 'forge') {
+      renderForgePlanOverview();
+      if (!mineStock.length) refreshMineStock().then(renderForgePlanOverview).catch(() => {});
+    }
     if (tabId === 'transfer') refreshTransferChoices(readSettingsFromPanel()).catch((error) => transferLog(`讀取帳號或角色失敗（${error.message}）`));
     panel.querySelectorAll('[data-tab]').forEach((section) => {
       section.style.display = section.dataset.tab === tabId ? '' : 'none';
@@ -4434,7 +4447,7 @@
     );
     if (durabilities.some((value) => value !== '-')) lines.push(`耐久：${durabilities.join(' ')}`);
     if (settings.equipApiEnabled) lines.push(equipMonitorText(settings));
-    if (forgeRunner.running) lines.push(`API 鍛造：執行中（已開 ${forgeRunner.started} 爐${forgeRunner.failures ? `，重試中 ${forgeRunner.failures}/${FORGE_RETRY_LIMIT}` : ''}${forgeRunner.captchaWaiting ? '，等驗證' : ''}）`);
+    if (forgeRunner.running) lines.push(`API 鍛造：執行中（已開 ${forgeRunner.started} 爐${forgeRunner.failures ? `，重試中 ${forgeRunner.failures}/${FORGE_RETRY_LIMIT}` : ''}${forgeRunner.captchaWaiting ? '，等驗證' : ''}${forgeRunner.nameWaiting ? `，暫停開爐等好名稱：${forgeRunner.nameWaiting}` : ''}）`);
     else if (forgeRunner.stoppedReason) lines.push(`API 鍛造已停：${forgeRunner.stoppedReason}`);
     watchBattleLog(settings);
     const combatLine = settings.combatEnabled ? combatQuickText() : '';
@@ -5386,6 +5399,7 @@
       row.querySelector('[data-forge-plan="recipe"]').value = settings.forgeRecipe;
       updateForgeApiPlansFromChoices();
       saveSettings(readSettingsFromPanel());
+      renderForgePlanOverview();
     } else if (action === 'forge-api-heroes') {
       showForgeApiHeroChoices().catch((error) => setStatus(`讀取角色失敗（${error.message}）`));
     } else if (action === 'transfer-refresh') {
@@ -8516,7 +8530,7 @@
     const weights = loadNameWeights();
     const today = weights ? weights.days[localDayKey(Date.now())] || {} : {};
     const fieldIndex = (field) => NAME_WEIGHT_FIELDS.indexOf(field);
-    const score = ({ w }) => (goal === 'total' ? (w[0] + w[1] + w[2] + w[3]) / 4 : w[fieldIndex(goal)]);
+    const score = ({ w }) => (goal === 'six' ? w.reduce((sum, value) => sum + value, 0) / w.length : goal === 'total' ? (w[0] + w[1] + w[2] + w[3]) / 4 : w[fieldIndex(goal)]);
     return Object.entries(today)
       .map(([name, entry]) => ({ name, ...entry, score: score(entry) }))
       .sort((first, second) => second.score - first.score);
@@ -8822,6 +8836,7 @@
 
   async function showForgeApiHeroChoices() {
     const heroes = (await requestGameApi(HEROES_API)).heroes || [];
+    forgeHeroes = heroes;
     await refreshMineStock().catch(() => {});
     const settings = readSettingsFromPanel();
     const chosen = forgeByApiHeroIds(settings);
@@ -8842,6 +8857,70 @@
         </div>`;
       })
       .join('');
+    renderForgePlanOverview();
+  }
+
+  // 最近一次讀到的角色（遊戲回傳的順序就是自動鍛造挑閒置角色的順序）
+  let forgeHeroes = [];
+
+  function forgeHeroStatus(hero, isNext) {
+    if (!hero) return ['#a0a0aa', '狀態未知（按「讀取角色」）'];
+    if (hero.actionState === 5) {
+      const time = Date.parse(hero.actionCompleteTime);
+      if (hero.canComplete || (Number.isFinite(time) && time <= Date.now())) return ['#facc15', `鍛造坊 ${hero.actionTarget}・已完成待收`];
+      const clock = Number.isFinite(time) ? new Date(time).toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit' }) : '?';
+      return ['#60a5fa', `鍛造坊 ${hero.actionTarget}・${clock} 完成`];
+    }
+    if (hero.actionState) return ['#a0a0aa', '忙別的事（打怪、移動…），閒下來才鍛造'];
+    return ['#4ade80', isNext ? '閒置・下一爐就是它' : '閒置・等鍛造坊空出來'];
+  }
+
+  function renderForgePlanOverview() {
+    const box = panel.querySelector('[data-role="forge-plan-overview"]');
+    if (!box) return;
+    const settings = readSettingsFromPanel();
+    const heroIds = forgeByApiHeroIds(settings);
+    if (!heroIds.length) {
+      box.innerHTML = '<div class="hint">還沒勾角色：按「讀取角色」後勾要鍛造的角色</div>';
+      return;
+    }
+    const heroById = new Map(forgeHeroes.map((hero) => [hero.id, hero]));
+    const order = [...forgeHeroes.filter((hero) => heroIds.includes(hero.id)).map((hero) => hero.id), ...heroIds.filter((id) => !heroById.has(id))];
+    const nextId = order.find((id) => heroById.has(id) && !heroById.get(id).actionState);
+    const stock = new Map(mineStock.map((mine) => [mine.name, mine.have]));
+    const plans = forgeByApiPlans(settings);
+    box.innerHTML = order
+      .map((heroId) => {
+        const hero = heroById.get(heroId);
+        const plan = forgeApiPlan(settings, heroId);
+        const own = plans[heroId] || {};
+        const recipe = parseRecipeLoosely(plan.recipe);
+        const total = recipe.reduce((sum, [, quantity]) => sum + quantity, 0);
+        const cap = MATERIAL_CAPS[plan.type];
+        const [statusColor, statusText] = forgeHeroStatus(hero, heroId === nextId);
+        const chips = recipe
+          .map(([name, quantity]) => {
+            const short = mineStock.length && (stock.get(name) || 0) < quantity;
+            return `<span style="display:inline-block;margin:1px 3px 1px 0;padding:0 6px;border-radius:9px;background:${short ? '#5c1d1d' : '#2a2a30'};color:${short ? '#fca5a5' : '#e5e5e5'}" title="庫存 ${mineStock.length ? stock.get(name) || 0 : '?'}">${escapeHtml(name)}×${quantity}</span>`;
+          })
+          .join('');
+        const problems = [];
+        if (!recipe.length) problems.push('還沒設定配方，輪到它時會暫停');
+        if (!String(plan.name || '').trim()) problems.push('沒有名稱');
+        if (cap && total > cap) problems.push(`材料 ${total} 超過${plan.type}上限 ${cap}`);
+        const possible = recipe.length && mineStock.length ? forgesPossible(recipe, mineStock) : null;
+        return `<div style="border:1px solid #2e2e34;border-radius:8px;padding:5px 6px;margin:4px 0;background:${heroId === nextId ? '#16261c' : '#1c1c21'}">
+          <div style="display:flex;gap:6px;align-items:baseline"><b style="white-space:nowrap">${escapeHtml(hero ? hero.name : `角色 ${heroId}`)}</b>
+            <span style="flex:1;text-align:right;color:${statusColor}">${statusText}</span></div>
+          <div style="margin:2px 0"><span style="padding:0 6px;border-radius:9px;background:#3b2f5c;color:#ddd6fe">${escapeHtml(plan.type || '?')}</span>
+            「<b>${escapeHtml(plan.name || '')}</b>」${own.name ? '' : '<span style="color:#a0a0aa">（配方頁的名稱）</span>'}</div>
+          <div>${chips || '<span style="color:#666">沒有配方</span>'}
+            ${recipe.length ? `<span style="color:#a0a0aa">共 ${total}${cap ? `/${cap}` : ''}</span>` : ''}
+            ${possible === null ? '' : `<span style="color:${possible ? '#4ade80' : '#f87171'}">・夠 ${possible} 爐</span>`}</div>
+          ${problems.length ? `<div style="color:#f87171">⚠ ${problems.join('；')}</div>` : ''}
+        </div>`;
+      })
+      .join('') + '<div class="hint">綠底＝下一個開爐的角色；紅色材料＝庫存不夠這一爐。改了上面的角色設定會即時更新</div>';
   }
 
   function forgeCountText(recipeText) {
@@ -8873,9 +8952,55 @@
 
   // API 鍛造自己跑一條線，不佔用打怪的流程：同一個分頁可以一邊打怪一邊 API 鍛造。
   // 不用定時巡：有空的角色就開爐，否則睡到最早那爐的完成時間（遊戲有給 actionCompleteTime）再來收
-  const forgeRunner = { running: false, runId: 0, timerId: null, started: 0, captchaWaiting: false, captchaCheckedAt: 0, failures: 0 };
+  const forgeRunner = { running: false, runId: 0, timerId: null, started: 0, captchaWaiting: false, captchaCheckedAt: 0, failures: 0, nameDay: '', nameWaiting: '' };
   // 遊戲回錯誤或連線失敗時重試幾次才停（例如伺服器偶爾 502、掛機剛好同時動到同一個角色）
   const FORGE_RETRY_LIMIT = 5;
+  // 鍛造坊數量＝基本 2 間＋擴建次數（/api/profile 的 forgeExpanded）；當成 6 間的話，真的都滿時會送到不存在的鍛造坊被拒
+  const FORGE_BASE_SHOPS = 2;
+  const FORGE_SHOPS_FRESH_MILLISECONDS = 10 * 60000;
+  const forgeShops = { count: 0, at: 0 };
+
+  async function forgeShopCount() {
+    if (forgeShops.count && Date.now() - forgeShops.at < FORGE_SHOPS_FRESH_MILLISECONDS) return forgeShops.count;
+    try {
+      const profile = await requestGameApi(PROFILE_API);
+      forgeShops.count = FORGE_BASE_SHOPS + (Number(profile.forgeExpanded) || 0);
+      forgeShops.at = Date.now();
+    } catch {
+      // 讀不到就沿用上次的；從沒讀到過就先當基本數量，寧可少開也不要送到不存在的鍛造坊
+    }
+    return forgeShops.count || FORGE_BASE_SHOPS;
+  }
+
+  function applyForgeName(name) {
+    const settings = readSettingsFromPanel();
+    const plans = forgeByApiPlans(settings);
+    forgeByApiHeroIds(settings).forEach((heroId) => {
+      if (plans[heroId]) plans[heroId].name = name;
+    });
+    setPanelField('forgeByApiPlans', JSON.stringify(plans));
+    setPanelField('forgeRecipeName', name);
+    saveSettings(readSettingsFromPanel());
+    if (panel.querySelector('[data-forge-plan-hero]')) showForgeApiHeroChoices().catch(() => {});
+  }
+
+  // 換好今天的名稱回傳 null；還不能換就回傳原因
+  async function pickTodayForgeName(settings) {
+    try {
+      await refreshNameWeights(true);
+    } catch (error) {
+      return `讀取測名表失敗（${error.message}）`;
+    }
+    const best = todayNames('six')[0];
+    if (!best) return '測名表今天還沒有資料';
+    const bestText = `今天最高「${best.name}」六圍 ${(best.score * 100).toFixed(1)}%`;
+    if (best.score * 100 < settings.forgeAutoNamePercent) return `${bestText}，還沒到 ${settings.forgeAutoNamePercent}%`;
+    applyForgeName(best.name);
+    forgeRunner.nameDay = localDayKey(Date.now());
+    forgeRunner.nameWaiting = '';
+    forgeLog(`換成${bestText}，繼續鍛造`);
+    return null;
+  }
 
   function forgeLog(message) {
     setStatus(`［鍛造］${message}`);
@@ -8906,6 +9031,9 @@
     forgeRunner.runId++;
     forgeRunner.started = 0;
     forgeRunner.failures = 0;
+    // 手動開始就是要用目前的名稱，下一個 00:00 才換
+    forgeRunner.nameDay = localDayKey(Date.now());
+    forgeRunner.nameWaiting = '';
     forgeRunner.captchaWaiting = false;
     writeJsonStorage(runLockKey(true), { tab: tabKey, at: Date.now() });
     rememberTabRole(!state.running);
@@ -8960,7 +9088,9 @@
     return Math.min(Math.max(next - Date.now(), 0) + randomGap(3000, 12000), 15 * 60000);
   }
 
-  async function forgeApiTick(settings) {
+  async function forgeApiTick(initialSettings) {
+    // 中途可能換了名稱，要重讀設定
+    let settings = initialSettings;
     if (!forgeRunner.running || forgeRunner.captchaWaiting) return;
     const runId = forgeRunner.runId;
     const cancelled = () => runId !== forgeRunner.runId;
@@ -8972,6 +9102,7 @@
     try {
       let heroes = (await requestGameApi(HEROES_API)).heroes || [];
       if (cancelled()) return;
+      forgeHeroes = heroes;
       const actions = [];
       for (const hero of heroes.filter((candidate) => heroIds.includes(candidate.id) && candidate.actionState === 5 && candidate.canComplete)) {
         heroes = (await requestGameApi(`${HEROES_API}/${hero.id}/completeForge`, { method: 'POST' })).heroes || heroes;
@@ -8992,9 +9123,24 @@
         scheduleForgeRunner(delay);
         return;
       }
+      if (settings.forgeAutoNameEnabled && forgeRunner.nameDay !== localDayKey(Date.now())) {
+        const waiting = await pickTodayForgeName(settings);
+        if (cancelled()) return;
+        if (waiting) {
+          forgeRunner.nameWaiting = waiting;
+          const minutes = settings.forgeAutoNameMinutes;
+          forgeLog(`${actions.length ? `${actions.join('、')}；` : ''}過了 00:00 先不開新爐：${waiting}，${minutes} 分鐘後再抓`);
+          scheduleForgeRunner(randomGap(minutes * 60000, minutes * 60000 + 30000));
+          return;
+        }
+        settings = readSettingsFromPanel();
+      }
+      forgeRunner.nameWaiting = '';
       const idle = heroes.find((hero) => heroIds.includes(hero.id) && !hero.actionState);
       const busyShops = new Set(forging.map((hero) => Number(hero.actionTarget)));
-      const freeShop = Array.from({ length: FORGE_SHOP_COUNT }, (_, index) => index + 1).find((shop) => !busyShops.has(shop));
+      const shopCount = await forgeShopCount();
+      if (cancelled()) return;
+      const freeShop = Array.from({ length: shopCount }, (_, index) => index + 1).find((shop) => !busyShops.has(shop));
       if (idle && freeShop) {
         // 開工後就不能吃體力藥，所以要在開工之前補；只用 API 補給，人不在鍛造頁也能補
         heroes.forEach((hero) => state.heroStats.set(hero.id, hero));
@@ -9015,8 +9161,13 @@
         actions.push(`${idle.name} 在鍛造坊 ${freeShop} 開始鍛造 ${summary}${forgesLeft === null ? '' : `，材料還夠 ${forgesLeft} 爐`}`);
       }
       forgeRunner.failures = 0;
+      forgeHeroes = heroes;
+      if (activeTab === 'forge') {
+        if (idle && freeShop) await refreshMineStock().catch(() => {});
+        renderForgePlanOverview();
+      }
       const delay = nextForgeDelay(heroes, heroIds, Boolean(idle && freeShop));
-      forgeLog(`${actions.join('、') || (idle ? '鍛造坊都有人在用' : '角色都在鍛造中')}（已開 ${progress()} 爐，${Math.round(delay / 1000)} 秒後再看）`);
+      forgeLog(`${actions.join('、') || (idle ? `${shopCount} 間鍛造坊都有人在用` : '角色都在鍛造中')}（已開 ${progress()} 爐，${Math.round(delay / 1000)} 秒後再看）`);
       scheduleForgeRunner(delay);
     } catch (error) {
       if (cancelled()) return;
@@ -9727,6 +9878,7 @@
     if (event.target.dataset.recipeMine !== undefined || event.target.dataset.recipeQty !== undefined) updateRecipeFromPicker();
     refreshSupplyModes();
     saveSettings(readSettingsFromPanel());
+    if (activeTab === 'forge') renderForgePlanOverview();
     refreshAreaList();
   });
 
