@@ -25,6 +25,10 @@
   .alert-text { color:#ffe066; font-weight:bold; margin:6px 0; }
   .hero { margin:6px 0; }
   .hero-line { display:flex; justify-content:space-between; gap:6px; font-size:13px; }
+  .cond { display:inline-block; margin-left:4px; padding:0 4px; border-radius:3px; font-size:11px; color:#fff; }
+  .cond.s1 { background:#854d0e; }
+  .cond.s2 { background:#c2410c; }
+  .cond.s3 { background:#b91c1c; font-weight:bold; }
   .bar { height:8px; background:#2a2a30; border-radius:4px; overflow:hidden; margin-top:2px; }
   .bar > div { height:100%; }
   .bar.sp { height:4px; }
@@ -176,6 +180,13 @@
     return ` <span class="muted">Lv.${hero.lv}${exp}</span>`;
   }
 
+  // 中毒、燒傷這類異常，顏色依程度：輕度黃褐、中度橘、重度紅
+  function conditionsHtml(hero) {
+    return (hero.conditions || [])
+      .map((condition) => `<span class="cond s${condition.severity}" title="${escapeHtml(condition.level + condition.name)}">${escapeHtml(condition.level)}${escapeHtml(condition.name)}</span>`)
+      .join('');
+  }
+
   function heroHtml(hero) {
     const hp = percent(hero.hp, hero.fullHp);
     const sp = percent(hero.sp, hero.fullSp);
@@ -185,7 +196,7 @@
          <button class="small" data-heal="resource" data-hero="${hero.id}" title="吃 1 個補體力道具">＋體</button>`
       : '';
     return `<div class="hero">
-      <div class="hero-line"><span>${escapeHtml(hero.name)}${dead ? ' 💀' : ''}${levelText(hero)}</span>
+      <div class="hero-line"><span>${escapeHtml(hero.name)}${dead ? ' 💀' : ''}${levelText(hero)}${conditionsHtml(hero)}</span>
         <span>血 ${hero.hp}/${hero.fullHp}（${Math.floor(hp)}%）・體 ${hero.sp}/${hero.fullSp} ${healButtons}</span></div>
       <div class="bar"><div style="width:${hp}%;background:${hpColor(hp)}"></div></div>
       <div class="bar sp"><div style="width:${sp}%;background:var(--sp)"></div></div>

@@ -15,6 +15,10 @@
 | `cloud-sheet.gs` | 雲端共享用的 Google Apps Script |
 | `使用說明.txt` | 安裝與使用說明 |
 
+## 安裝與自動更新
+
+瀏覽器只要在 Tampermonkey 安裝 `auto-clicker-v2.loader.user.js`（載入器）。每次打開遊戲頁，載入器會同時抓本機中繼站和這個 repo 的 `auto-clicker-v2.user.js`，用版本比較新的那份；都抓不到才用上次的版本。已開著的分頁每 10 分鐘看一次 `version.txt`，有新版就趁空檔自動重新整理。中繼站只有多帳號總覽與遠端操作才需要。
+
 ## 雲端同步
 
 公開版沒有內建試算表網址。要用的話，照 `使用說明.txt` 的「雲端共用」部署 `cloud-sheet.gs`，再把網址填進面板「其他 → 雲端」。
