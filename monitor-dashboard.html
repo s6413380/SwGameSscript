@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>多帳號總覽</title>
+<style>
+  :root { --bg:#111114; --card:#1b1b1f; --line:#3a3a40; --text:#fff; --muted:#a0a0aa;
+    --good:#43a047; --warn:#f9a825; --bad:#e53935; --sp:#1e88e5; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--text); font:14px/1.5 sans-serif; }
+  header { display:flex; flex-wrap:wrap; gap:12px; align-items:baseline; margin-bottom:12px; }
+  h1 { font-size:18px; margin:0; }
+  .total { color:#ffe066; font-weight:bold; }
+  .muted { color:var(--muted); font-size:12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; }
+  .card.alert { background:#5a1414; border:3px solid #ffe066; }
+  .top { display:flex; justify-content:space-between; gap:8px; align-items:baseline; }
+  .name { font-weight:bold; font-size:16px; }
+  .money { color:#ffe066; font:bold 15px monospace; }
+  .badge { display:inline-block; padding:0 6px; border-radius:4px; font-size:12px; background:#3a3a42; }
+  .badge.run { background:var(--good); }
+  .badge.stop { background:#555; }
+  .badge.bad { background:var(--bad); }
+  .alert-text { color:#ffe066; font-weight:bold; margin:6px 0; }
+  .hero { margin:6px 0; }
+  .hero-line { display:flex; justify-content:space-between; gap:6px; font-size:13px; }
+  .bar { height:8px; background:#2a2a30; border-radius:4px; overflow:hidden; margin-top:2px; }
+  .bar > div { height:100%; }
+  .bar.sp { height:4px; }
+  .status { margin-top:8px; font:12px monospace; color:var(--muted); word-break:break-all; }
+  button { padding:2px 8px; cursor:pointer; font-size:12px; color:#fff; background:#3a3a42;
+    border:1px solid #4a4a52; border-radius:5px; }
+  button:hover { background:#4a4a54; }
+  button.small { padding:0 5px; font-size:11px; }
+  input, select { padding:2px 4px; font:12px monospace; color:#fff; background:#2a2a30; border:1px solid #44444c; border-radius:4px; }
+  input[type="number"] { width:56px; }
+  input[type="checkbox"] { accent-color:#fff; }
+  details { margin-top:8px; border-top:1px solid var(--line); padding-top:6px; }
+  summary { cursor:pointer; font-weight:bold; font-size:13px; }
+  .row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:6px 0; }
+  .fields { display:grid; grid-template-columns:1fr auto; gap:4px 8px; font-size:12px; align-items:center; }
+  /* 左邊色條分辨分頁：橘＝鍛造、藍＝狩獵 */
+  .card.forge { border-left:6px solid #ff9800; }
+  .card.hunt { border-left:6px solid #42a5f5; }
+  .badge.forge { background:#e65100; }
+  .badge.hunt { background:#1565c0; }
+  .card.forge .hunt-only { display:none; }
+  .card.collapsed [data-role="detail"], .card.collapsed details { display:none; }
+  .card.collapsed { padding:6px 10px; }
+  .brief { font-size:12px; margin-top:2px; }
+  .card:not(.collapsed) .brief { display:none; }
+  .forge-progress { font:12px monospace; margin:6px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>多帳號總覽</h1>
+  <span class="total" id="total"></span>
+  <span class="muted" id="updated"></span>
+  <button id="collapse-all">全部縮小</button><button id="expand-all">全部展開</button>
+  <button id="reload-all" title="更新腳本後按這個：每個分頁重新整理，原本在跑的會自動接著跑">全部重新整理</button>
+</header>
+<div class="grid" id="grid"><div class="muted" id="empty">目前沒有在線的分頁；在遊戲面板「提醒」頁勾選「回報到總覽頁」</div></div>
+<script>
+  // 超過這麼久沒回報就當作分頁關掉或卡住，先不顯示，等它再回報時自然會回來
+  const OFFLINE_MILLISECONDS = 30000;
+  // 按下後到分頁真的套用要幾秒，這段時間內不拿回報的舊值蓋掉剛改的
+  const EDIT_HOLD_MILLISECONDS = 12000;
+  const CHECKBOX_FIELDS = [
+    ['healthApiEnabled', '自動補血（API）'],
+    ['resourceApiEnabled', '自動補體力（API）'],
+    ['equipApiEnabled', '自動換裝（API）'],
+    ['stageEnabled', '自動移動'],
+    ['loop', '休息後重新循環'],
+  ];
+  const NUMBER_FIELDS = [
+    ['healthThresholdPercent', '血量低於 %'],
+    ['healthTargetPercent', '血量補到 %'],
+    ['resourceThresholdPercent', '體力低於 %'],
+    ['resourceTargetPercent', '體力補到 %'],
+    ['repeatCount', '掛機幾次後休息'],
+    ['loopDelaySeconds', '休息後幾秒重新循環'],
+    ['intervalMinSeconds', '掛機間隔最短秒'],
+    ['intervalMaxSeconds', '掛機間隔最長秒'],
+  ];
+  const cards = new Map();
+  // 中繼站上目前的版本；分頁回報的版本跟它不同就標黃，一眼看出哪個分頁還沒更新
+  let latestVersion = '';
+
+  function versionHtml(version) {
+    if (!version) return '<span class="muted">版本？</span>';
+    const outdated = latestVersion && version !== latestVersion;
+    return outdated
+      ? `<span class="badge" style="background:#8d6e00" title="中繼站上是 v${escapeHtml(latestVersion)}">v${escapeHtml(version)} 舊版</span>`
+      : `<span class="muted">v${escapeHtml(version)}</span>`;
+  }
+  const COLLAPSED_STORAGE_KEY = 'monitorDashboardCollapsed';
+
+  function loadCollapsed() {
+    try {
+      return new Set(JSON.parse(localStorage.getItem(COLLAPSED_STORAGE_KEY) || '[]'));
+    } catch {
+      return new Set();
+    }
+  }
+
+  const collapsed = loadCollapsed();
+
+  function saveCollapsed() {
+    try {
+      localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify([...collapsed]));
+    } catch {
+      // 記不住就只影響重新整理後的樣子
+    }
+  }
+
+  function setCollapsed(accountId, value) {
+    if (value) collapsed.add(accountId);
+    else collapsed.delete(accountId);
+    saveCollapsed();
+    const card = cards.get(accountId);
+    if (card) card.classList.toggle('collapsed', value);
+  }
+
+  function remainingText(completeAt) {
+    const seconds = Math.max(0, Math.round((new Date(completeAt).getTime() - Date.now()) / 1000));
+    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+  }
+
+  function forgeHeroHtml(hero) {
+    const sp = percent(hero.sp, hero.fullSp);
+    const state = hero.canComplete
+      ? '<span style="color:#ffe066">可完成</span>'
+      : hero.forging
+        ? `鍛造中${hero.shop ? `（坊 ${hero.shop}）` : ''} 剩 ${hero.completeAt ? remainingText(hero.completeAt) : '?'}`
+        : '閒置';
+    return `<div class="hero">
+      <div class="hero-line"><span>${escapeHtml(hero.name)} <span class="muted">Lv.${hero.lv}</span></span>
+        <span>${state}・體 ${hero.sp}/${hero.fullSp}</span></div>
+      <div class="bar"><div style="width:${sp}%;background:${hpColor(sp)}"></div></div>
+    </div>`;
+  }
+
+  // 縮小時只留一行重點：狩獵看位置與最低血量，鍛造看進度
+  function briefText(data) {
+    if (data.role === 'forge') return data.forge && data.forge.progress ? `鍛造 ${data.forge.progress}` : '';
+    const lowest = data.heroes.reduce((min, hero) => Math.min(min, percent(hero.hp, hero.fullHp)), 100);
+    return [data.location, data.heroes.length ? `最低血 ${Math.floor(lowest)}%` : ''].filter(Boolean).join('・');
+  }
+
+  function escapeHtml(text) {
+    return String(text ?? '').replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
+  }
+
+  function percent(value, full) {
+    return full ? Math.max(0, Math.min(100, (value / full) * 100)) : 0;
+  }
+
+  function hpColor(value) {
+    return value < 30 ? 'var(--bad)' : value < 60 ? 'var(--warn)' : 'var(--good)';
+  }
+
+  async function sendCommand(accountId, command) {
+    try {
+      const response = await fetch(`/command?id=${encodeURIComponent(accountId)}`, { method: 'POST', body: JSON.stringify(command) });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      alert(`送出指令失敗：${error.message}`);
+    }
+  }
+
+  function levelText(hero) {
+    if (hero.lv === undefined) return '';
+    const exp = hero.fullExp ? `（${Math.floor(percent(hero.exp, hero.fullExp))}%）` : '';
+    return ` <span class="muted">Lv.${hero.lv}${exp}</span>`;
+  }
+
+  function heroHtml(hero) {
+    const hp = percent(hero.hp, hero.fullHp);
+    const sp = percent(hero.sp, hero.fullSp);
+    const dead = hero.perished || hero.hp === 0;
+    const healButtons = hero.id
+      ? `<button class="small" data-heal="health" data-hero="${hero.id}" title="吃 1 個補血道具">＋血</button>
+         <button class="small" data-heal="resource" data-hero="${hero.id}" title="吃 1 個補體力道具">＋體</button>`
+      : '';
+    return `<div class="hero">
+      <div class="hero-line"><span>${escapeHtml(hero.name)}${dead ? ' 💀' : ''}${levelText(hero)}</span>
+        <span>血 ${hero.hp}/${hero.fullHp}（${Math.floor(hp)}%）・體 ${hero.sp}/${hero.fullSp} ${healButtons}</span></div>
+      <div class="bar"><div style="width:${hp}%;background:${hpColor(hp)}"></div></div>
+      <div class="bar sp"><div style="width:${sp}%;background:var(--sp)"></div></div>
+    </div>`;
+  }
+
+  function badgeHtml(data) {
+    if (data.alert) return '<span class="badge bad">已暫停</span>';
+    if (!data.running) return '<span class="badge stop">已停止</span>';
+    return `<span class="badge run">${data.forgeMode ? '鍛造中' : '掛機中'}</span>`;
+  }
+
+  function viewHtml(account, now) {
+    const data = account.data;
+    const age = Math.round((now - account.at) / 1000);
+    const forge = data.role === 'forge';
+    const forgeData = data.forge || { progress: '', heroes: [] };
+    const body = forge
+      ? `${forgeData.progress ? `<div class="forge-progress">鍛造坊進度　${escapeHtml(forgeData.progress)}</div>` : ''}
+        ${forgeData.heroes.map(forgeHeroHtml).join('') || '<div class="muted">沒有正在鍛造的角色</div>'}`
+      : data.heroes.map(heroHtml).join('') || '<div class="muted">還沒讀到隊伍</div>';
+    return `
+      <div class="top"><span class="name">${escapeHtml(data.nickname)}
+        <span class="badge ${forge ? 'forge' : 'hunt'}">${forge ? '鍛造分頁' : '狩獵分頁'}</span>
+        ${versionHtml(data.version)}</span>
+        <span><span class="money">💰 ${Number(data.money || 0).toLocaleString()}</span>
+        <button class="small" data-toggle title="縮小／展開">${collapsed.has(account.id) ? '＋' : '－'}</button></span></div>
+      <div>${badgeHtml(data)} <span class="muted">${forge ? '' : `${escapeHtml(data.location)}・`}${age} 秒前</span></div>
+      ${data.alert ? `<div class="alert-text">⚠ ${escapeHtml(data.alert)}</div>` : ''}
+      <div class="brief muted" data-role="brief">${escapeHtml(briefText(data))}</div>
+      <div data-role="detail">
+      ${body}
+      <div class="status">${escapeHtml(data.status)}</div>
+      ${data.lastCommand ? `<div class="status">上一個指令：${escapeHtml(data.lastCommand)}</div>` : ''}
+      ${account.pending ? `<div class="status">還有 ${account.pending} 個指令等分頁取走</div>` : ''}
+      </div>`;
+  }
+
+  // 操作區只建一次，之後只更新值；每次重畫的話正在輸入的內容會被洗掉
+  function controlsHtml() {
+    return `<details>
+      <summary>遠端操作</summary>
+      <div class="row">
+        <button data-command="start">開始掛機</button><button data-command="forge">開始鍛造</button>
+        <button data-command="stop">停止</button><button data-command="resume" title="按掉警報，用原本的模式重新開始">解除並重開</button>
+      </div>
+      <div class="row">
+        <button data-command="reload">重新整理分頁</button><button data-command="reload-start">重新整理並開始</button>
+      </div>
+      <div class="row hunt-only">目標
+        <select data-key="stageTargetArea"></select> 第 <input type="number" min="0" data-key="stageTargetNumber"> 關
+        <button data-command="target">前往</button><button data-command="town">回城</button>
+      </div>
+      <div class="row hunt-only">${CHECKBOX_FIELDS.map(([key, label]) => `<label><input type="checkbox" data-key="${key}"> ${label}</label>`).join('')}</div>
+      <div class="fields hunt-only">${NUMBER_FIELDS.map(([key, label]) => `<span>${label}</span><input type="number" min="0" step="any" data-key="${key}">`).join('')}</div>
+      <div class="row hunt-only"><button data-command="fields" title="只送出改過的數值">套用數值</button></div>
+    </details>`;
+  }
+
+  function holdEdit(input) {
+    input.dataset.holdUntil = Date.now() + EDIT_HOLD_MILLISECONDS;
+  }
+
+  function fillControls(card, data) {
+    const controls = data.controls || {};
+    const select = card.querySelector('[data-key="stageTargetArea"]');
+    const areas = [...new Set([data.townName, ...(data.areas || []), controls.stageTargetArea].filter(Boolean))];
+    const options = areas.map((area) => `<option>${escapeHtml(area)}</option>`).join('');
+    if (select.dataset.options !== options) {
+      const selected = select.value;
+      select.innerHTML = options;
+      select.dataset.options = options;
+      if (selected) select.value = selected;
+    }
+    card.querySelectorAll('[data-key]').forEach((input) => {
+      const key = input.dataset.key;
+      if (!(key in controls) || input === document.activeElement) return;
+      // 改過還沒套用、或剛套用還沒回報，都先保留畫面上的值
+      if (input.dataset.dirty || Number(input.dataset.holdUntil || 0) > Date.now()) return;
+      if (input.type === 'checkbox') input.checked = Boolean(controls[key]);
+      else input.value = controls[key];
+    });
+  }
+
+  function createCard(accountId) {
+    const card = document.createElement('div');
+    card.innerHTML = `<div data-role="view"></div>${controlsHtml()}`;
+    card.addEventListener('input', (event) => {
+      if (event.target.dataset.key && event.target.type !== 'checkbox') event.target.dataset.dirty = '1';
+    });
+    card.addEventListener('change', (event) => {
+      const input = event.target;
+      if (input.type !== 'checkbox' || !input.dataset.key) return;
+      holdEdit(input);
+      sendCommand(accountId, { type: 'field', field: input.dataset.key, value: input.checked });
+    });
+    card.addEventListener('click', (event) => {
+      const button = event.target.closest('button');
+      if (!button) return;
+      if (button.dataset.toggle !== undefined) {
+        setCollapsed(accountId, !collapsed.has(accountId));
+        button.textContent = collapsed.has(accountId) ? '＋' : '－';
+        return;
+      }
+      if (button.dataset.heal) {
+        sendCommand(accountId, { type: 'heal', heroId: Number(button.dataset.hero), group: button.dataset.heal });
+        return;
+      }
+      const action = button.dataset.command;
+      if (['start', 'forge', 'stop', 'resume', 'town'].includes(action)) {
+        sendCommand(accountId, { type: action });
+      } else if (action === 'reload' || action === 'reload-start') {
+        sendCommand(accountId, { type: 'reload', autoStart: action === 'reload-start' });
+      } else if (action === 'target') {
+        const area = card.querySelector('[data-key="stageTargetArea"]');
+        const number = card.querySelector('[data-key="stageTargetNumber"]');
+        [area, number].forEach((input) => {
+          delete input.dataset.dirty;
+          holdEdit(input);
+        });
+        sendCommand(accountId, { type: 'target', area: area.value, number: Number(number.value) || 0 });
+      } else if (action === 'fields') {
+        card.querySelectorAll('.fields [data-key][data-dirty]').forEach((input) => {
+          delete input.dataset.dirty;
+          holdEdit(input);
+          sendCommand(accountId, { type: 'field', field: input.dataset.key, value: Number(input.value) });
+        });
+      }
+    });
+    document.getElementById('grid').appendChild(card);
+    cards.set(accountId, card);
+    return card;
+  }
+
+  function updateCard(account, now) {
+    const card = cards.get(account.id) || createCard(account.id);
+    const data = account.data;
+    latestData.set(account.id, data);
+    // 鍛造分頁不顯示狩獵隊伍，陣亡警示交給狩獵分頁
+    const dead = data.role !== 'forge' && data.heroes.some((hero) => hero.perished || hero.hp === 0);
+    card.className = [
+      'card',
+      data.role === 'forge' ? 'forge' : 'hunt',
+      data.alert || dead ? 'alert' : '',
+      collapsed.has(account.id) ? 'collapsed' : '',
+    ].join(' ');
+    card.querySelector('[data-role="view"]').innerHTML = viewHtml(account, now);
+    fillControls(card, data);
+  }
+
+  async function refresh() {
+    try {
+      const { now, accounts: reported } = await (await fetch('/status', { cache: 'no-store' })).json();
+      latestVersion = await fetch('/version', { cache: 'no-store' })
+        .then((response) => (response.ok ? response.text() : ''))
+        .then((text) => text.trim())
+        .catch(() => '');
+      const accounts = reported.filter((account) => now - account.at <= OFFLINE_MILLISECONDS);
+      // 舊版中繼站沒有 pending 欄位，也沒有 /command，按什麼都不會生效
+      const oldServer = accounts.some((account) => !('pending' in account));
+      // 分頁關掉、關掉回報或太久沒回報都拿掉，再回報時會重新出現
+      const alive = new Set(accounts.map((account) => account.id));
+      [...cards.keys()].filter((id) => !alive.has(id)).forEach((id) => {
+        cards.get(id).remove();
+        cards.delete(id);
+      });
+      document.getElementById('empty').style.display = accounts.length ? 'none' : '';
+      if (accounts.length) {
+        accounts.forEach((account) => updateCard(account, now));
+        // 同一個帳號開兩個分頁時錢是同一份，只算最新回報的那個
+        const moneyByAccount = new Map();
+        [...accounts]
+          .sort((first, second) => first.at - second.at)
+          .forEach((account) => moneyByAccount.set(account.data.accountId ?? account.id, Number(account.data.money || 0)));
+        const total = [...moneyByAccount.values()].reduce((sum, money) => sum + money, 0);
+        document.getElementById('total').textContent = `合計 💰 ${total.toLocaleString()}`;
+      }
+      const updated = document.getElementById('updated');
+      updated.textContent = oldServer
+        ? 'monitor-server.ps1 是舊版，遠端操作不會生效，請關掉重開'
+        : `更新於 ${new Date().toLocaleTimeString('zh-TW', { hour12: false })}`;
+      updated.style.color = oldServer ? '#ffe066' : '';
+    } catch {
+      document.getElementById('updated').textContent = '連不上 monitor-server.ps1，請確認它還在執行';
+    }
+  }
+
+  // 最近一次回報的內容，全部重新整理時用來決定哪些分頁要自動接著跑
+  const latestData = new Map();
+
+  document.getElementById('reload-all').addEventListener('click', () => {
+    if (!confirm(`要重新整理全部 ${cards.size} 個分頁嗎？原本在跑的會自動接著跑`)) return;
+    cards.forEach((card, accountId) => {
+      const data = latestData.get(accountId) || {};
+      sendCommand(accountId, { type: 'reload', autoStart: Boolean(data.running) });
+    });
+  });
+
+  document.getElementById('collapse-all').addEventListener('click', () => {
+    cards.forEach((card, accountId) => setCollapsed(accountId, true));
+    refresh();
+  });
+  document.getElementById('expand-all').addEventListener('click', () => {
+    cards.forEach((card, accountId) => setCollapsed(accountId, false));
+    refresh();
+  });
+
+  refresh();
+  setInterval(refresh, 2000);
+</script>
+</body>
+</html>
