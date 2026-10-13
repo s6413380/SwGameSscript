@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      2.96
+// @version      2.99
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -52,6 +52,7 @@
     ['huntStats', '樓層'],
     ['income', '收益'],
     ['growth', '成長'],
+    ['draw', '抽卡'],
     ['pick', '勾選'],
     ['alert', '提醒'],
     ['cloud', '雲端'],
@@ -65,7 +66,7 @@
   const TAB_GROUPS = [
     ['hunt', '打怪', ['main', 'health', 'resource', 'move', 'equip', 'train', 'pause']],
     ['forging', '鍛造', ['forge', 'recipe', 'material']],
-    ['stats', '統計', ['income', 'combat', 'huntStats', 'growth']],
+    ['stats', '統計', ['income', 'combat', 'huntStats', 'growth', 'draw']],
     ['other', '其他', ['pick', 'transfer', 'cardBuy', 'alert', 'cloud', 'log', 'api', 'backup']],
   ];
   const TAB_STORAGE_KEY = 'autoClickerV2Tab';
@@ -188,6 +189,8 @@
     alertVolume: 50,
     alertPopupEnabled: true,
     alertNotifyEnabled: true,
+    // 開好幾個帳號時分得出是哪個；截圖分享時可以關掉
+    showAccountName: true,
     itemStepSeconds: 1,
     combatEnabled: true,
     combatKeyword: '戰鬥過程',
@@ -723,7 +726,7 @@
   const panel = document.createElement('div');
   panel.innerHTML = `
     <div class="row" style="font-weight:bold;margin:0 0 6px;cursor:move" data-role="header">
-      <span style="flex:1">愛吉吉 <span style="font-weight:normal;opacity:.7">v${SCRIPT_VERSION}</span> ⠿ <span data-role="mini-status" style="font-weight:normal;opacity:.85"></span></span>
+      <span style="flex:1"><span data-role="app-name">愛吉吉</span> <span style="font-weight:normal;opacity:.7">v${SCRIPT_VERSION}</span> ⠿ <span data-role="mini-status" style="font-weight:normal;opacity:.85"></span></span>
       <button data-action="minimize" title="縮到最小／展開">–</button>
       <button data-action="close" title="關閉：這個分頁的腳本全部停止（重新整理頁面才會恢復）">×</button>
     </div>
@@ -878,6 +881,7 @@
       <div class="row">音量<input data-field="alertVolume" type="range" min="0" max="100"><button data-action="test-sound">試聽</button></div>
       <label class="row"><input data-field="alertPopupEnabled" type="checkbox" style="flex:none;width:auto"> 彈出提示視窗</label>
       <label class="row"><input data-field="alertNotifyEnabled" type="checkbox" style="flex:none;width:auto"> 系統通知＋分頁標題閃爍</label>
+      <label class="row"><input data-field="showAccountName" type="checkbox" style="flex:none;width:auto"> 面板標題和提醒顯示帳號名稱（例如「愛吉吉的小明」）</label>
       <fieldset class="group">
         <legend>多帳號總覽</legend>
         <label class="row"><input data-field="dashboardEnabled" type="checkbox" style="flex:none;width:auto"> 回報到總覽頁（每 5 秒）</label>
@@ -1016,6 +1020,12 @@
         <div class="hint">價格是對方要付的錢（會轉到這個帳號）。按下去會先跳確認；對方沒待命就不掛單，掛上去 20 秒內沒被買走會自動撤回。對方不在中繼站上就走雲端：對方要勾「接受雲端轉帳」，兩邊的掛機、鍛造先停下來等（最多約 2.5 分鐘），完成後自動恢復。收到雲端轉角色會跳視窗問要不要接受（要付錢），80 秒沒按就拒絕；「免問的帳號 ID」填自己的其他帳號就不用每次按</div>
       </fieldset>
       <div data-role="transfer-log" class="hint"></div>
+    </div>
+
+    <div data-tab="draw">
+      <div class="hint">在遊戲物品頁用英雄券這類道具抽卡時自動記下抽到什麼（這個瀏覽器、這個帳號自己的紀錄）</div>
+      <div class="row"><select data-role="draw-item" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select><button data-action="draw-clear">清除紀錄</button></div>
+      <div data-role="draw-stats"></div>
     </div>
 
     <div data-tab="cardBuy">
@@ -1254,6 +1264,7 @@
     }
     if (tabId === 'huntStats') renderHuntStats();
     if (tabId === 'income') renderIncome();
+    if (tabId === 'draw') renderDrawStats();
     if (tabId === 'forge') {
       renderForgePlanOverview();
       if (!mineStock.length) refreshMineStock().then(renderForgePlanOverview).catch(() => {});
@@ -2029,12 +2040,28 @@
     return requestGameApi(`${HEROES_API}/${heroId}`);
   }
 
+  // 開好幾個帳號時，面板標題和提醒都要看得出是哪個帳號
+  function rememberProfile(profile) {
+    dashboard.profile = { id: profile.id, nickname: profile.nickname, money: profile.money };
+    renderAppName();
+  }
+
+  // 「愛吉吉的小明」；截圖分享時可以選擇不顯示帳號名稱
+  function appName() {
+    const nickname = dashboard.profile && dashboard.profile.nickname;
+    return nickname && readSettingsFromPanel().showAccountName ? `愛吉吉的${nickname}` : '愛吉吉';
+  }
+
+  function renderAppName() {
+    panel.querySelector('[data-role="app-name"]').textContent = appName();
+  }
+
   // 讀取時間在請求前就記下，失敗時才不會每 5 秒重打一次
   async function refreshDashboardData() {
     if (Date.now() - dashboard.profileTriedAt > DASHBOARD_PROFILE_FRESH_MILLISECONDS) {
       dashboard.profileTriedAt = Date.now();
       const profile = await requestGameApi(PROFILE_API);
-      dashboard.profile = { id: profile.id, nickname: profile.nickname, money: profile.money };
+      rememberProfile(profile);
       if (readSettingsFromPanel().incomeEnabled) recordMoney(profile.money);
     }
     if (tabRole() === 'forge') {
@@ -4141,7 +4168,7 @@
   let alertTitle = '⚠ 愛吉吉已暫停';
   function alertUser(message, { paused = false } = {}) {
     const settings = readSettingsFromPanel();
-    alertTitle = paused ? '⚠ 愛吉吉已暫停' : '⚠ 愛吉吉提醒（仍在執行）';
+    alertTitle = `⚠ ${appName()}${paused ? '已暫停' : '提醒（仍在執行）'}`;
     alertDialog.querySelector('[data-role="alert-title"]').textContent = alertTitle;
     // 面板被關掉時也要讓人看得到暫停原因，所以暫停就把面板叫回來
     panel.style.display = '';
@@ -4162,7 +4189,7 @@
   // 瀏覽器允許的話也跳系統通知（Windows 在右下角），切到別的視窗也看得到
   function showToast(message) {
     const toast = document.createElement('div');
-    toast.textContent = message;
+    toast.textContent = `${appName()}：${message}`;
     toast.title = '點一下關掉';
     Object.assign(toast.style, {
       background: '#2a2a30', color: '#fff', border: '1px solid #e0a020', borderRadius: '8px',
@@ -4171,7 +4198,7 @@
     toast.addEventListener('click', () => toast.remove());
     toastBox.appendChild(toast);
     setTimeout(() => toast.remove(), 15000);
-    if ('Notification' in window && Notification.permission === 'granted') new Notification('愛吉吉提醒', { body: message });
+    if ('Notification' in window && Notification.permission === 'granted') new Notification(`${appName()}提醒`, { body: message });
   }
 
   function clearAlert() {
@@ -5035,16 +5062,20 @@
   function pauseIfApiTeamInDanger(settings) {
     const team = huntTeam();
     const percent = (value, full) => (full ? (value / full) * 100 : 100);
-    if (settings.deathPauseEnabled && team.some((hero) => hero.perished || hero.hp === 0)) {
-      pauseWithAlert('有角色死亡，已暫停');
+    const names = (heroes) => heroes.map((hero) => hero.name).join('、');
+    const dead = team.filter((hero) => hero.perished || hero.hp === 0);
+    if (settings.deathPauseEnabled && dead.length) {
+      pauseWithAlert(`${names(dead)} 死亡，已暫停`);
       return true;
     }
-    if (settings.healthPausePercent > 0 && team.some((hero) => percent(hero.hp, hero.fullHp) < settings.healthPausePercent)) {
-      return handleLowHealth(settings, `有角色血量低於 ${settings.healthPausePercent}%`);
+    const lowHealth = team.filter((hero) => percent(hero.hp, hero.fullHp) < settings.healthPausePercent);
+    if (settings.healthPausePercent > 0 && lowHealth.length) {
+      return handleLowHealth(settings, `${names(lowHealth)} 血量低於 ${settings.healthPausePercent}%`);
     }
     state.healthEscaping = false;
-    if (settings.resourcePausePercent > 0 && team.some((hero) => percent(hero.sp, hero.fullSp) < settings.resourcePausePercent)) {
-      pauseWithAlert(`有角色體力低於 ${settings.resourcePausePercent}%，已暫停`);
+    const lowResource = team.filter((hero) => percent(hero.sp, hero.fullSp) < settings.resourcePausePercent);
+    if (settings.resourcePausePercent > 0 && lowResource.length) {
+      pauseWithAlert(`${names(lowResource)} 體力低於 ${settings.resourcePausePercent}%，已暫停`);
       return true;
     }
     return false;
@@ -6275,6 +6306,11 @@
       saveSettings(readSettingsFromPanel());
     } else if (event.target.dataset.captureHero) {
       startHeroCapture(event.target.dataset.captureHero);
+    } else if (action === 'draw-clear') {
+      if (window.confirm('要清除這個帳號的抽卡紀錄嗎？清掉就找不回來')) {
+        writeJsonStorage(DRAW_LOG_KEY, []);
+        renderDrawStats();
+      }
     } else if (action === 'load-train-heroes') {
       loadTrainChoices();
     } else if (action === 'train-reset') {
@@ -6687,6 +6723,10 @@
               if (data && typeof data.money === 'number') {
                 recordMoneyChange(data.money, url, method, isHunt && method === 'POST' ? huntMessageMoney(data.report && data.report.messages) : {});
               }
+            }
+            if (response.ok && itemUseMatch) {
+              const data = parseJsonText(responseText);
+              if (data && data.drawResult) recordDraw(itemUseMatch[1], data);
             }
             if (response.ok && itemUseMatch && readSettingsFromPanel().incomeEnabled) {
               const data = parseJsonText(responseText);
@@ -7662,7 +7702,7 @@
     try {
       if (!dashboard.profile) {
         const profile = await requestGameApi(PROFILE_API);
-        dashboard.profile = { id: profile.id, nickname: profile.nickname, money: profile.money };
+        rememberProfile(profile);
       }
       const baseUrl = dashboardBaseUrl(settings);
       const share = growthTracker.exportShare({ ownOnly: true });
@@ -8051,6 +8091,76 @@
       });
     });
     if (changed) writeJsonStorage(ITEM_NAMES_KEY, names);
+  }
+
+  // 抽卡統計：用英雄券這類道具（POST /api/items/{id}/use）時，回應的 drawResult 就是抽到的英雄
+  const DRAW_LOG_KEY = 'autoClickerV2Draws';
+  const DRAW_LOG_LIMIT = 3000;
+  const DRAW_RECENT_COUNT = 20;
+
+  function recordDraw(itemId, data) {
+    rememberItemNames(Array.isArray(data.items) ? data : data.items || {});
+    const hero = data.drawResult;
+    const draws = readJsonStorage(DRAW_LOG_KEY, []);
+    draws.push({
+      at: Date.now(),
+      item: itemName(itemId),
+      heroId: hero.id,
+      // 剛抽到的英雄還沒改名，名字就是卡片種類
+      type: hero.type || hero.name || '',
+      tier: hero.tier || '',
+      potential: hero.potential || '',
+    });
+    writeJsonStorage(DRAW_LOG_KEY, draws.slice(-DRAW_LOG_LIMIT));
+    if (activeTab === 'draw') renderDrawStats();
+  }
+
+  function countBy(draws, key) {
+    const counts = new Map();
+    draws.forEach((draw) => counts.set(draw[key], (counts.get(draw[key]) || 0) + 1));
+    return counts;
+  }
+
+  function renderDrawStats() {
+    const all = readJsonStorage(DRAW_LOG_KEY, []);
+    const select = panel.querySelector('[data-role="draw-item"]');
+    const items = [...new Set(all.map((draw) => draw.item))];
+    const chosen = items.includes(select.value) ? select.value : '';
+    select.innerHTML = `<option value="">全部道具</option>${items
+      .map((item) => `<option value="${escapeHtml(item)}" ${item === chosen ? 'selected' : ''}>${escapeHtml(item)}</option>`)
+      .join('')}`;
+    const draws = chosen ? all.filter((draw) => draw.item === chosen) : all;
+    const box = panel.querySelector('[data-role="draw-stats"]');
+    if (!draws.length) {
+      box.innerHTML = '<div class="hint">還沒有抽卡紀錄：在遊戲的物品頁用英雄券抽卡，這裡就會記下來</div>';
+      return;
+    }
+    const percent = (count) => `${((count / draws.length) * 100).toFixed(1)}%`;
+    const table = (title, counts, order = null) => {
+      const rows = [...counts.entries()]
+        .sort(([firstKey, firstCount], [secondKey, secondCount]) =>
+          order ? order.indexOf(secondKey) - order.indexOf(firstKey) : secondCount - firstCount
+        )
+        .map(([key, count]) => `<tr><td style="text-align:left">${escapeHtml(key || '（不明）')}</td><td>${count}</td><td>${percent(count)}</td></tr>`)
+        .join('');
+      return `<table class="combat"><tr><th style="text-align:left">${title}</th><th>張</th><th>機率</th></tr>${rows}</table>`;
+    };
+    const recent = draws
+      .slice(-DRAW_RECENT_COUNT)
+      .reverse()
+      .map((draw) => {
+        const time = new Date(draw.at).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        return `<div>${time} ${escapeHtml(draw.type)}（稀有度 ${escapeHtml(draw.tier || '?')}，潛能 ${escapeHtml(draw.potential || '?')}）${chosen ? '' : `　${escapeHtml(draw.item)}`}</div>`;
+      })
+      .join('');
+    const since = new Date(draws[0].at).toLocaleDateString();
+    box.innerHTML = `
+      <div>共抽 <b>${draws.length}</b> 張（${since} 起）</div>
+      ${table('潛能評價', countBy(draws, 'potential'), POTENTIAL_ORDER)}
+      ${table('稀有度', countBy(draws, 'tier'))}
+      <details><summary>各卡片（${countBy(draws, 'type').size} 種）</summary>${table('卡片', countBy(draws, 'type'))}</details>
+      <div class="subhead">最近 ${Math.min(DRAW_RECENT_COUNT, draws.length)} 抽</div>
+      <div class="hint">${recent}</div>`;
   }
 
   // 自己沒記到的名稱，再看鍛造工具腳本有沒有記
@@ -10227,7 +10337,7 @@
     incomeState.moneySampledAt = Date.now();
     try {
       const profile = await requestGameApi(PROFILE_API);
-      dashboard.profile = { id: profile.id, nickname: profile.nickname, money: profile.money };
+      rememberProfile(profile);
       recordMoney(profile.money);
     } catch {
       // 讀不到就下次再記
@@ -10833,6 +10943,7 @@
     if (event.target.dataset.forgePlan) updateForgeApiPlansFromChoices();
     if (event.target.dataset.trainChoice) updateTrainFromChoices();
     if (event.target.dataset.field === 'trainEnabled') renderTrainStatus();
+    if (event.target.dataset.field === 'showAccountName') renderAppName();
     // 自己改了名稱＝今天就用這個名稱，自動換名稱等到下一個 00:00
     if (event.isTrusted && (event.target.dataset.field === 'forgeRecipeName' || event.target.dataset.forgePlan === 'name')) {
       writeJsonStorage(FORGE_NAME_DAY_KEY, localDayKey(Date.now()));
@@ -10880,6 +10991,12 @@
   renderCardBuyStatus();
   renderCardAlertHistory();
   renderTrainStatus();
+  // data-role 的欄位不會進設定的 change 處理，篩選道具要自己接
+  panel.querySelector('[data-role="draw-item"]').addEventListener('change', renderDrawStats);
+  // 一開頁面就讀帳號，面板標題才看得出是哪個帳號（之後回報、記收益時會再更新）
+  requestGameApi(PROFILE_API)
+    .then(rememberProfile)
+    .catch(() => {});
   let savedTab = 'main';
   try {
     savedTab = localStorage.getItem(TAB_STORAGE_KEY) || 'main';
