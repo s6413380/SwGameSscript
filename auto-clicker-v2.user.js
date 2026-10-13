@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.13
+// @version      3.17
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -187,6 +187,8 @@
     lowProfileBreakMinMinutes: 5,
     lowProfileBreakMaxMinutes: 20,
     lowProfileSleepHours: '2-9',
+    // 多開輪流：同一台電腦的幾個帳號透過中繼站排隊，一次只有一個分頁打遊戲 API
+    turnTakingEnabled: false,
     statusPauseLevel: 3,
     expPauseEnabled: false,
     expSelectors: '',
@@ -271,6 +273,8 @@
     dashboardUrl: 'http://localhost:8787',
     // 轉金幣時請對方掛單用的材料（掛 1 個，價格＝要轉的金額）
     transferMine: '泥土',
+    // 多開輪流時，轉移期間中繼站只讓轉移的請求通過：human＝兩個帳號之間切換仍隔一下，fast＝不隔
+    transferTurnMode: 'human',
     // 對方不在中繼站上時，透過雲端試算表接收「請掛單」的要求（每 30 秒看一次）
     transferCloudEnabled: false,
     // 雲端轉角色要這個帳號付錢，預設每次都要按同意；這裡列的帳號 ID（自己的其他帳號）免問
@@ -759,6 +763,8 @@
       <div class="row">每天 <input data-field="lowProfileSleepHours" placeholder="留空＝不睡" style="width:70px;flex:none"> 點睡覺（例：2-9；每天前後飄 1 小時，偶爾多睡）</div>
       <div class="hint">開了之後掛機、API 鍛造每一步多等 1～8 秒（多數短、偶爾長），偶爾分心停 0.5～2 分鐘，要補給、換裝時晚幾秒才反應，動作之間的間隔也拉長；玩一陣子就整個停下休息，晚上睡覺。休息、睡覺時不會打怪、開爐，也不會躲紅名（血量、活人驗證照常監控）。反應變慢，補給門檻設高一點比較安全</div>
       <div class="hint" data-role="low-profile-personality"></div>
+      <label class="row"><input data-field="turnTakingEnabled" type="checkbox" style="flex:none;width:auto"> <b>多開輪流</b>（同一台電腦的帳號一次只有一個送出請求）</label>
+      <div class="hint">要開中繼站（啟動中繼站.cmd），每個帳號都要勾。腳本打的 API 一律經中繼站排隊，一次一個，換到別的帳號（或別的分頁）之前隔 1～3 秒，像一個人在幾個視窗之間切換；總覽、附近玩家、收入這類定時讀取會等這個帳號下次動作時順便送（最多等 30 秒）。中繼站沒開就照舊直接送。遊戲網頁自己發的請求不受管</div>
       <label class="row"><input data-field="autoNavigateEnabled" type="checkbox" style="flex:none;width:auto"> 執行中不在狩獵頁／鍛造頁就自動切過去（API 打怪、API 鍛造不需要）</label>
       <label>A 原地掛機（重複點）</label>
       <div class="row"><input data-field="selectorA" placeholder="CSS selector"><button data-pick="selectorA">選取</button></div>
@@ -1027,6 +1033,8 @@
       <div class="row">對象帳號<select data-role="transfer-target" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select><button data-action="transfer-refresh">重新讀取</button></div>
       <div class="row">或輸入對方帳號 ID<input data-role="transfer-target-id" type="number" min="1" placeholder="對方面板上看得到" style="width:110px;flex:none"></div>
       <div class="hint" data-role="transfer-me"></div>
+      <div class="row">多開輪流時轉移<select data-field="transferTurnMode" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="human">優先＋模擬真人</option><option value="fast">優先＋最快</option></select></div>
+      <div class="hint">（主流程勾了「多開輪流」才有用）兩個帳號都在中繼站上轉移時，所有帳號的掛機、鍛造請求先停著，只讓轉移的兩邊動作，做完自動接著跑。模擬真人：兩個視窗之間切換隔 0.6～1.5 秒，掛單到買下約 1～3 秒；最快：不隔，約 1 秒內</div>
       <fieldset class="group">
         <legend>轉金幣給對方</legend>
         <div class="row">金額 <input data-role="transfer-amount" type="number" min="1" style="width:100px;flex:none"> <button data-action="transfer-money" style="font-weight:bold">轉出</button></div>
@@ -1160,6 +1168,10 @@
     [data-auto-clicker] fieldset.group { border:1px solid #3a3a40; border-radius:8px; margin:8px 0; padding:4px 8px 8px; }
     [data-auto-clicker] fieldset.group legend { font-weight:bold; padding:0 4px; }
     [data-auto-clicker] .hint { font-size:12px; color:#a0a0aa; margin:3px 0; }
+    [data-auto-clicker] .hint.fold { cursor:pointer; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:1; overflow:hidden; }
+    [data-auto-clicker] .hint.fold::before { content:'▸ '; color:#7a7a84; }
+    [data-auto-clicker] .hint.fold.open { display:block; }
+    [data-auto-clicker] .hint.fold.open::before { content:'▾ '; }
     [data-auto-clicker] .subhead { font-weight:bold; font-size:12px; margin:8px 0 2px; border-bottom:1px solid #3a3a40; }
     [data-auto-clicker] .choices { font-size:12px; max-height:140px; overflow:auto; }
     [data-auto-clicker] .choices label { margin:2px 0; }
@@ -1176,6 +1188,20 @@
   panel.setAttribute('data-auto-clicker', '');
   document.head.appendChild(style);
   document.body.appendChild(panel);
+
+  // 長說明一多，「開始」被擠到很下面：預設只露第一行，點一下展開、再點收起。
+  // 只收建立面板時寫死的說明；有 data-role 的是會變的狀態文字，要一直看得到
+  const HINT_FOLD_MIN_LENGTH = 30;
+  panel.querySelectorAll('.hint:not([data-role])').forEach((hint) => {
+    if (hint.closest('.choices') || hint.textContent.trim().length < HINT_FOLD_MIN_LENGTH) return;
+    hint.classList.add('fold');
+    hint.title = '點一下展開／收起';
+  });
+  panel.addEventListener('click', (event) => {
+    const hint = event.target.closest('.hint.fold');
+    if (!hint || event.target.closest('button, input, select, a, label')) return;
+    hint.classList.toggle('open');
+  });
 
   const alertDialog = document.createElement('div');
   alertDialog.setAttribute('data-auto-clicker', '');
@@ -2097,20 +2123,20 @@
   async function refreshDashboardData() {
     if (Date.now() - dashboard.profileTriedAt > DASHBOARD_PROFILE_FRESH_MILLISECONDS) {
       dashboard.profileTriedAt = Date.now();
-      const profile = await requestGameApi(PROFILE_API);
+      const profile = await requestGameApi(PROFILE_API, { background: true });
       rememberProfile(profile);
       if (readSettingsFromPanel().incomeEnabled) recordMoney(profile.money);
     }
     if (tabRole() === 'forge') {
       if (Date.now() - dashboard.forgeHeroesTriedAt > DASHBOARD_TEAM_FRESH_MILLISECONDS) {
         dashboard.forgeHeroesTriedAt = Date.now();
-        dashboard.forgeHeroes = (await requestGameApi(HEROES_API)).heroes || [];
+        dashboard.forgeHeroes = (await requestGameApi(HEROES_API, { background: true })).heroes || [];
       }
       return;
     }
     if (Date.now() - Math.max(dashboard.teamAt, dashboard.teamTriedAt) > DASHBOARD_TEAM_FRESH_MILLISECONDS) {
       dashboard.teamTriedAt = Date.now();
-      rememberHuntTeam((await requestGameApi(HUNT_INFO_API)).heroes || []);
+      rememberHuntTeam((await requestGameApi(HUNT_INFO_API, { background: true })).heroes || []);
     }
   }
 
@@ -2146,7 +2172,17 @@
   }
 
   window.addEventListener('pagehide', () => {
-    leaveDashboard(readSettingsFromPanel());
+    const settings = readSettingsFromPanel();
+    leaveDashboard(settings);
+    // 關分頁時剛好輪到自己，不放手的話別的帳號要等租約過期
+    if (settings.turnTakingEnabled) {
+      try {
+        navigator.sendBeacon(`${dashboardBaseUrl(settings)}/turn/release?id=${encodeURIComponent(TURN_ID)}`, '');
+        if (transferWatch.arm) navigator.sendBeacon(`${dashboardBaseUrl(settings)}/turn/transfer/end?id=${encodeURIComponent(TRANSFER_TURN_ID)}`, '');
+      } catch {
+        // 送不出去就等中繼站租約到期
+      }
+    }
     if (state.running) releaseRunLock(state.forgeMode);
     if (forgeRunner.running) releaseRunLock(true);
   });
@@ -2334,6 +2370,8 @@
     backgroundTimer.clearTimeout(transferWatch.timerId);
     transferWatch.arm = { ...command, until: Date.now() + (command.waitMilliseconds || TRANSFER_ARM_MILLISECONDS) };
     dashboard.reportedAt = 0;
+    // 只有兩邊都在這台電腦的中繼站上才搶優先；雲端那條要等好幾分鐘，不能讓其他帳號一直停著
+    if (command.relay) await beginTransferTurn(readSettingsFromPanel(), command.waitMilliseconds || TRANSFER_ARM_MILLISECONDS);
     pollArmedTransfer();
     const message = `轉移：待命中，對方一掛單就買（最多等 ${(command.waitMilliseconds || TRANSFER_ARM_MILLISECONDS) / 1000} 秒）`;
     transferLog(message);
@@ -2345,6 +2383,7 @@
     backgroundTimer.clearTimeout(transferWatch.timerId);
     transferWatch.arm = null;
     dashboard.reportedAt = 0;
+    if (arm && arm.relay) endTransferTurn(readSettingsFromPanel());
     transferLog(message);
     // 雲端轉角色待命時停掉的掛機、鍛造，結束就恢復
     if (arm && arm.onEnd) arm.onEnd();
@@ -2358,16 +2397,21 @@
       return;
     }
     try {
-      const trades = (await requestGameApi(`/api/trades?type=${arm.kind}`))[arm.kind] || [];
+      // 搶時間：不排進動作隊伍（打怪的動作間隔會拖慢），查到就在同一次操作權裡買下
+      const found = await inTransferTurn(readSettingsFromPanel(), async () => {
+        const trades = (await sendGameRequestNow(`/api/trades?type=${arm.kind}`))[arm.kind] || [];
+        if (transferWatch.arm !== arm) return null;
+        const trade = trades.find((candidate) => candidate.message === arm.token && Number(candidate.sellerId) === Number(arm.sellerId));
+        if (!trade || Number(trade.price) !== Number(arm.price)) return trade ? { trade } : null;
+        return { trade, result: await sendGameRequestNow(`/api/trades/${trade.id}/buy`, { method: 'POST' }) };
+      });
       if (transferWatch.arm !== arm) return;
-      const trade = trades.find((candidate) => candidate.message === arm.token && Number(candidate.sellerId) === Number(arm.sellerId));
-      if (trade) {
-        if (Number(trade.price) !== Number(arm.price)) {
+      if (found) {
+        const { trade, result } = found;
+        if (!result) {
           disarmTransfer(`轉移：掛單價格 $${Number(trade.price).toLocaleString()} 跟約定的 $${Number(arm.price).toLocaleString()} 不一樣，不買`);
           return;
         }
-        // 搶時間：不排進動作隊伍（打怪的動作間隔會拖慢），直接送
-        const result = await sendGameRequest(`/api/trades/${trade.id}/buy`, { method: 'POST' });
         refreshGameView([['profile'], ['market'], ['heroes'], ['items']]);
         disarmTransfer(`轉移：買下 ${trade.name}（$${Number(trade.price).toLocaleString()}），剩 $${Number(result.money).toLocaleString()}`);
         return;
@@ -2384,15 +2428,21 @@
 
   // 收錢的一方：照對方的要求把 1 個材料掛成約定的價格（付錢的一方已經在待命）
   async function listForMoneyTransfer(command) {
-    const mines = (await requestGameApi(ITEMS_API)).mines || [];
-    const mine = mines.find((candidate) => (candidate.name || itemName(candidate.id)) === command.mine && (Number(candidate.available ?? candidate.quantity) || 0) >= 1);
-    if (!mine) throw new Error(`轉移：沒有可以掛單的「${command.mine}」`);
+    const settings = readSettingsFromPanel();
     const price = Number(command.price);
-    await sendGameRequest(`${ITEMS_API}/${mine.id}/sell`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ price, quantity: 1, message: command.token }),
-    });
+    // 從中繼站來的：買方已經待命、轉移優先已經開始，這邊的請求也要標成轉移才拿得到操作權
+    const list = async () => {
+      const mines = (await sendGameRequestNow(ITEMS_API)).mines || [];
+      const mine = mines.find((candidate) => (candidate.name || itemName(candidate.id)) === command.mine && (Number(candidate.available ?? candidate.quantity) || 0) >= 1);
+      if (!mine) throw new Error(`轉移：沒有可以掛單的「${command.mine}」`);
+      await sendGameRequestNow(`${ITEMS_API}/${mine.id}/sell`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ price, quantity: 1, message: command.token }),
+      });
+    };
+    if (command.relay) await inTransferTurn(settings, list);
+    else await list();
     const message = `轉移：已把 ${command.mine}×1 掛成 $${price.toLocaleString()}，等對方買下`;
     transferLog(message);
     return message;
@@ -2860,7 +2910,7 @@
     transferCloud.busy = true;
     try {
       const url = cloudUrlOf(settings);
-      if (!transferCloud.accountId) transferCloud.accountId = Number((await requestGameApi(PROFILE_API)).id);
+      if (!transferCloud.accountId) transferCloud.accountId = Number((await requestGameApi(PROFILE_API, { background: true })).id);
       const page = await cloudRequest(`${url}?only=transfers&after_transfers=${transferCloud.row}`);
       if (!page.transfers) return;
       transferCloud.row = page.transfers.next;
@@ -2936,8 +2986,8 @@
     const token = transferToken();
     if (viaRelay) {
       // 自己先待命再叫對方掛，對方一掛上就買
-      await armTransfer({ kind: 'mines', token, price: amount, sellerId: target.accountId });
-      await sendRelayCommand(settings, target.accountId, { type: 'transferList', mine, price: amount, token });
+      await armTransfer({ kind: 'mines', token, price: amount, sellerId: target.accountId, relay: true });
+      await sendRelayCommand(settings, target.accountId, { type: 'transferList', mine, price: amount, token, relay: true });
       transferLog(`已請「${target.nickname}」掛單，這個帳號待命中，一掛上就買（約 5～10 秒）`);
       return;
     }
@@ -2983,23 +3033,30 @@
     return null;
   }
 
-  async function listHeroAndWaitSold(hero, price, token, nickname) {
-    await sendGameRequest(`${HEROES_API}/${hero.id}/sell`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ price, message: token }),
-    });
+  async function listHeroAndWaitSold(hero, price, token, nickname, { relay = false } = {}) {
+    const settings = readSettingsFromPanel();
+    // 中繼站那條：買方待命時已經開了轉移優先，這邊的請求標成轉移才不會跟著被擋
+    const inTurn = (run) => (relay ? inTransferTurn(settings, run) : run());
+    await inTurn(() =>
+      sendGameRequestNow(`${HEROES_API}/${hero.id}/sell`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ price, message: token }),
+      })
+    );
     transferLog(`「${hero.name}」已掛單 $${price.toLocaleString()}，「${nickname}」待命中`);
     refreshGameView([['heroes'], ['market']]);
     const deadline = Date.now() + TRANSFER_SOLD_WAIT_MILLISECONDS;
     while (Date.now() < deadline) {
       await wait(1500);
-      if (!(await findOwnTrade('heroes', token))) {
+      const isListed = () => inTurn(async () => ((await sendGameRequestNow(`/api/trades?type=heroes&own=true`)).heroes || []).some((trade) => trade.message === token));
+      // 偶爾讀到的清單還沒更新，連兩次都不在才算賣掉
+      if (!(await isListed()) && (await wait(1000), !(await isListed()))) {
         transferLog(`「${hero.name}」已被「${nickname}」買走（$${price.toLocaleString()}）`);
         return true;
       }
     }
-    await requestGameApi(`${HEROES_API}/${hero.id}/cancelTrade`, { method: 'POST' }).catch(() => {});
+    await inTurn(() => sendGameRequestNow(`${HEROES_API}/${hero.id}/cancelTrade`, { method: 'POST' })).catch(() => {});
     refreshGameView([['heroes'], ['market']]);
     return false;
   }
@@ -3036,11 +3093,11 @@
     rememberTransferTarget(target);
     const token = transferToken();
     if (viaRelay) {
-      await sendRelayCommand(settings, target.accountId, { type: 'transferArm', kind: 'heroes', token, price, sellerId: profile.id });
+      await sendRelayCommand(settings, target.accountId, { type: 'transferArm', kind: 'heroes', token, price, sellerId: profile.id, relay: true });
       transferLog(`等「${target.nickname}」待命…`);
       // 對方沒待命就不掛，避免掛上去沒人買、被別人撿走
       await waitUntilArmed(settings, target.accountId, token);
-      if (!(await listHeroAndWaitSold(hero, price, token, target.nickname))) throw new Error(`${TRANSFER_SOLD_WAIT_MILLISECONDS / 1000} 秒內對方沒買走，已撤回掛單`);
+      if (!(await listHeroAndWaitSold(hero, price, token, target.nickname, { relay: true }))) throw new Error(`${TRANSFER_SOLD_WAIT_MILLISECONDS / 1000} 秒內對方沒買走，已撤回掛單`);
       return;
     }
     const transfer = { id: `${profile.id}-${Date.now()}`, from: Number(profile.id), to: target.accountId, amount: price, mine: hero.name, token };
@@ -3202,12 +3259,16 @@
     dashboard.sending = true;
     dashboard.reportedAt = Date.now();
     try {
-      try {
-        await refreshDashboardData();
-        dashboard.dataError = '';
-      } catch (error) {
-        dashboard.dataError = `讀取遊戲資料失敗（${error.message}）`;
-      }
+      // 多開輪流時讀取會延到下次動作才送；回報不能跟著卡住，遠端指令（例如轉移）是跟著回報拿回來的
+      const refreshing = refreshDashboardData().then(
+        () => {
+          dashboard.dataError = '';
+        },
+        (error) => {
+          dashboard.dataError = `讀取遊戲資料失敗（${error.message}）`;
+        }
+      );
+      if (!dashboard.profile || !settings.turnTakingEnabled) await refreshing;
       if (!dashboard.profile) return;
       const reportingId = `${dashboard.profile.id}-${tabKey}`;
       const response = await window.fetch(`${dashboardBaseUrl(settings)}/status?id=${encodeURIComponent(reportingId)}`, {
@@ -3275,7 +3336,147 @@
   // 一個請求卡住不回，排在後面的動作（掛機、鍛造共用一條隊伍）會全部卡死，所以要有逾時
   const GAME_REQUEST_TIMEOUT_MILLISECONDS = 30000;
 
-  async function sendGameRequest(path, options = {}) {
+  // 三個帳號開在同一台電腦，後台看得到同一個 IP；幾個帳號在同一瞬間一起動作不像人，
+  // 所以透過中繼站輪流：一次只有一個分頁在打遊戲 API，換人之間的空檔由中繼站決定
+  const TURN_ID = `${tabKey}-${Math.random().toString(36).slice(2, 6)}`;
+  const TURN_RELAY_TIMEOUT_MILLISECONDS = 2000;
+  const TURN_GIVE_UP_MILLISECONDS = 180000;
+  const turnTaking = { chain: Promise.resolve(), downUntil: 0, error: '', waitingSince: 0, background: [], transferWaiting: false };
+  // 轉移的請求用另一個 id、另一條隊伍：自己分頁的掛機請求正卡在等轉移結束時，轉移不能排在它後面
+  const TRANSFER_TURN_ID = `${TURN_ID}-t`;
+  let transferTurnChain = Promise.resolve();
+  // 不急的讀取（總覽、附近玩家、收入）等這個分頁下次動作時順便送，不另外排隊搶操作權；
+  // 分頁停著沒在動作時，最多等這麼久就自己送
+  const TURN_BACKGROUND_WAIT_MILLISECONDS = 30000;
+  // 一次順便送太多會占住操作權太久，剩下的留給下一次
+  const TURN_BACKGROUND_PER_TURN = 4;
+
+  async function askTurnRelay(settings, action, method, { id = TURN_ID, query = '' } = {}) {
+    const controller = new AbortController();
+    const timer = backgroundTimer.setTimeout(() => controller.abort(), TURN_RELAY_TIMEOUT_MILLISECONDS);
+    try {
+      const response = await window.fetch(`${dashboardBaseUrl(settings)}/${action}?id=${encodeURIComponent(id)}${query}`, {
+        method,
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return await response.json();
+    } finally {
+      backgroundTimer.clearTimeout(timer);
+    }
+  }
+
+  async function takeTurn(settings, { id = TURN_ID, transfer = false } = {}) {
+    if (Date.now() < turnTaking.downUntil) return false;
+    const startedAt = Date.now();
+    try {
+      while (Date.now() - startedAt < TURN_GIVE_UP_MILLISECONDS) {
+        const reply = await askTurnRelay(settings, 'turn', 'GET', { id, query: transfer ? '&transfer=1' : '' });
+        if (reply.granted) {
+          turnTaking.error = '';
+          turnTaking.waitingSince = 0;
+          turnTaking.transferWaiting = false;
+          return true;
+        }
+        turnTaking.waitingSince = turnTaking.waitingSince || startedAt;
+        turnTaking.transferWaiting = Boolean(reply.transfer) && !transfer;
+        // 轉移時中繼站回很短的等待，掛單到買下的空窗才小
+        await wait(Math.min(Math.max(Number(reply.retry) || 500, 50), 1500));
+      }
+      turnTaking.error = `等了 ${TURN_GIVE_UP_MILLISECONDS / 60000} 分鐘還輪不到，這次直接送`;
+    } catch (error) {
+      // 中繼站沒開不能讓掛機卡住：先直接送，30 秒後再試
+      turnTaking.downUntil = Date.now() + 30000;
+      turnTaking.error = error.message === 'HTTP 404'
+        ? 'monitor-server.ps1 是舊版，請關掉重開，現在直接送'
+        : `連不上中繼站（${error.message}），現在直接送`;
+    }
+    turnTaking.waitingSince = 0;
+    return false;
+  }
+
+  function sendGameRequest(path, { background = false, ...options } = {}) {
+    const settings = readSettingsFromPanel();
+    if (!settings.turnTakingEnabled) return sendGameRequestNow(path, options);
+    if (background) return deferBackgroundRequest(settings, path, options);
+    return sendInTurn(settings, path, options);
+  }
+
+  function sendInTurn(settings, path, options) {
+    // 同一個分頁也一次一個：掛機和鍛造的 GET 不排隊，不串起來就會疊在一起送
+    const next = turnTaking.chain.then(async () => {
+      const held = await takeTurn(settings);
+      try {
+        return await sendGameRequestNow(path, options);
+      } finally {
+        await runBackgroundRequests();
+        if (held) await askTurnRelay(settings, 'turn/release', 'POST').catch(() => {});
+      }
+    });
+    turnTaking.chain = next.catch(() => {});
+    return next;
+  }
+
+  function deferBackgroundRequest(settings, path, options) {
+    return new Promise((resolve, reject) => {
+      const item = { path, options, resolve, reject };
+      item.timer = backgroundTimer.setTimeout(() => {
+        const index = turnTaking.background.indexOf(item);
+        if (index < 0) return;
+        turnTaking.background.splice(index, 1);
+        sendInTurn(settings, path, options).then(resolve, reject);
+      }, TURN_BACKGROUND_WAIT_MILLISECONDS);
+      turnTaking.background.push(item);
+    });
+  }
+
+  // 還拿著操作權時接著送，像人按完一下順手看一眼別的畫面
+  async function runBackgroundRequests() {
+    for (let count = 0; count < TURN_BACKGROUND_PER_TURN && turnTaking.background.length; count++) {
+      const item = turnTaking.background.shift();
+      backgroundTimer.clearTimeout(item.timer);
+      await wait(randomGap(200, 700));
+      await sendGameRequestNow(item.path, item.options).then(item.resolve, item.reject);
+    }
+  }
+
+  // 轉移開始時通知中繼站：之後只有標成轉移的請求拿得到操作權，其他帳號（和自己的掛機、鍛造）先等
+  function beginTransferTurn(settings, milliseconds) {
+    if (!settings.turnTakingEnabled) return Promise.resolve();
+    const mode = settings.transferTurnMode === 'fast' ? 'fast' : 'human';
+    return askTurnRelay(settings, 'turn/transfer', 'POST', { id: TRANSFER_TURN_ID, query: `&mode=${mode}&ms=${Math.round(milliseconds)}` }).catch(() => {});
+  }
+
+  function endTransferTurn(settings) {
+    if (!settings.turnTakingEnabled) return Promise.resolve();
+    return askTurnRelay(settings, 'turn/transfer/end', 'POST', { id: TRANSFER_TURN_ID }).catch(() => {});
+  }
+
+  // 轉移的一組請求（例如查到掛單接著買）在同一次操作權裡送完，中間不讓別的請求插進來
+  function inTransferTurn(settings, run) {
+    if (!settings.turnTakingEnabled) return run();
+    const next = transferTurnChain.then(async () => {
+      const held = await takeTurn(settings, { id: TRANSFER_TURN_ID, transfer: true });
+      try {
+        return await run();
+      } finally {
+        if (held) await askTurnRelay(settings, 'turn/release', 'POST', { id: TRANSFER_TURN_ID }).catch(() => {});
+      }
+    });
+    transferTurnChain = next.catch(() => {});
+    return next;
+  }
+
+  function turnMonitorText(settings) {
+    if (!settings.turnTakingEnabled) return '';
+    if (turnTaking.error) return `多開輪流：${turnTaking.error}`;
+    if (turnTaking.waitingSince && turnTaking.transferWaiting) return `多開輪流：帳號之間轉移中，先暫停（${Math.round((Date.now() - turnTaking.waitingSince) / 1000)} 秒）`;
+    if (turnTaking.waitingSince) return `多開輪流：等其他帳號（${Math.round((Date.now() - turnTaking.waitingSince) / 1000)} 秒）`;
+    return '多開輪流：開啟';
+  }
+
+  async function sendGameRequestNow(path, options = {}) {
     const token = currentGameToken();
     if (!token) throw new Error('還沒取得 token，請在遊戲裡點一下任一分頁再試');
     const controller = new AbortController();
@@ -4159,7 +4360,7 @@
   }
 
   async function refreshZoneUsers() {
-    const data = await requestGameApi(ZONE_USERS_API);
+    const data = await requestGameApi(ZONE_USERS_API, { background: true });
     state.zoneUsers = (data && data.users) || [];
   }
 
@@ -5413,6 +5614,8 @@
     if (combatLine) lines.push(combatLine);
     const dashboardLine = dashboardMonitorText(settings);
     if (dashboardLine) lines.push(dashboardLine);
+    const turnLine = turnMonitorText(settings);
+    if (turnLine) lines.push(turnLine);
     monitorElement.textContent = lines.join('\n');
     reportToDashboard(settings);
     checkForUpdate(settings);
@@ -8140,7 +8343,7 @@
     growthSync.at = Date.now();
     try {
       if (!dashboard.profile) {
-        const profile = await requestGameApi(PROFILE_API);
+        const profile = await requestGameApi(PROFILE_API, { background: true });
         rememberProfile(profile);
       }
       const baseUrl = dashboardBaseUrl(settings);
@@ -10966,7 +11169,7 @@
     if (tabShutDown || !settings.incomeEnabled || Date.now() - incomeState.moneySampledAt < MONEY_SAMPLE_MILLISECONDS) return;
     incomeState.moneySampledAt = Date.now();
     try {
-      const profile = await requestGameApi(PROFILE_API);
+      const profile = await requestGameApi(PROFILE_API, { background: true });
       rememberProfile(profile);
       recordMoney(profile.money);
     } catch {

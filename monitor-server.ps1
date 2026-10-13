@@ -1,7 +1,7 @@
 # Multi-account monitor relay for auto-clicker-v2.user.js
 # Each game tab POSTs its status to /status?id=<accountId>; open http://localhost:8787/ to see all accounts.
 # Usage: powershell -ExecutionPolicy Bypass -File .\monitor-server.ps1
-param([int]$Port = 8787, [int]$StaleMinutes = 10)
+param([int]$Port = 8787, [int]$StaleMinutes = 10, [int]$TurnSwitchMinMs = 1000, [int]$TurnSwitchMaxMs = 3000, [int]$TransferSwitchMinMs = 600, [int]$TransferSwitchMaxMs = 1500)
 
 $ErrorActionPreference = 'Stop'
 $dashboardPath = Join-Path $PSScriptRoot 'monitor-dashboard.html'
@@ -16,9 +16,86 @@ $utf8 = New-Object System.Text.UTF8Encoding($false)
 $accounts = @{}
 # Commands from the dashboard wait here until that tab's next status report picks them up
 $commands = @{}
+# Turn taking: all accounts share one computer, so only one tab may call the game API at a time,
+# and handing the turn to another tab waits a moment like a person switching windows
+$turn = @{ holder = ''; until = 0; lastHolder = ''; freeAt = 0; switchGap = 0; streak = 0 }
+# Tabs waiting for the turn, served oldest first so no account starves
+$turnWaiters = @{}
+# Longer than the script's 30 s game request timeout; a crashed tab loses the turn after this
+$turnLeaseMs = 40000
+# While two local accounts transfer through the market, only their requests get the turn, so the listing
+# is bought quickly; mode 'human' still waits a little between the two windows, 'fast' does not
+$transfer = @{ ids = @{}; mode = 'human'; until = 0 }
 
 function Now-Milliseconds {
   [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+}
+
+function Transfer-Active([long]$now) {
+  if ($transfer.ids.Count -gt 0 -and $transfer.until -lt $now) { $transfer.ids.Clear() }
+  return $transfer.ids.Count -gt 0
+}
+
+function New-SwitchGap([long]$now) {
+  if (Transfer-Active $now) {
+    if ($transfer.mode -eq 'fast') { return 0 }
+    return Get-Random -Minimum $TransferSwitchMinMs -Maximum ($TransferSwitchMaxMs + 1)
+  }
+  return Get-Random -Minimum $TurnSwitchMinMs -Maximum ($TurnSwitchMaxMs + 1)
+}
+
+function Release-Turn([long]$now) {
+  $turn.lastHolder = $turn.holder
+  $turn.holder = ''
+  $turn.freeAt = $now
+  $turn.switchGap = New-SwitchGap $now
+}
+
+function Grant-Turn([string]$id, [long]$now) {
+  $turnWaiters.Remove($id)
+  $turn.holder = $id
+  $turn.until = $now + $turnLeaseMs
+}
+
+function Request-Turn([string]$id, [bool]$isTransfer) {
+  $now = Now-Milliseconds
+  if ($turn.holder -and $turn.until -lt $now) { Release-Turn $now }
+  if ($turn.holder -eq $id) {
+    $turn.until = $now + $turnLeaseMs
+    return 0
+  }
+  # A tab that stopped asking (closed, or gave up) must not block the queue
+  foreach ($waiter in @($turnWaiters.Keys)) {
+    if ($turnWaiters[$waiter].seen -lt $now - 3000) { $turnWaiters.Remove($waiter) }
+  }
+  if (-not $turnWaiters.ContainsKey($id)) { $turnWaiters[$id] = @{ since = $now; seen = $now; transfer = $isTransfer } }
+  $turnWaiters[$id].seen = $now
+  if (Transfer-Active $now) {
+    # Everything else (other accounts, and the transferring tabs' own hunting) waits until the transfer ends
+    if (-not $isTransfer) { return 500 }
+    if ($turn.holder) { return 50 }
+    # Seller and buyer take turns, so the buyer's polling cannot hold back the listing
+    $otherWaiting = @($turnWaiters.Keys | Where-Object { $_ -ne $id -and $turnWaiters[$_].transfer -and $turnWaiters[$_].seen -ge $now - 1000 }).Count -gt 0
+    if ($id -eq $turn.lastHolder -and $otherWaiting) { return 50 }
+    $switchAt = $turn.freeAt + $turn.switchGap
+    if ($id -ne $turn.lastHolder -and $now -lt $switchAt) { return [Math]::Max(50, $switchAt - $now) }
+    Grant-Turn $id $now
+    return 0
+  }
+  if ($turn.holder) { return 300 }
+  # A person finishes a quick burst on one window before switching; cap it so other accounts still get a go
+  if ($id -eq $turn.lastHolder -and $now -lt $turn.freeAt + 1500 -and $turn.streak -lt 6) {
+    Grant-Turn $id $now
+    $turn.streak++
+    return 0
+  }
+  $oldest = ($turnWaiters.GetEnumerator() | Sort-Object { $_.Value.since } | Select-Object -First 1).Key
+  if ($oldest -ne $id) { return 300 }
+  $switchAt = $turn.freeAt + $turn.switchGap
+  if ($id -ne $turn.lastHolder -and $now -lt $switchAt) { return [Math]::Max(100, $switchAt - $now) }
+  Grant-Turn $id $now
+  $turn.streak = 0
+  return 0
 }
 
 function Send-Response($response, [int]$status, [string]$contentType, [string]$body) {
@@ -103,6 +180,55 @@ function Handle-Request($context) {
       Write-Host "$(Get-Date -Format HH:mm:ss) tab $id left"
     }
     Send-Response $response 200 'text/plain' 'ok'
+    return
+  }
+  if ($request.HttpMethod -eq 'GET' -and $path -eq '/turn') {
+    $id = $request.QueryString['id']
+    if ($id -notmatch '^[\w-]{1,40}$') {
+      Send-Response $response 400 'text/plain' 'bad request'
+      return
+    }
+    $retry = Request-Turn $id ($request.QueryString['transfer'] -eq '1')
+    $transferFlag = if (Transfer-Active (Now-Milliseconds)) { 'true' } else { 'false' }
+    $body = if ($retry -eq 0) { '{"granted":true}' } else { '{"granted":false,"retry":' + $retry + ',"transfer":' + $transferFlag + '}' }
+    Send-Response $response 200 'application/json; charset=utf-8' $body
+    return
+  }
+  if ($request.HttpMethod -eq 'POST' -and $path -eq '/turn/release') {
+    $id = $request.QueryString['id']
+    if ($id -and $turn.holder -eq $id) { Release-Turn (Now-Milliseconds) }
+    if ($id) { $turnWaiters.Remove($id) }
+    Send-Response $response 200 'application/json; charset=utf-8' '{"ok":true}'
+    return
+  }
+  if ($request.HttpMethod -eq 'POST' -and $path -eq '/turn/transfer') {
+    $id = $request.QueryString['id']
+    if ($id -notmatch '^[\w-]{1,40}$') {
+      Send-Response $response 400 'text/plain' 'bad request'
+      return
+    }
+    $now = Now-Milliseconds
+    # Capped so a tab that never says it is done cannot stop the other accounts for long
+    $milliseconds = [Math]::Min([Math]::Max([int]$request.QueryString['ms'], 1000), 180000)
+    if (-not (Transfer-Active $now)) {
+      $transfer.mode = if ($request.QueryString['mode'] -eq 'fast') { 'fast' } else { 'human' }
+      $transfer.until = 0
+    }
+    $transfer.ids[$id] = $true
+    $transfer.until = [Math]::Max([long]$transfer.until, [long]($now + $milliseconds))
+    # The last normal release chose a 1-3 s gap; the transfer should not wait for it
+    $turn.switchGap = New-SwitchGap $now
+    Write-Host "$(Get-Date -Format HH:mm:ss) transfer priority on ($($transfer.mode)) for $id"
+    Send-Response $response 200 'application/json; charset=utf-8' '{"ok":true}'
+    return
+  }
+  if ($request.HttpMethod -eq 'POST' -and $path -eq '/turn/transfer/end') {
+    $id = $request.QueryString['id']
+    if ($id -and $transfer.ids.ContainsKey($id)) {
+      $transfer.ids.Remove($id)
+      if ($transfer.ids.Count -eq 0) { Write-Host "$(Get-Date -Format HH:mm:ss) transfer priority off" }
+    }
+    Send-Response $response 200 'application/json; charset=utf-8' '{"ok":true}'
     return
   }
   if ($request.HttpMethod -eq 'POST' -and $path -eq '/command') {
