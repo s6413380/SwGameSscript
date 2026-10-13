@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         器靈
+// @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      2.89
+// @version      2.96
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -43,6 +43,7 @@
     ['resource', '補體力'],
     ['move', '移動'],
     ['equip', '換裝'],
+    ['train', '練等'],
     ['pause', '暫停'],
     ['forge', '自動鍛造'],
     ['recipe', '配方'],
@@ -62,7 +63,7 @@
   ];
   // 分頁太多，先選大類再選分頁；大類裡記住上次看的分頁
   const TAB_GROUPS = [
-    ['hunt', '打怪', ['main', 'health', 'resource', 'move', 'equip', 'pause']],
+    ['hunt', '打怪', ['main', 'health', 'resource', 'move', 'equip', 'train', 'pause']],
     ['forging', '鍛造', ['forge', 'recipe', 'material']],
     ['stats', '統計', ['income', 'combat', 'huntStats', 'growth']],
     ['other', '其他', ['pick', 'transfer', 'cardBuy', 'alert', 'cloud', 'log', 'api', 'backup']],
@@ -200,6 +201,16 @@
     equipApiHeroIds: '',
     // 可以換上的裝備名稱（逗號分隔）；留空＝閒置裝備都能用
     equipApiAllowedNames: '',
+    // 練等：回城換上要練的英雄，到練等關卡練到指定等級，再回城換回原本的隊伍、回原本的關卡
+    trainEnabled: false,
+    trainHeroIds: '',
+    // 原本隊伍裡練等時繼續留下的英雄（heroId，逗號分隔）
+    trainKeepIds: '',
+    // {heroId: [equipmentId…]}：要練的英雄穿哪些裝備
+    trainEquip: '{}',
+    trainTargetArea: '',
+    trainTargetNumber: 1,
+    trainLevel: 10,
     growthEnabled: true,
     growthSyncEnabled: true,
     // 物品頁一鍵勾選：要勾的品質、類型、名稱（逗號分隔，由掃描出來的清單勾選）、勾或取消、每勾一個的間隔
@@ -251,8 +262,14 @@
     transferCloudEnabled: false,
     // 雲端轉角色要這個帳號付錢，預設每次都要按同意；這裡列的帳號 ID（自己的其他帳號）免問
     transferTrustedIds: '',
-    // 自動購卡：照卡片種類（不是玩家取的名字）、價格、等級、潛能評價買玩家掛賣的英雄
+    // 查拍賣場英雄：照卡片種類（不是玩家取的名字）、價格、等級、潛能評價提醒或買玩家掛賣的英雄。
+    // cardBuyEnabled 是總開關（查不查），會不會花錢另外由 cardAutoBuyEnabled 決定
     cardBuyEnabled: false,
+    cardAutoBuyEnabled: false,
+    cardNotifyOverPrice: true,
+    cardReleasedEnabled: true,
+    // toast＝右下角小提示＋系統通知，不打斷；popup＝照「提醒」頁設定（彈窗、聲音、紅框）
+    cardAlertStyle: 'toast',
     cardBuyRules: '',
     // 0＝不買：花的是真錢，一定要自己設上限
     cardBuyBudget: 0,
@@ -706,7 +723,7 @@
   const panel = document.createElement('div');
   panel.innerHTML = `
     <div class="row" style="font-weight:bold;margin:0 0 6px;cursor:move" data-role="header">
-      <span style="flex:1">器靈 <span style="font-weight:normal;opacity:.7">v${SCRIPT_VERSION}</span> ⠿ <span data-role="mini-status" style="font-weight:normal;opacity:.85"></span></span>
+      <span style="flex:1">愛吉吉 <span style="font-weight:normal;opacity:.7">v${SCRIPT_VERSION}</span> ⠿ <span data-role="mini-status" style="font-weight:normal;opacity:.85"></span></span>
       <button data-action="minimize" title="縮到最小／展開">–</button>
       <button data-action="close" title="關閉：這個分頁的腳本全部停止（重新整理頁面才會恢復）">×</button>
     </div>
@@ -807,6 +824,20 @@
         ${Array.from({ length: CHARACTER_COUNT }, (_, index) => equipCharacterHtml(index)).join('')}
         <div class="hint">每步間隔沿用「暫停」頁的道具每步間隔</div>
       </div>
+    </div>
+
+    <div data-tab="train">
+      <label class="row"><input data-field="trainEnabled" type="checkbox" style="flex:none;width:auto"> <b>練特定英雄</b>（要開「用 API 打怪」，打怪執行中才會動）</label>
+      <div class="hint">打勾後：記下原本的隊伍和關卡 → 回城 → 換上要練的英雄、穿上勾的裝備 → 去練等關卡打 → 要練的每一隻都到指定等級 → 回城 → 換回原本的隊伍和裝備 → 回原本的關卡繼續打。練到一半取消勾選＝提早回去換回來</div>
+      <div class="row">練等關卡 ${escapeTargetHtml('trainTarget')}</div>
+      <div class="row">練到 ${numberInput('trainLevel', 'min="1"')} 級（等級 ≥ 這個就算練好）</div>
+      <input type="hidden" data-field="trainHeroIds">
+      <input type="hidden" data-field="trainKeepIds">
+      <input type="hidden" data-field="trainEquip">
+      <div class="row"><button data-action="load-train-heroes">讀取英雄與裝備</button></div>
+      <div data-role="train-heroes" class="choices"><div class="hint">按「讀取英雄與裝備」</div></div>
+      <div data-role="train-status" class="hint"></div>
+      <div class="row"><span class="hint" style="flex:1">卡住時（例如手動換過隊伍）可以清掉進度，不會換回隊伍</span><button data-action="train-reset">清除練等進度</button></div>
     </div>
 
     <div data-tab="pause">
@@ -988,15 +1019,31 @@
     </div>
 
     <div data-tab="cardBuy">
-      <label class="row"><input data-field="cardBuyEnabled" type="checkbox" style="flex:none;width:auto"> <b>查拍賣場的英雄（提醒／自動購買）</b></label>
-      <div class="hint">照卡片種類（例如房東阿姨，不是玩家取的名字）比對，價格、等級、潛能評價都符合才算。每行一條：<br>房東阿姨 價格≤50000 等級≥20 潛能≥A　← 自動買（一定要寫價格）<br>古老樹人 等級1 提醒　← 只提醒不買（價格可不寫）<br>等級：「等級1」＝剛好 1 級、「等級1-5」區間、「等級≥20」「等級≤5」。潛能由高到低 S A B C D E F，不認得的評價不算。人口販子開的時候也會一起看，只提醒不買</div>
-      <textarea data-field="cardBuyRules" rows="4" placeholder="房東阿姨 價格≤50000 等級≥20 潛能≥A&#10;古老樹人 等級1 提醒" style="width:100%;box-sizing:border-box;font:11px monospace"></textarea>
-      <div class="row">總預算 <input data-field="cardBuyBudget" type="number" min="0" style="width:100px;flex:none"> 最多買 <input data-field="cardBuyMaxCount" type="number" min="1" style="width:50px;flex:none"> 張</div>
-      <div class="row">每 <input data-field="cardBuyIntervalSeconds" type="number" min="10" style="width:50px;flex:none"> 秒查一次（再隨機多等 0～5 秒，最少 10 秒）</div>
-      <div class="row">不買這些賣家 ID<input data-field="cardBuyExcludeSellerIds" placeholder="逗號分隔" style="flex:1;min-width:0"></div>
-      <div class="hint">總預算 0＝不買、只提醒。花到總預算或買滿張數後就不再買，之後符合的改成提醒；同一張掛單只提醒一次（降價會再提醒）。自己的帳號、「轉移」頁免問的帳號、帶轉移暗號的掛單都不算。遇到活人驗證或買失敗（被搶走、角色欄滿了、錢不夠）會取消勾選並提醒。同一個帳號開好幾個分頁時只有一個分頁會查</div>
-      <div class="row"><span data-role="card-buy-status" class="hint" style="flex:1"></span><button data-action="card-buy-reset" title="已花的錢和已買張數歸零">重設已買紀錄</button></div>
-      <div data-role="card-buy-log" class="hint"></div>
+      <div class="row"><label style="flex:1"><input data-field="cardBuyEnabled" type="checkbox" style="width:auto"> <b>查拍賣場英雄</b></label>每 <input data-field="cardBuyIntervalSeconds" type="number" min="10" style="width:50px;flex:none"> 秒<button data-action="card-buy-check-now" title="不等間隔，馬上查一次">立即查</button></div>
+      <div class="hint">操作：<span data-role="card-buy-log"></span></div>
+      <fieldset class="group">
+        <legend>要找的卡（每行一條）</legend>
+        <textarea data-field="cardBuyRules" rows="4" placeholder="古老樹人 等級1&#10;房東阿姨 價格≤50000 等級≥20 潛能≥A" style="width:100%;box-sizing:border-box;font:11px monospace"></textarea>
+        <details class="hint"><summary>規則寫法</summary>第一個字是卡片種類（例如房東阿姨，不是玩家取的名字），後面的條件都可以不寫，寫了就全部要符合：<br>價格≤50000（含 50000）<br>等級1＝剛好 1 級；等級1-5；等級≥20＝20 級以上都算（含 20）；等級≤5<br>≥ 也可以寫成 >=、≧ 或「等級20以上」，≤ 同理<br>潛能≥A（由高到低 S A B C D E F，不認得的評價不算）<br>行尾加「提醒」＝這條永遠只提醒、不會買。開自動購買時，沒寫價格的規則也只提醒</details>
+      </fieldset>
+      <fieldset class="group">
+        <legend>提醒</legend>
+        <div class="hint">沒開自動購買時，符合的卡都只跳提醒。同一張掛單只提醒一次（降價會再提醒）</div>
+        <label class="row"><input data-field="cardReleasedEnabled" type="checkbox" style="flex:none;width:auto"> 人口販子開放時也一起看（只提醒，不買）</label>
+        <div class="row">提醒方式<select data-field="cardAlertStyle" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="toast">右下角小提示＋系統通知（不打斷）</option><option value="popup">照「提醒」頁設定（彈窗、聲音、紅框）</option></select></div>
+        <div class="row"><b style="flex:1">提醒紀錄</b><button data-action="card-notified-reset" title="提醒過的掛單下一輪會再叫一次">讓提醒過的再叫</button><button data-action="card-alert-history-clear">清空</button></div>
+        <div data-role="card-alert-history" class="hint" style="max-height:140px;overflow-y:auto;border:1px solid #44444c;border-radius:5px;padding:4px"></div>
+      </fieldset>
+      <fieldset class="group">
+        <legend>自動購買（會花錢）</legend>
+        <label class="row"><input data-field="cardAutoBuyEnabled" type="checkbox" style="flex:none;width:auto"> <b>符合又有寫價格上限的卡直接買</b></label>
+        <label class="row"><input data-field="cardNotifyOverPrice" type="checkbox" style="flex:none;width:auto"> 價格太高的也提醒（卡一出現就說一聲，低於價格才買）</label>
+        <div class="row">總預算 <input data-field="cardBuyBudget" type="number" min="0" style="width:100px;flex:none"> 最多買 <input data-field="cardBuyMaxCount" type="number" min="1" style="width:50px;flex:none"> 張</div>
+        <div class="row">不買這些賣家 ID<input data-field="cardBuyExcludeSellerIds" placeholder="逗號分隔" style="flex:1;min-width:0"></div>
+        <div class="row"><span data-role="card-buy-status" class="hint" style="flex:1"></span><button data-action="card-buy-reset" title="已花的錢和已買張數歸零">重設已買紀錄</button></div>
+        <div class="hint">從最便宜的開始買；預算或張數用完後，符合的改成提醒並寫出原因。買失敗（被搶走、角色欄滿了、錢不夠、逾時不確定有沒有買到）只關掉這格，提醒照常。自己的帳號、「轉移」頁免問的帳號、帶轉移暗號的掛單都不算</div>
+      </fieldset>
+      <div class="hint">遇到活人驗證會整個關掉並提醒。同一個帳號開好幾個分頁時只有一個分頁會查</div>
     </div>
 
     <div data-tab="backup">
@@ -1088,7 +1135,7 @@
   const alertDialog = document.createElement('div');
   alertDialog.setAttribute('data-auto-clicker', '');
   alertDialog.innerHTML = `
-    <div data-role="alert-title" style="font-weight:bold;font-size:18px;color:#c00">⚠ 器靈已暫停</div>
+    <div data-role="alert-title" style="font-weight:bold;font-size:18px;color:#c00">⚠ 愛吉吉已暫停</div>
     <div data-role="alert-message" style="margin:12px 0;font-size:14px"></div>
     <button data-action="dismiss-alert">知道了</button>
   `;
@@ -1102,6 +1149,15 @@
   alertDialog.addEventListener('click', (event) => {
     if (event.target.dataset.action === 'dismiss-alert') clearAlert();
   });
+
+  // 不打斷人的提醒：右下角疊幾個小框，過一陣子自己消失
+  const toastBox = document.createElement('div');
+  toastBox.setAttribute('data-auto-clicker', '');
+  Object.assign(toastBox.style, {
+    position: 'fixed', right: '16px', bottom: '16px', zIndex: 2147483647, display: 'flex',
+    flexDirection: 'column', gap: '6px', maxWidth: '340px', font: '13px sans-serif',
+  });
+  document.body.appendChild(toastBox);
 
   // 瀏覽器內建的 confirm 開著時整個分頁的程式都會停住（掛機、鍛造跟著卡），執行中要問的事改用這個
   const confirmDialog = document.createElement('div');
@@ -1915,7 +1971,7 @@
           // 讀不到就照常重新整理
         }
         if (triedVersion === version) {
-          setStatus(`有新版 ${version}，但重新整理後還是 ${SCRIPT_VERSION}：這個分頁不是用載入器載入，請在 Tampermonkey 移除「器靈」（或舊名「自動點擊按鈕 V2」）完整版、改裝載入器`);
+          setStatus(`有新版 ${version}，但重新整理後還是 ${SCRIPT_VERSION}：這個分頁不是用載入器載入，請在 Tampermonkey 移除「愛吉吉」（或舊名「器靈」「自動點擊按鈕 V2」）完整版、改裝載入器`);
           return;
         }
         autoUpdate.pendingVersion = version;
@@ -2313,6 +2369,9 @@
   const CARD_NOTIFIED_LIMIT = 300;
   // 同一個帳號（同一個瀏覽器）開好幾個分頁時，誰最近查過誰負責，免得兩邊各買一張
   const CARD_BUY_LOCK_KEY = 'autoClickerV2CardBuyLock';
+  // 提醒另外留一份清單，不會被之後的「查過了」「沒有符合」蓋掉
+  const CARD_ALERT_HISTORY_KEY = 'autoClickerV2CardAlertHistory';
+  const CARD_ALERT_HISTORY_LIMIT = 50;
   const CARD_BUY_MIN_SECONDS = 10;
   const POTENTIAL_ORDER = ['F', 'E', 'D', 'C', 'B', 'A', 'S'];
   // 轉移功能掛單時留言的暗號（transferToken）
@@ -2320,16 +2379,31 @@
   const RELEASED_MARKET_API = '/api/releasedHeroMarket';
   const cardBuy = { checkedAt: 0, busy: false, limitNoted: false };
 
-  // 等級：「等級1-5」區間、「等級≥20」「等級≤5」、只寫數字「等級1」＝剛好那一級
+  // 等級：「等級1-5」區間、「等級≥20」「等級≤5」、只寫數字「等級1」＝剛好那一級；> < 不含那一級
   function parseLevelRange(text) {
-    const range = text.match(/等級\s*(\d+)\s*[-~～]\s*(\d+)/);
+    const range = text.match(/等級\s*(\d+)\s*[-~]\s*(\d+)/);
     if (range) return [Number(range[1]), Number(range[2])];
-    const atLeast = text.match(/等級\s*[≥>]=?\s*(\d+)/);
-    if (atLeast) return [Number(atLeast[1]), Infinity];
-    const atMost = text.match(/等級\s*[≤<]=?\s*(\d+)/);
-    if (atMost) return [0, Number(atMost[1])];
+    const atLeast = text.match(/等級\s*([≥>])\s*(\d+)/);
+    if (atLeast) return [Number(atLeast[2]) + (atLeast[1] === '>' ? 1 : 0), Infinity];
+    const atMost = text.match(/等級\s*([≤<])\s*(\d+)/);
+    if (atMost) return [0, Number(atMost[2]) - (atMost[1] === '<' ? 1 : 0)];
     const exact = text.match(/等級\s*=?\s*(\d+)/);
     return exact ? [Number(exact[1]), Number(exact[1])] : [0, Infinity];
+  }
+
+  // 大家習慣的寫法不一樣：>=、≧、全形符號、「20以上」都換成 ≥ ≤ 再比對，不然條件會被當成沒寫
+  function normalizeRuleText(text) {
+    return text
+      .replace(/[０-９Ａ-Ｚａ-ｚ]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0))
+      .replace(/＞＝|>=|≧/g, '≥')
+      .replace(/＜＝|<=|≦/g, '≤')
+      .replace(/＞/g, '>')
+      .replace(/＜/g, '<')
+      .replace(/＝/g, '=')
+      .replace(/[～〜]/g, '~')
+      .replace(/－/g, '-')
+      .replace(/(等級|價格|潛能)\s*\$?([\w,]+)\s*以上/g, '$1≥$2')
+      .replace(/(等級|價格|潛能)\s*\$?([\w,]+)\s*以下/g, '$1≤$2');
   }
 
   function parseCardBuyRules(text) {
@@ -2339,7 +2413,7 @@
       .filter(Boolean)
       .map((line) => {
         const type = line.split(/\s+/)[0];
-        const rest = line.slice(type.length);
+        const rest = normalizeRuleText(line.slice(type.length));
         const price = rest.match(/價格\s*[≤<=]*\s*\$?\s*(\d[\d,]*)/);
         const potential = rest.match(/潛能\s*[≥>=]*\s*([A-Za-z]+)/);
         const [minLevel, maxLevel] = parseLevelRange(rest);
@@ -2379,6 +2453,31 @@
     return `${card.type}「${card.name}」Lv.${card.lv} 潛能 ${card.potential}（$${Number(card.price).toLocaleString()}）`;
   }
 
+  function renderCardAlertHistory() {
+    const box = panel.querySelector('[data-role="card-alert-history"]');
+    const history = readJsonStorage(CARD_ALERT_HISTORY_KEY, []);
+    box.textContent = history.length ? '' : '還沒有提醒';
+    history.forEach((entry) => {
+      const line = document.createElement('div');
+      const time = new Date(entry.at).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      line.textContent = `${time} ${entry.message}`;
+      box.appendChild(line);
+    });
+  }
+
+  function recordCardAlert(message) {
+    const history = readJsonStorage(CARD_ALERT_HISTORY_KEY, []);
+    writeJsonStorage(CARD_ALERT_HISTORY_KEY, [{ at: Date.now(), message }, ...history].slice(0, CARD_ALERT_HISTORY_LIMIT));
+    renderCardAlertHistory();
+  }
+
+  // 找到卡、買到卡照「提醒方式」；出問題（stopCardBuy）一律用正式的提醒
+  function cardAlert(message) {
+    recordCardAlert(message);
+    if (readSettingsFromPanel().cardAlertStyle === 'popup') alertUser(`拍賣英雄：${message}`);
+    else showToast(`拍賣英雄：${message}`);
+  }
+
   function cardBuyLog(message) {
     setStatus(`［拍賣英雄］${message}`);
     panel.querySelector('[data-role="card-buy-log"]').textContent = `${new Date().toLocaleTimeString()} ${message}`;
@@ -2386,13 +2485,17 @@
 
   function renderCardBuyStatus(settings = readSettingsFromPanel()) {
     const saved = readJsonStorage(CARD_BUY_STATE_KEY, { spent: 0, bought: 0 });
+    const left = Math.max(0, Number(settings.cardBuyBudget) - Number(saved.spent));
+    // 總預算欄位是上限、不會被改掉，剩多少另外算
     panel.querySelector('[data-role="card-buy-status"]').textContent =
-      `已買 ${saved.bought}/${settings.cardBuyMaxCount} 張，已花 $${Number(saved.spent).toLocaleString()}／預算 $${Number(settings.cardBuyBudget).toLocaleString()}`;
+      `已買 ${saved.bought}/${settings.cardBuyMaxCount} 張，已花 $${Number(saved.spent).toLocaleString()}，還能花 $${left.toLocaleString()}`;
   }
 
-  function stopCardBuy(message) {
-    setPanelField('cardBuyEnabled', false);
+  // 買出問題只關自動購買、提醒照常；活人驗證才整個關
+  function stopCardBuy(message, field = 'cardAutoBuyEnabled') {
+    setPanelField(field, false);
     cardBuyLog(message);
+    recordCardAlert(message);
     alertUser(`拍賣英雄：${message}`);
   }
 
@@ -2410,9 +2513,7 @@
     const fresh = cards.filter((card) => !notified.includes(`${where}:${card.id}:${card.price}`));
     if (!fresh.length) return;
     writeJsonStorage(CARD_NOTIFIED_KEY, [...notified, ...fresh.map((card) => `${where}:${card.id}:${card.price}`)].slice(-CARD_NOTIFIED_LIMIT));
-    const text = `${where}有符合的卡：${fresh.map(cardText).join('、')}`;
-    cardBuyLog(text);
-    alertUser(text);
+    cardAlert(`${where}有符合的卡：${fresh.map(cardText).join('、')}`);
   }
 
   // 人口販子平常沒開；回應格式還沒看過實際的，有 heroes 陣列或本身是陣列才當成清單，而且只提醒不買
@@ -2430,9 +2531,12 @@
     if (lock && lock.tab !== tabKey && Date.now() - lock.at < interval * 2) return;
     cardBuy.checkedAt = Date.now() + interval + randomGap(0, 5000);
     writeJsonStorage(CARD_BUY_LOCK_KEY, { tab: tabKey, at: Date.now() });
-    const rules = parseCardBuyRules(settings.cardBuyRules);
-    if (!rules.some((rule) => rule.notifyOnly || rule.maxPrice > 0)) {
-      cardBuyLog('沒有可用的規則（要買的每條都要寫價格上限，只提醒的要寫「提醒」）');
+    // 沒開自動購買時每條規則都當成提醒，沒寫價格的也算
+    const rules = parseCardBuyRules(settings.cardBuyRules).map((rule) =>
+      settings.cardAutoBuyEnabled ? rule : { ...rule, notifyOnly: true }
+    );
+    if (!rules.length) {
+      cardBuyLog('還沒寫要找的卡');
       return;
     }
     if (state.captchaWaiting || forgeRunner.captchaWaiting) return;
@@ -2443,12 +2547,23 @@
       const excluded = cardBuyExcludedSellers(settings, ownId);
       const matched = ((await requestGameApi('/api/trades?type=heroes')).heroes || [])
         .filter((trade) => !excluded.has(Number(trade.sellerId)) && !TRANSFER_TOKEN_PATTERN.test(String(trade.message || '')))
-        .map((trade) => ({ trade, rules: rules.filter((rule) => cardRuleMatches(rule, trade)) }))
-        .filter((entry) => entry.rules.length)
+        .map((trade) => ({
+          trade,
+          buy: rules.some((rule) => !rule.notifyOnly && cardRuleMatches(rule, trade)),
+          // 要買的規則：卡出現就說一聲，價格內的才買
+          notify: rules.some((rule) =>
+            rule.notifyOnly
+              ? cardRuleMatches(rule, trade)
+              : settings.cardNotifyOverPrice && cardRuleMatches({ ...rule, maxPrice: 0, notifyOnly: true }, trade)
+          ),
+        }))
+        .filter((entry) => entry.buy || entry.notify)
         .sort((first, second) => Number(first.trade.price) - Number(second.trade.price));
-      const toBuy = matched.filter((entry) => entry.rules.some((rule) => !rule.notifyOnly)).map((entry) => entry.trade);
-      const toNotify = matched.filter((entry) => entry.rules.every((rule) => rule.notifyOnly)).map((entry) => entry.trade);
-      const released = (await releasedMarketCards()).filter((card) => rules.some((rule) => cardRuleMatches({ ...rule, notifyOnly: true }, card)));
+      const toBuy = matched.filter((entry) => entry.buy).map((entry) => entry.trade);
+      const toNotify = matched.filter((entry) => !entry.buy).map((entry) => entry.trade);
+      const released = settings.cardReleasedEnabled
+        ? (await releasedMarketCards()).filter((card) => rules.some((rule) => cardRuleMatches({ ...rule, notifyOnly: true }, card)))
+        : [];
       notifyCards(toNotify, '拍賣場');
       notifyCards(released, '人口販子');
       const budget = Number(settings.cardBuyBudget) || 0;
@@ -2470,17 +2585,24 @@
         refreshGameView([['profile'], ['market'], ['heroes']]);
         const text = `買下 ${cardText(trade)}${result && result.money !== undefined ? `，剩 $${Number(result.money).toLocaleString()}` : ''}`;
         cardBuyLog(text);
-        alertUser(`拍賣英雄：${text}`);
+        cardAlert(text);
         await wait(randomGap(800, 1500));
       }
       // 預算用完、張數買滿就只剩提醒：符合要買的條件但買不下的也提醒一次，讓人自己決定
-      notifyCards(leftover, '拍賣場（超過預算或張數，沒買）');
+      const saved = readJsonStorage(CARD_BUY_STATE_KEY, { spent: 0, bought: 0 });
+      const reason = !budget
+        ? '總預算是 0'
+        : saved.bought >= settings.cardBuyMaxCount
+          ? `已買滿 ${saved.bought}/${settings.cardBuyMaxCount} 張`
+          : `預算剩 $${Math.max(0, budget - saved.spent).toLocaleString()} 不夠`;
+      notifyCards(leftover, `拍賣場（${reason}，沒買）`);
       if (!matched.length && !released.length) cardBuyLog(`沒有符合的卡（${new Date().toLocaleTimeString()} 查過）`);
     } catch (error) {
-      if (error.captchaRequired) stopCardBuy('伺服器要求活人驗證，查拍賣已關閉，驗證完要用再重新勾選');
+      if (error.captchaRequired) stopCardBuy('伺服器要求活人驗證，查拍賣已關閉，驗證完要用再重新勾選', 'cardBuyEnabled');
       // 逾時或斷線時可能其實買到了，只是沒算進預算，所以也停下來讓人確認
-      else if (buying && error.transient) stopCardBuy(`買 ${cardText(buying)} 時${error.message}，不確定有沒有買到，查拍賣已關閉，請到遊戲確認`);
-      else if (buying || /HTTP 4/.test(error.message)) stopCardBuy(`${buying ? `買不到 ${cardText(buying)}` : '查詢失敗'}（${error.message}），查拍賣已關閉`);
+      else if (buying && error.transient) stopCardBuy(`買 ${cardText(buying)} 時${error.message}，不確定有沒有買到，自動購買已關閉，請到遊戲確認`);
+      else if (buying) stopCardBuy(`買不到 ${cardText(buying)}（${error.message}），自動購買已關閉`);
+      else if (/HTTP 4/.test(error.message)) stopCardBuy(`查詢失敗（${error.message}），查拍賣已關閉`, 'cardBuyEnabled');
       else cardBuyLog(`查詢失敗（${error.message}），下一輪再試`);
     } finally {
       cardBuy.busy = false;
@@ -3722,10 +3844,18 @@
     );
   }
 
+  // API 打怪看地圖編號 0；按鈕模式看關卡欄位有沒有城鎮名稱
+  function inTownNow(settings) {
+    if (isApiHunt(settings)) return Boolean(state.huntInfo) && Number(state.huntInfo.huntZone) === 0;
+    const town = String(settings.townName || '').trim();
+    const location = settings.stageSelector ? readLocation(settings) : null;
+    return Boolean(town && location && location.text.includes(town));
+  }
+
   // 回傳 true＝換了目標，這一步先不做別的
   function escapeFromPlayers(settings) {
-    // 還在往目標走（路過的關卡，或剛換目標正在走）就不管，到了目標才看
-    if (!settings.playerEscapeEnabled || !arrivedAtTarget(settings)) return false;
+    // 城鎮不管（沒有關卡可以退，紅名在城裡很常見）；還在往目標走（路過的關卡，或剛換目標正在走）也不管，到了目標才看
+    if (!settings.playerEscapeEnabled || inTownNow(settings) || !arrivedAtTarget(settings)) return false;
     const place = currentPlace(settings);
     const found = isIgnoredPlace(settings, place) ? [] : dangerousPlayers(settings);
     if (!found.length) {
@@ -4008,10 +4138,10 @@
   }
 
   // 只提醒（異常狀態、稀有掉落沒設暫停）時腳本照跑，標題不能寫「已暫停」，不然會以為停了
-  let alertTitle = '⚠ 器靈已暫停';
+  let alertTitle = '⚠ 愛吉吉已暫停';
   function alertUser(message, { paused = false } = {}) {
     const settings = readSettingsFromPanel();
-    alertTitle = paused ? '⚠ 器靈已暫停' : '⚠ 器靈提醒（仍在執行）';
+    alertTitle = paused ? '⚠ 愛吉吉已暫停' : '⚠ 愛吉吉提醒（仍在執行）';
     alertDialog.querySelector('[data-role="alert-title"]').textContent = alertTitle;
     // 面板被關掉時也要讓人看得到暫停原因，所以暫停就把面板叫回來
     panel.style.display = '';
@@ -4027,6 +4157,21 @@
       }
       startTitleFlash();
     }
+  }
+
+  // 瀏覽器允許的話也跳系統通知（Windows 在右下角），切到別的視窗也看得到
+  function showToast(message) {
+    const toast = document.createElement('div');
+    toast.textContent = message;
+    toast.title = '點一下關掉';
+    Object.assign(toast.style, {
+      background: '#2a2a30', color: '#fff', border: '1px solid #e0a020', borderRadius: '8px',
+      padding: '10px 12px', boxShadow: '0 4px 16px rgba(0,0,0,.4)', cursor: 'pointer',
+    });
+    toast.addEventListener('click', () => toast.remove());
+    toastBox.appendChild(toast);
+    setTimeout(() => toast.remove(), 15000);
+    if ('Notification' in window && Notification.permission === 'granted') new Notification('愛吉吉提醒', { body: message });
   }
 
   function clearAlert() {
@@ -5373,7 +5518,7 @@
     }
 
     // 休息、移動中也要看：紅名可能趁休息時打過來，先換好目標，休息完就走
-    const inTown = isApiHunt(settings) && state.huntInfo && Number(state.huntInfo.huntZone) === 0;
+    const inTown = inTownNow(settings);
     if (settings.playerEscapeEnabled && !inTown && Date.now() - state.zoneUsersAt > ZONE_USERS_FRESH_MILLISECONDS) {
       const runId = state.runId;
       state.zoneUsersAt = Date.now();
@@ -5457,6 +5602,8 @@
       return;
     }
 
+    if (apiHunt && trainStep(settings)) return;
+
     if (state.clickCountA < settings.repeatCount && !state.needRest) {
       // 還沒到目標關卡就先移動，不算進原地掛機的次數，到了才開始照常掛機
       if (apiHunt) {
@@ -5518,6 +5665,354 @@
       state.timerId = backgroundTimer.setTimeout(() => tick(settings), settings.loopDelaySeconds * 1000);
     } else {
       stop(`完成：${reason}，已全隊休息`);
+    }
+  }
+
+  // 練等：換上要練的英雄、到練等關卡練到指定等級，再換回原本的隊伍和關卡。
+  // 進度存起來（重新整理、暫停後按開始都接得下去）：phase 'toTown' 回城換人 → 'training' 練等 → 'back' 回城換回
+  const TRAIN_STATE_KEY = 'autoClickerV2Train';
+  // 遊戲規定：隊伍最多 4 人、不能有兩隻同種類，而且只能在城鎮裡換人
+  const TEAM_LIMIT = 4;
+  const train = { heroes: null, equipments: [], busy: false };
+
+  function idList(text) {
+    return String(text || '')
+      .split(',')
+      .map(Number)
+      .filter(Boolean);
+  }
+
+  function trainEquipMap(settings) {
+    try {
+      return JSON.parse(settings.trainEquip || '{}') || {};
+    } catch {
+      return {};
+    }
+  }
+
+  // 回傳空字串＝可以換；heroes 是 /api/heroes 的全部英雄
+  function trainTeamProblem(settings, heroes) {
+    const byId = new Map(heroes.map((hero) => [hero.id, hero]));
+    const trainees = idList(settings.trainHeroIds).map((id) => byId.get(id)).filter(Boolean);
+    if (!trainees.length) return '還沒勾要練的英雄';
+    const keepIds = idList(settings.trainKeepIds);
+    const kept = heroes.filter((hero) => hero.selected && keepIds.includes(hero.id) && !trainees.includes(hero));
+    const team = [...kept, ...trainees];
+    if (team.length > TEAM_LIMIT) return `隊伍最多 ${TEAM_LIMIT} 人，現在是 ${team.length} 人（留隊 ${kept.length}＋要練 ${trainees.length}）`;
+    const types = team.map((hero) => hero.type);
+    const duplicate = types.find((type, index) => types.indexOf(type) !== index);
+    if (duplicate) return `隊伍裡不能有兩隻同種類的英雄（${duplicate}）`;
+    const busy = trainees.find((hero) => !hero.selected && hero.actionState);
+    if (busy) return `${busy.name} 正在做別的事（鍛造、挖礦…），要閒著才能加入隊伍`;
+    return '';
+  }
+
+  function renderTrainChoices() {
+    const box = panel.querySelector('[data-role="train-heroes"]');
+    if (!train.heroes) return;
+    const settings = readSettingsFromPanel();
+    const keepIds = idList(settings.trainKeepIds);
+    const traineeIds = idList(settings.trainHeroIds);
+    const equipMap = trainEquipMap(settings);
+    const heroName = new Map(train.heroes.map((hero) => [hero.id, hero.name]));
+    const team = train.heroes.filter((hero) => hero.selected);
+    const others = train.heroes.filter((hero) => !hero.selected);
+    const heroText = (hero) => `${escapeHtml(hero.name)}　Lv ${hero.lv} ${escapeHtml(hero.type || '')}${hero.actionState ? '（行動中）' : ''}`;
+    // 可以穿的：閒置的，或現在穿在隊員身上的（練完會還回去）
+    const candidates = train.equipments
+      .filter((equipment) => equipment.state === 0 && (equipment.equipped === null || team.some((hero) => hero.id === equipment.equipped)))
+      .sort((first, second) => String(first.type).localeCompare(String(second.type)));
+    const equipHtml = (hero) => {
+      const chosen = (equipMap[hero.id] || []).map(Number);
+      const worn = train.equipments.filter((equipment) => equipment.equipped === hero.id);
+      const rows = candidates
+        .map(
+          (equipment) => `<label style="display:block"><input type="checkbox" data-train-choice="equip" data-hero="${hero.id}" value="${equipment.id}"
+            ${chosen.includes(equipment.id) ? 'checked' : ''} style="width:auto;flex:none">
+            ${escapeHtml(equipment.type)}・${escapeHtml(equipmentLabel(equipment))}（耐久 ${equipment.dur}/${equipment.fullDur}${
+              equipment.equipped ? `，現在在 ${escapeHtml(heroName.get(equipment.equipped) || equipment.equipped)} 身上` : ''
+            }）</label>`
+        )
+        .join('');
+      return `<details style="margin-left:20px"><summary>穿什麼裝備（勾了 ${chosen.length} 件）</summary>
+        <div class="hint">現在穿著：${worn.length ? worn.map((equipment) => escapeHtml(`${equipment.type}・${equipment.name}`)).join('、') : '沒有'}；同類型的會先脫下</div>
+        ${rows || '<div class="hint">沒有閒置的裝備</div>'}</details>`;
+    };
+    const problem = trainTeamProblem(settings, train.heroes);
+    box.innerHTML = `
+      <div class="subhead">目前隊伍（勾＝練等時繼續待在隊伍）</div>
+      ${team
+        .map(
+          (hero) => `<label style="display:block"><input type="checkbox" data-train-choice="keep" value="${hero.id}"
+            ${keepIds.includes(hero.id) ? 'checked' : ''} style="width:auto;flex:none"> ${heroText(hero)}</label>`
+        )
+        .join('') || '<div class="hint">隊伍裡沒有英雄</div>'}
+      <div class="subhead">要練的英雄</div>
+      ${others
+        .map(
+          (hero) => `<label style="display:block"><input type="checkbox" data-train-choice="hero" value="${hero.id}"
+            ${traineeIds.includes(hero.id) ? 'checked' : ''} style="width:auto;flex:none"> ${heroText(hero)}</label>
+            ${traineeIds.includes(hero.id) ? equipHtml(hero) : ''}`
+        )
+        .join('') || '<div class="hint">隊伍外沒有英雄</div>'}
+      <div class="hint" style="color:${problem ? '#f88' : '#8c8'}">${problem ? `⚠ ${escapeHtml(problem)}` : '✓ 可以換'}</div>`;
+  }
+
+  async function loadTrainChoices() {
+    try {
+      const [heroes] = await Promise.all([requestGameApi(HEROES_API), refreshEquipments()]);
+      train.heroes = heroes.heroes || [];
+      train.equipments = state.equipments;
+      renderTrainChoices();
+      setStatus(`練等：讀到 ${train.heroes.length} 隻英雄、${train.equipments.length} 件裝備`);
+    } catch (error) {
+      setStatus(`練等：讀取英雄或裝備失敗（${error.message}）`);
+    }
+  }
+
+  function updateTrainFromChoices() {
+    const checked = (kind) => Array.from(panel.querySelectorAll(`[data-train-choice="${kind}"]:checked`));
+    const traineeIds = checked('hero').map((input) => Number(input.value));
+    const equipMap = {};
+    checked('equip').forEach((input) => {
+      const heroId = Number(input.dataset.hero);
+      if (traineeIds.includes(heroId)) (equipMap[heroId] = equipMap[heroId] || []).push(Number(input.value));
+    });
+    panel.querySelector('[data-field="trainKeepIds"]').value = checked('keep').map((input) => input.value).join(',');
+    panel.querySelector('[data-field="trainHeroIds"]').value = traineeIds.join(',');
+    panel.querySelector('[data-field="trainEquip"]').value = JSON.stringify(equipMap);
+    renderTrainChoices();
+  }
+
+  function renderTrainStatus(settings = readSettingsFromPanel()) {
+    const run = readJsonStorage(TRAIN_STATE_KEY, null);
+    const element = panel.querySelector('[data-role="train-status"]');
+    if (!run || !run.phase) {
+      element.textContent = settings.trainEnabled ? '練等：等打怪開始後執行' : '';
+      return;
+    }
+    const phaseText = { toTown: '回城換上要練的英雄', training: '練等中', back: '回城換回原本的隊伍' }[run.phase] || run.phase;
+    const levels = huntTeam()
+      .filter((hero) => idList(settings.trainHeroIds).includes(hero.id))
+      .map((hero) => `${hero.name} Lv ${hero.lv}`)
+      .join('、');
+    element.textContent = `練等：${phaseText}${levels ? `（${levels}／目標 ${settings.trainLevel}）` : ''}；原本關卡 ${run.original.area} ${run.original.number}`;
+  }
+
+  function writeTrainState(run) {
+    writeJsonStorage(TRAIN_STATE_KEY, run);
+    renderTrainStatus();
+  }
+
+  // 只改移動目標，不跳提醒（moveTargetTo 是避難用的，會提醒）
+  function setTrainTarget(area, stage, enabled = true) {
+    setPanelField('stageEnabled', enabled);
+    setPanelField('stageTargetArea', area);
+    setPanelField('stageTargetNumber', stage);
+  }
+
+  // 隊伍資料還沒更新（剛換完人）時找不到要練的英雄，不能當成練好了
+  function trainTraineesReady(settings) {
+    const team = huntTeam();
+    return idList(settings.trainHeroIds).every((heroId) => {
+      const hero = team.find((member) => member.id === heroId);
+      return hero && Number(hero.lv) >= Number(settings.trainLevel);
+    });
+  }
+
+  function trainLog(message) {
+    setStatus(`［練等］${message}`);
+    logItemUse(`［練等］${message}`);
+  }
+
+  // tick 每一步都先問這裡；回傳 true＝這一步由練等接手（已排好下一次 tick）
+  function trainStep(settings) {
+    if (train.busy) return true;
+    let run = readJsonStorage(TRAIN_STATE_KEY, null);
+    if (!run || !run.phase) {
+      if (!settings.trainEnabled) return false;
+      if (!idList(settings.trainHeroIds).length || !settings.trainTargetArea) {
+        setPanelField('trainEnabled', false);
+        trainLog('沒勾要練的英雄或沒設練等關卡，已取消勾選');
+        return false;
+      }
+      run = {
+        phase: 'toTown',
+        original: {
+          area: settings.stageTargetArea,
+          number: settings.stageTargetNumber,
+          stageEnabled: settings.stageEnabled,
+          teamIds: [...state.huntTeamIds],
+        },
+        restore: [],
+      };
+      writeTrainState(run);
+      trainLog(`開始：記下原本的隊伍（${huntTeam().map((hero) => hero.name).join('、')}）和關卡 ${targetLabel(settings)}，先回城`);
+    }
+    if (!settings.trainEnabled && run.phase !== 'back') {
+      run.phase = 'back';
+      writeTrainState(run);
+      trainLog('取消勾選，提早回城換回原本的隊伍');
+    }
+    if (run.phase === 'training') {
+      if (!trainTraineesReady(settings)) {
+        renderTrainStatus(settings);
+        return false;
+      }
+      run.phase = 'back';
+      writeTrainState(run);
+      trainLog(`都練到 ${settings.trainLevel} 級了，回城換回原本的隊伍`);
+    }
+    const town = String(settings.townName || '').trim();
+    const inTown = state.huntInfo && Number(state.huntInfo.huntZone) === 0;
+    if (!inTown) {
+      if (settings.stageTargetArea !== town || !settings.stageEnabled) {
+        setTrainTarget(town, 0);
+        state.timerId = backgroundTimer.setTimeout(() => tick(), 0);
+        return true;
+      }
+      // 回城不用照原地掛機次數，直接走
+      const move = planApiMove(readSettingsFromPanel());
+      if (!move || move.problem) return false;
+      performApiMove(readSettingsFromPanel(), move);
+      return true;
+    }
+    train.busy = true;
+    (run.phase === 'toTown' ? trainSwapIn(settings, run) : trainSwapBack(settings, run)).finally(() => {
+      train.busy = false;
+    });
+    return true;
+  }
+
+  async function trainRequest(path) {
+    await wait(randomGap(1500, 3000));
+    return requestGameApi(path, { method: 'POST' });
+  }
+
+  async function trainEquipTo(equipmentId, heroId) {
+    await wait(randomGap(1500, 3000));
+    const result = await requestGameApi(`${EQUIPMENTS_API}/${equipmentId}/equip`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ heroId }),
+    });
+    const after = equipmentInResult(result, equipmentId);
+    if (!after || after.equipped !== heroId) throw new Error(`穿上裝備沒有生效（${describeEquipResult(result)}）`);
+    state.equipments = result.equipments;
+  }
+
+  async function trainUnequip(equipmentId) {
+    const result = await trainRequest(`${EQUIPMENTS_API}/${equipmentId}/unequip`);
+    const after = equipmentInResult(result, equipmentId);
+    if (!after || after.equipped !== null) throw new Error(`脫下裝備沒有生效（${describeEquipResult(result)}）`);
+    state.equipments = result.equipments;
+  }
+
+  // 換隊伍：先移出、再加入（隊伍滿 4 人時加不進去）
+  async function trainSetTeam(heroes, wanted) {
+    for (const hero of heroes.filter((member) => member.selected && !wanted.includes(member.id))) {
+      await trainRequest(`${HEROES_API}/${hero.id}/deselect`);
+    }
+    for (const heroId of wanted.filter((id) => !heroes.some((hero) => hero.id === id && hero.selected))) {
+      await trainRequest(`${HEROES_API}/${heroId}/select`);
+    }
+  }
+
+  function trainFailed(settings, error, what) {
+    if (error.captchaRequired) {
+      pauseForCaptcha(settings);
+      return;
+    }
+    // 進度不清掉：處理完按開始會從這一步重來
+    pauseWithAlert(`練等${what}失敗（${error.message}），已暫停；處理完按開始會接著做`);
+  }
+
+  async function trainSwapIn(settings, run) {
+    const runId = state.runId;
+    try {
+      const heroes = (await requestGameApi(HEROES_API)).heroes || [];
+      const problem = trainTeamProblem(settings, heroes);
+      if (problem) {
+        writeJsonStorage(TRAIN_STATE_KEY, null);
+        setPanelField('trainEnabled', false);
+        setTrainTarget(run.original.area, run.original.number, run.original.stageEnabled);
+        pauseWithAlert(`練等沒辦法換隊伍：${problem}。已取消練等，隊伍沒動`);
+        return;
+      }
+      const traineeIds = idList(settings.trainHeroIds);
+      const keepIds = idList(settings.trainKeepIds).filter((heroId) => heroes.some((hero) => hero.id === heroId && hero.selected));
+      await trainSetTeam(heroes, [...keepIds, ...traineeIds.filter((heroId) => !keepIds.includes(heroId))]);
+      if (runId !== state.runId) return;
+      await refreshEquipments();
+      const equipMap = trainEquipMap(settings);
+      for (const heroId of traineeIds) {
+        for (const equipmentId of (equipMap[heroId] || []).map(Number)) {
+          const equipment = state.equipments.find((candidate) => candidate.id === equipmentId);
+          if (!equipment || equipment.equipped === heroId) continue;
+          // 同類型的先脫下（例如原本拿的單手劍），練完再穿回去
+          const replaced = state.equipments.find((worn) => worn.equipped === heroId && worn.type === equipment.type);
+          if (replaced) {
+            await trainUnequip(replaced.id);
+            run.restore.push({ equipmentId: replaced.id, heroId });
+            writeTrainState(run);
+          }
+          if (equipment.equipped) {
+            const owner = equipment.equipped;
+            await trainUnequip(equipment.id);
+            run.restore.push({ equipmentId: equipment.id, heroId: owner });
+            writeTrainState(run);
+          }
+          await trainEquipTo(equipment.id, heroId);
+          if (runId !== state.runId) return;
+        }
+      }
+      run.phase = 'training';
+      writeTrainState(run);
+      setTrainTarget(settings.trainTargetArea, settings.trainTargetNumber);
+      state.heroStatsAt = 0;
+      refreshGameView(HUNT_QUERY_KEYS);
+      trainLog(`隊伍換好了，前往練等關卡 ${settings.trainTargetArea} ${settings.trainTargetNumber}`);
+      if (runId === state.runId) state.timerId = backgroundTimer.setTimeout(() => tick(), randomGap(1000, 3000));
+    } catch (error) {
+      if (runId === state.runId) trainFailed(settings, error, '換隊伍');
+    }
+  }
+
+  async function trainSwapBack(settings, run) {
+    const runId = state.runId;
+    try {
+      const heroes = (await requestGameApi(HEROES_API)).heroes || [];
+      const original = run.original.teamIds.filter((heroId) => heroes.some((hero) => hero.id === heroId));
+      await trainSetTeam(heroes, original);
+      if (runId !== state.runId) return;
+      await refreshEquipments();
+      const failed = [];
+      // 後借的先還：同一件被借了兩次也會回到最早的主人身上
+      for (const { equipmentId, heroId } of [...run.restore].reverse()) {
+        const equipment = state.equipments.find((candidate) => candidate.id === equipmentId);
+        if (!equipment || equipment.equipped === heroId) continue;
+        try {
+          if (equipment.equipped) await trainUnequip(equipment.id);
+          await trainEquipTo(equipment.id, heroId);
+        } catch (error) {
+          if (error.captchaRequired) throw error;
+          failed.push(`${equipment.name}（${error.message}）`);
+        }
+        if (runId !== state.runId) return;
+      }
+      writeJsonStorage(TRAIN_STATE_KEY, null);
+      setPanelField('trainEnabled', false);
+      setTrainTarget(run.original.area, run.original.number, run.original.stageEnabled);
+      state.heroStatsAt = 0;
+      refreshGameView(HUNT_QUERY_KEYS);
+      renderTrainStatus();
+      const message = `練等完成，換回原本的隊伍，回 ${run.original.area} ${run.original.number} 繼續打${failed.length ? `；這些裝備沒穿回去，請手動處理：${failed.join('、')}` : ''}`;
+      trainLog(message);
+      if (failed.length) alertUser(message);
+      else showToast(message);
+      if (runId === state.runId) state.timerId = backgroundTimer.setTimeout(() => tick(), randomGap(1000, 3000));
+    } catch (error) {
+      if (runId === state.runId) trainFailed(settings, error, '換回隊伍');
     }
   }
 
@@ -5780,6 +6275,12 @@
       saveSettings(readSettingsFromPanel());
     } else if (event.target.dataset.captureHero) {
       startHeroCapture(event.target.dataset.captureHero);
+    } else if (action === 'load-train-heroes') {
+      loadTrainChoices();
+    } else if (action === 'train-reset') {
+      writeJsonStorage(TRAIN_STATE_KEY, null);
+      renderTrainStatus();
+      setStatus('練等進度已清除（隊伍、關卡沒有動）');
     } else if (action === 'load-hunt-team') {
       loadHuntTeam();
     } else if (action === 'load-equipment-choices') {
@@ -5831,6 +6332,21 @@
     } else if (action === 'card-buy-reset') {
       writeJsonStorage(CARD_BUY_STATE_KEY, { spent: 0, bought: 0 });
       renderCardBuyStatus();
+    } else if (action === 'card-notified-reset') {
+      writeJsonStorage(CARD_NOTIFIED_KEY, []);
+      cardBuyLog('下一輪符合的卡會再提醒一次');
+    } else if (action === 'card-alert-history-clear') {
+      writeJsonStorage(CARD_ALERT_HISTORY_KEY, []);
+      renderCardAlertHistory();
+    } else if (action === 'card-buy-check-now') {
+      const settings = readSettingsFromPanel();
+      if (!settings.cardBuyEnabled) cardBuyLog('先勾「查拍賣場英雄」');
+      else {
+        // 鎖也清掉：使用者按了就是要這個分頁查
+        cardBuy.checkedAt = 0;
+        writeJsonStorage(CARD_BUY_LOCK_KEY, null);
+        checkCardMarket(settings);
+      }
     } else if (action === 'transfer-refresh') {
       refreshTransferChoices(readSettingsFromPanel())
         .then(() => transferLog('已重新讀取'))
@@ -10315,6 +10831,8 @@
     if (event.target.dataset.pickChoice) updatePickFromChoices(event.target.dataset.pickChoice);
     if (event.target.dataset.forgeApiHero !== undefined) updateForgeApiHeroesFromChoices();
     if (event.target.dataset.forgePlan) updateForgeApiPlansFromChoices();
+    if (event.target.dataset.trainChoice) updateTrainFromChoices();
+    if (event.target.dataset.field === 'trainEnabled') renderTrainStatus();
     // 自己改了名稱＝今天就用這個名稱，自動換名稱等到下一個 00:00
     if (event.isTrusted && (event.target.dataset.field === 'forgeRecipeName' || event.target.dataset.forgePlan === 'name')) {
       writeJsonStorage(FORGE_NAME_DAY_KEY, localDayKey(Date.now()));
@@ -10328,6 +10846,11 @@
     refreshSupplyModes();
     saveSettings(readSettingsFromPanel());
     if (activeTab === 'forge') renderForgePlanOverview();
+    if (/^card/.test(event.target.dataset.field || '')) {
+      renderCardBuyStatus();
+      // 系統通知要使用者點過東西才能要權限，趁改設定的時候要
+      if (event.isTrusted && 'Notification' in window && Notification.permission === 'default') Notification.requestPermission();
+    }
     refreshAreaList();
   });
 
@@ -10354,6 +10877,9 @@
   refreshSupplyModes();
   refreshAreaList();
   renderCombatStats();
+  renderCardBuyStatus();
+  renderCardAlertHistory();
+  renderTrainStatus();
   let savedTab = 'main';
   try {
     savedTab = localStorage.getItem(TAB_STORAGE_KEY) || 'main';
