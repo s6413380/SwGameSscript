@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         器靈
 // @namespace    local.auto-clicker
-// @version      2.85
+// @version      2.89
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -58,13 +58,14 @@
     ['api', 'API'],
     ['backup', '備份'],
     ['transfer', '轉移'],
+    ['cardBuy', '購卡'],
   ];
   // 分頁太多，先選大類再選分頁；大類裡記住上次看的分頁
   const TAB_GROUPS = [
     ['hunt', '打怪', ['main', 'health', 'resource', 'move', 'equip', 'pause']],
     ['forging', '鍛造', ['forge', 'recipe', 'material']],
     ['stats', '統計', ['income', 'combat', 'huntStats', 'growth']],
-    ['other', '其他', ['pick', 'transfer', 'alert', 'cloud', 'log', 'api', 'backup']],
+    ['other', '其他', ['pick', 'transfer', 'cardBuy', 'alert', 'cloud', 'log', 'api', 'backup']],
   ];
   const TAB_STORAGE_KEY = 'autoClickerV2Tab';
   const GROUP_TABS_STORAGE_KEY = 'autoClickerV2GroupTabs';
@@ -250,6 +251,14 @@
     transferCloudEnabled: false,
     // 雲端轉角色要這個帳號付錢，預設每次都要按同意；這裡列的帳號 ID（自己的其他帳號）免問
     transferTrustedIds: '',
+    // 自動購卡：照卡片種類（不是玩家取的名字）、價格、等級、潛能評價買玩家掛賣的英雄
+    cardBuyEnabled: false,
+    cardBuyRules: '',
+    // 0＝不買：花的是真錢，一定要自己設上限
+    cardBuyBudget: 0,
+    cardBuyMaxCount: 1,
+    cardBuyIntervalSeconds: 25,
+    cardBuyExcludeSellerIds: '',
     autoUpdateEnabled: true,
   };
   SUPPLY_GROUPS.forEach(({ id }) => {
@@ -976,6 +985,18 @@
         <div class="hint">價格是對方要付的錢（會轉到這個帳號）。按下去會先跳確認；對方沒待命就不掛單，掛上去 20 秒內沒被買走會自動撤回。對方不在中繼站上就走雲端：對方要勾「接受雲端轉帳」，兩邊的掛機、鍛造先停下來等（最多約 2.5 分鐘），完成後自動恢復。收到雲端轉角色會跳視窗問要不要接受（要付錢），80 秒沒按就拒絕；「免問的帳號 ID」填自己的其他帳號就不用每次按</div>
       </fieldset>
       <div data-role="transfer-log" class="hint"></div>
+    </div>
+
+    <div data-tab="cardBuy">
+      <label class="row"><input data-field="cardBuyEnabled" type="checkbox" style="flex:none;width:auto"> <b>查拍賣場的英雄（提醒／自動購買）</b></label>
+      <div class="hint">照卡片種類（例如房東阿姨，不是玩家取的名字）比對，價格、等級、潛能評價都符合才算。每行一條：<br>房東阿姨 價格≤50000 等級≥20 潛能≥A　← 自動買（一定要寫價格）<br>古老樹人 等級1 提醒　← 只提醒不買（價格可不寫）<br>等級：「等級1」＝剛好 1 級、「等級1-5」區間、「等級≥20」「等級≤5」。潛能由高到低 S A B C D E F，不認得的評價不算。人口販子開的時候也會一起看，只提醒不買</div>
+      <textarea data-field="cardBuyRules" rows="4" placeholder="房東阿姨 價格≤50000 等級≥20 潛能≥A&#10;古老樹人 等級1 提醒" style="width:100%;box-sizing:border-box;font:11px monospace"></textarea>
+      <div class="row">總預算 <input data-field="cardBuyBudget" type="number" min="0" style="width:100px;flex:none"> 最多買 <input data-field="cardBuyMaxCount" type="number" min="1" style="width:50px;flex:none"> 張</div>
+      <div class="row">每 <input data-field="cardBuyIntervalSeconds" type="number" min="10" style="width:50px;flex:none"> 秒查一次（再隨機多等 0～5 秒，最少 10 秒）</div>
+      <div class="row">不買這些賣家 ID<input data-field="cardBuyExcludeSellerIds" placeholder="逗號分隔" style="flex:1;min-width:0"></div>
+      <div class="hint">總預算 0＝不買、只提醒。花到總預算或買滿張數後就不再買，之後符合的改成提醒；同一張掛單只提醒一次（降價會再提醒）。自己的帳號、「轉移」頁免問的帳號、帶轉移暗號的掛單都不算。遇到活人驗證或買失敗（被搶走、角色欄滿了、錢不夠）會取消勾選並提醒。同一個帳號開好幾個分頁時只有一個分頁會查</div>
+      <div class="row"><span data-role="card-buy-status" class="hint" style="flex:1"></span><button data-action="card-buy-reset" title="已花的錢和已買張數歸零">重設已買紀錄</button></div>
+      <div data-role="card-buy-log" class="hint"></div>
     </div>
 
     <div data-tab="backup">
@@ -2284,6 +2305,189 @@
   const TRANSFER_REQUEST_EVENTS = ['request', 'heroRequest'];
   // 同一個帳號開好幾個分頁時，處理過的要求記在共用的地方，不會重複掛單
   const TRANSFER_HANDLED_KEY = 'autoClickerV2TransferHandled';
+
+  // 查拍賣的英雄：花的錢和張數存起來，自動更新重新整理後才不會從 0 算、超過預算
+  const CARD_BUY_STATE_KEY = 'autoClickerV2CardBuy';
+  // 提醒過的掛單記起來，同一張卡不會每一輪都叫
+  const CARD_NOTIFIED_KEY = 'autoClickerV2CardNotified';
+  const CARD_NOTIFIED_LIMIT = 300;
+  // 同一個帳號（同一個瀏覽器）開好幾個分頁時，誰最近查過誰負責，免得兩邊各買一張
+  const CARD_BUY_LOCK_KEY = 'autoClickerV2CardBuyLock';
+  const CARD_BUY_MIN_SECONDS = 10;
+  const POTENTIAL_ORDER = ['F', 'E', 'D', 'C', 'B', 'A', 'S'];
+  // 轉移功能掛單時留言的暗號（transferToken）
+  const TRANSFER_TOKEN_PATTERN = /^#[0-9a-z]{6}$/;
+  const RELEASED_MARKET_API = '/api/releasedHeroMarket';
+  const cardBuy = { checkedAt: 0, busy: false, limitNoted: false };
+
+  // 等級：「等級1-5」區間、「等級≥20」「等級≤5」、只寫數字「等級1」＝剛好那一級
+  function parseLevelRange(text) {
+    const range = text.match(/等級\s*(\d+)\s*[-~～]\s*(\d+)/);
+    if (range) return [Number(range[1]), Number(range[2])];
+    const atLeast = text.match(/等級\s*[≥>]=?\s*(\d+)/);
+    if (atLeast) return [Number(atLeast[1]), Infinity];
+    const atMost = text.match(/等級\s*[≤<]=?\s*(\d+)/);
+    if (atMost) return [0, Number(atMost[1])];
+    const exact = text.match(/等級\s*=?\s*(\d+)/);
+    return exact ? [Number(exact[1]), Number(exact[1])] : [0, Infinity];
+  }
+
+  function parseCardBuyRules(text) {
+    return String(text || '')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const type = line.split(/\s+/)[0];
+        const rest = line.slice(type.length);
+        const price = rest.match(/價格\s*[≤<=]*\s*\$?\s*(\d[\d,]*)/);
+        const potential = rest.match(/潛能\s*[≥>=]*\s*([A-Za-z]+)/);
+        const [minLevel, maxLevel] = parseLevelRange(rest);
+        return {
+          line,
+          type,
+          notifyOnly: /提醒/.test(rest),
+          maxPrice: price ? Number(price[1].replace(/,/g, '')) : 0,
+          minLevel,
+          maxLevel,
+          minPotential: potential ? potential[1].toUpperCase() : '',
+        };
+      });
+  }
+
+  function potentialAtLeast(potential, minimum) {
+    if (!minimum) return true;
+    const rank = POTENTIAL_ORDER.indexOf(String(potential || '').toUpperCase());
+    const needed = POTENTIAL_ORDER.indexOf(minimum);
+    return rank >= 0 && needed >= 0 && rank >= needed;
+  }
+
+  // 要買的規則一定要有價格上限；只提醒的沒寫價格就不管價格
+  function cardRuleMatches(rule, card) {
+    const level = Number(card.lv || 0);
+    return (
+      card.type === rule.type &&
+      (rule.notifyOnly || rule.maxPrice > 0) &&
+      (!rule.maxPrice || Number(card.price) <= rule.maxPrice) &&
+      level >= rule.minLevel &&
+      level <= rule.maxLevel &&
+      potentialAtLeast(card.potential, rule.minPotential)
+    );
+  }
+
+  function cardText(card) {
+    return `${card.type}「${card.name}」Lv.${card.lv} 潛能 ${card.potential}（$${Number(card.price).toLocaleString()}）`;
+  }
+
+  function cardBuyLog(message) {
+    setStatus(`［拍賣英雄］${message}`);
+    panel.querySelector('[data-role="card-buy-log"]').textContent = `${new Date().toLocaleTimeString()} ${message}`;
+  }
+
+  function renderCardBuyStatus(settings = readSettingsFromPanel()) {
+    const saved = readJsonStorage(CARD_BUY_STATE_KEY, { spent: 0, bought: 0 });
+    panel.querySelector('[data-role="card-buy-status"]').textContent =
+      `已買 ${saved.bought}/${settings.cardBuyMaxCount} 張，已花 $${Number(saved.spent).toLocaleString()}／預算 $${Number(settings.cardBuyBudget).toLocaleString()}`;
+  }
+
+  function stopCardBuy(message) {
+    setPanelField('cardBuyEnabled', false);
+    cardBuyLog(message);
+    alertUser(`拍賣英雄：${message}`);
+  }
+
+  function cardBuyExcludedSellers(settings, ownId) {
+    const ids = `${settings.transferTrustedIds || ''},${settings.cardBuyExcludeSellerIds || ''}`
+      .split(/[,，\s]+/)
+      .map(Number)
+      .filter(Boolean);
+    return new Set([Number(ownId), ...ids]);
+  }
+
+  // 只提醒新出現的；key 加上價格，同一張降價了會再提醒一次
+  function notifyCards(cards, where) {
+    const notified = readJsonStorage(CARD_NOTIFIED_KEY, []);
+    const fresh = cards.filter((card) => !notified.includes(`${where}:${card.id}:${card.price}`));
+    if (!fresh.length) return;
+    writeJsonStorage(CARD_NOTIFIED_KEY, [...notified, ...fresh.map((card) => `${where}:${card.id}:${card.price}`)].slice(-CARD_NOTIFIED_LIMIT));
+    const text = `${where}有符合的卡：${fresh.map(cardText).join('、')}`;
+    cardBuyLog(text);
+    alertUser(text);
+  }
+
+  // 人口販子平常沒開；回應格式還沒看過實際的，有 heroes 陣列或本身是陣列才當成清單，而且只提醒不買
+  async function releasedMarketCards() {
+    const data = await requestGameApi(RELEASED_MARKET_API).catch(() => null);
+    if (!data || data.enabled === false) return [];
+    return Array.isArray(data.heroes) ? data.heroes : Array.isArray(data) ? data : [];
+  }
+
+  async function checkCardMarket(settings) {
+    if (tabShutDown || !settings.cardBuyEnabled || cardBuy.busy) return;
+    const interval = Math.max(CARD_BUY_MIN_SECONDS, Number(settings.cardBuyIntervalSeconds) || 0) * 1000;
+    if (Date.now() < cardBuy.checkedAt) return;
+    const lock = readJsonStorage(CARD_BUY_LOCK_KEY, null);
+    if (lock && lock.tab !== tabKey && Date.now() - lock.at < interval * 2) return;
+    cardBuy.checkedAt = Date.now() + interval + randomGap(0, 5000);
+    writeJsonStorage(CARD_BUY_LOCK_KEY, { tab: tabKey, at: Date.now() });
+    const rules = parseCardBuyRules(settings.cardBuyRules);
+    if (!rules.some((rule) => rule.notifyOnly || rule.maxPrice > 0)) {
+      cardBuyLog('沒有可用的規則（要買的每條都要寫價格上限，只提醒的要寫「提醒」）');
+      return;
+    }
+    if (state.captchaWaiting || forgeRunner.captchaWaiting) return;
+    cardBuy.busy = true;
+    let buying = null;
+    try {
+      const ownId = dashboard.profile ? dashboard.profile.id : (await requestGameApi(PROFILE_API)).id;
+      const excluded = cardBuyExcludedSellers(settings, ownId);
+      const matched = ((await requestGameApi('/api/trades?type=heroes')).heroes || [])
+        .filter((trade) => !excluded.has(Number(trade.sellerId)) && !TRANSFER_TOKEN_PATTERN.test(String(trade.message || '')))
+        .map((trade) => ({ trade, rules: rules.filter((rule) => cardRuleMatches(rule, trade)) }))
+        .filter((entry) => entry.rules.length)
+        .sort((first, second) => Number(first.trade.price) - Number(second.trade.price));
+      const toBuy = matched.filter((entry) => entry.rules.some((rule) => !rule.notifyOnly)).map((entry) => entry.trade);
+      const toNotify = matched.filter((entry) => entry.rules.every((rule) => rule.notifyOnly)).map((entry) => entry.trade);
+      const released = (await releasedMarketCards()).filter((card) => rules.some((rule) => cardRuleMatches({ ...rule, notifyOnly: true }, card)));
+      notifyCards(toNotify, '拍賣場');
+      notifyCards(released, '人口販子');
+      const budget = Number(settings.cardBuyBudget) || 0;
+      const leftover = [];
+      for (const trade of toBuy) {
+        const saved = readJsonStorage(CARD_BUY_STATE_KEY, { spent: 0, bought: 0 });
+        const price = Number(trade.price);
+        if (saved.bought >= settings.cardBuyMaxCount || saved.spent + price > budget) {
+          leftover.push(trade);
+          continue;
+        }
+        // 搶時間：不排進動作隊伍，跟轉移買單一樣直接送
+        buying = trade;
+        const result = await sendGameRequest(`/api/trades/${trade.id}/buy`, { method: 'POST' });
+        buying = null;
+        saved.spent += price;
+        saved.bought += 1;
+        writeJsonStorage(CARD_BUY_STATE_KEY, saved);
+        refreshGameView([['profile'], ['market'], ['heroes']]);
+        const text = `買下 ${cardText(trade)}${result && result.money !== undefined ? `，剩 $${Number(result.money).toLocaleString()}` : ''}`;
+        cardBuyLog(text);
+        alertUser(`拍賣英雄：${text}`);
+        await wait(randomGap(800, 1500));
+      }
+      // 預算用完、張數買滿就只剩提醒：符合要買的條件但買不下的也提醒一次，讓人自己決定
+      notifyCards(leftover, '拍賣場（超過預算或張數，沒買）');
+      if (!matched.length && !released.length) cardBuyLog(`沒有符合的卡（${new Date().toLocaleTimeString()} 查過）`);
+    } catch (error) {
+      if (error.captchaRequired) stopCardBuy('伺服器要求活人驗證，查拍賣已關閉，驗證完要用再重新勾選');
+      // 逾時或斷線時可能其實買到了，只是沒算進預算，所以也停下來讓人確認
+      else if (buying && error.transient) stopCardBuy(`買 ${cardText(buying)} 時${error.message}，不確定有沒有買到，查拍賣已關閉，請到遊戲確認`);
+      else if (buying || /HTTP 4/.test(error.message)) stopCardBuy(`${buying ? `買不到 ${cardText(buying)}` : '查詢失敗'}（${error.message}），查拍賣已關閉`);
+      else cardBuyLog(`查詢失敗（${error.message}），下一輪再試`);
+    } finally {
+      cardBuy.busy = false;
+      renderCardBuyStatus();
+    }
+  }
+
   // 第一次只抓最後幾筆，不用從頭讀整張表
   const transferCloud = { checkedAt: 0, row: -50, busy: false, accountId: 0 };
 
@@ -4027,13 +4231,15 @@
   const BORROWED_ATTACKS = [
     // 「…分心被盜寶哥布林趁機攻擊」或「…無法動彈，王剛趁機攻擊」；名字裡不含「被」，從逗號起算時才不會把「分心被」也包進名字
     { pattern: /(?:被|，)([^，被]+?)趁\S?攻擊/, skill: '趁機攻擊' },
-    { pattern: /遭([^，]+?)反擊/, skill: '反擊' },
+    // 「遭古老樹人反擊」「遭到古老樹人上前反擊」
+    { pattern: /遭到?([^，]+?)(?:上前)?反擊/, skill: '反擊' },
   ];
   // 一行可能同時恢復兩種，例如「恢復了 278 生命值和 61 體力」
   const HEAL_AMOUNT_PATTERN = /(\d[\d,]*)\s*點?\s*(體力|生命值)?/g;
   const FOOD_PATTERN = /(?:吃|喝)了一些(.+?)，/;
   const KILL_PATTERN = /^(.+?)被擊殺死亡了/;
-  const HIT_PATTERN = /^擊中(.+?)，/;
+  // 多段攻擊每一擊前面會加「第 N 擊」
+  const HIT_PATTERN = /^(?:第\s*\d+\s*擊)?擊中(.+?)，/;
   const EXP_PATTERN = /^(.+?)獲得了\s*\d[\d,]*\s*點經驗值/;
   const REMAINING_PATTERN = /^(.+?)還剩下\s*\d[\d,]*\s*點生命值/;
   // 戰鬥中喝藥也會出現「點生命值」，所以只認戰後結算那種寫法
@@ -4085,20 +4291,25 @@
 
   // 我方＝戰後拿到經驗值的人；全滅時沒有經驗值，改用戰後還活著的人。
   // 其他名字從被擊中、被擊殺、被攻擊的描述收集，用來認出每行開頭是誰
-  function collectCombatants(lines) {
+  // API 戰報直接給敵我名單（a 我方、b 敵方），就不用從結算的文字猜
+  function collectCombatants(lines, sides = null) {
     // 名字不會很長也不會有標點；幾行黏在一起時抓到的「名字」會是一大串，不當成角色
     const isPlausibleName = (name) => name.length <= 16 && !/[，。]/.test(name);
     const namesFrom = (pattern) =>
       lines.map((line) => line.match(pattern)).filter(Boolean).map((match) => match[1]).filter(isPlausibleName);
     const expNames = namesFrom(EXP_PATTERN);
-    const party = new Set(expNames.length ? expNames : namesFrom(REMAINING_PATTERN));
-    const names = new Set(party);
+    const party = new Set(sides && sides.party.length ? sides.party : expNames.length ? expNames : namesFrom(REMAINING_PATTERN));
+    const names = new Set([...party, ...(sides ? sides.enemies : [])]);
     const namePatterns = [HIT_PATTERN, KILL_PATTERN, /朝(.+?)發動攻擊/, /^([^朝，]+?)攻擊([^，]+?)，/];
     lines.forEach((line) => {
       namePatterns.forEach((pattern) => {
         const match = line.match(pattern);
         if (match) match.slice(1).forEach((name) => names.add(name));
       });
+    });
+    // 「古老樹人胡亂攻擊意外命中…」會被當成名字「古老樹人胡亂」，比我方名字長會先比到，整行就認不出是誰
+    names.forEach((name) => {
+      if (!party.has(name) && [...party].some((member) => name.startsWith(member))) names.delete(name);
     });
     // 長的先比，避免「綠水靈1」吃掉「綠水靈10」
     const sortedNames = [...names].sort((first, second) => second.length - first.length);
@@ -4148,9 +4359,11 @@
   // 紀錄沒有標出「誰的技能打中誰」，所以記住最近一個出手的人，後面的「擊中…」「恢復了…」「被擊殺」都算他的；
   // 剛被打中或被治療的人緊接著出現的狀態描述（燒起來了、被燒傷了）不算新的出手。
   // 我方角色只有緊接在自己被打中／被治療那行後面才算狀態，否則像「王剛做了一道麻婆豆腐」會被當成王剛被打後的反應。
-  // indented 有給時（逐行讀得到縮排），縮排的子行一律屬於上面那行出手的人，不用再猜
-  function parseBattle(lines, indented = null) {
-    const combatants = collectCombatants(lines);
+  // indented 有給時（逐行讀得到縮排），縮排的子行一律屬於上面那行出手的人，不用再猜。
+  // sides 是 API 戰報才有的：敵我名單，和每行是哪一方受傷（damaged[index]：'a' 我方、'b' 敵方）
+  function parseBattle(lines, indented = null, sides = null) {
+    const combatants = collectCombatants(lines, sides);
+    const damaged = sides ? sides.damaged : [];
     const { party, leadingName, otherNames } = combatants;
     const members = {};
     party.forEach((name) => (members[name] = emptyMemberStats()));
@@ -4198,6 +4411,11 @@
       addStats(skillStats, { casts: 0, damage: amount, hits: 1, crits: critical }, SKILL_FIELDS);
     };
     const handleLine = (line, index) => {
+      // 縮排在出手那行底下、又是敵方受傷：不管寫法（擊中、第 N 擊…）都是上面那個人打的
+      if (indented && indented[index] && damaged[index] === 'b') {
+        creditDamage(line, ANY_DAMAGE_PATTERN);
+        return;
+      }
       const hit = line.match(HIT_PATTERN);
       if (hit) {
         targets.add(hit[1]);
@@ -4268,7 +4486,8 @@
     for (const [index, line] of lines.entries()) {
       const outputBefore = partyOutput();
       handleLine(line, index);
-      if (partyOutput() === outputBefore && hasUncreditedPartyOutput(line, party)) flagged.add(index);
+      // 我方受傷的行一定不是我方的輸出
+      if (partyOutput() === outputBefore && damaged[index] !== 'a' && hasUncreditedPartyOutput(line, party)) flagged.add(index);
     }
     return { members, flagged };
   }
@@ -4417,7 +4636,9 @@
     const lines = messages.map((message) => String(message.m).trim());
     // 群體技能的子行（第 1 擊、第 2 擊…）帶 indent，等同畫面上的縮排，交給解析器算在上面那行出手的人身上
     const indented = messages.map((message) => Boolean(message.indent));
-    recordBattle(lines, indented.some(Boolean) ? indented : null, () => JSON.stringify(report).slice(0, 20000));
+    const names = (side) => (Array.isArray(side) ? side.map((fighter) => fighter && fighter.name).filter(Boolean) : []);
+    const sides = { party: names(report.a), enemies: names(report.b), damaged: messages.map((message) => message.dmged) };
+    recordBattle(lines, indented.some(Boolean) ? indented : null, () => JSON.stringify(report).slice(0, 20000), sides);
   }
 
   function watchBattleLog(settings) {
@@ -4436,8 +4657,8 @@
   }
 
   // rawReport：認不出來時保存的原始內容，用函式包著，正常時不用產生
-  function recordBattle(lines, indented, rawReport) {
-    const { members, flagged } = parseBattle(lines, indented);
+  function recordBattle(lines, indented, rawReport, sides = null) {
+    const { members, flagged } = parseBattle(lines, indented, sides);
     combatStats.lastReport = formatBattleReport(lines, indented, flagged);
     // 分不出行時整份戰報會黏成一兩行，解析出來的「角色」會是一大串文字，寧可不算也不要把垃圾放進統計
     if (lines.length < 3 || Object.keys(members).length === 0) {
@@ -4646,6 +4867,7 @@
     syncCloud(settings);
     sampleMoney(settings);
     checkCloudTransfers(settings);
+    checkCardMarket(settings);
     keepRunLock();
     checkForgeCaptcha();
     if (!state.running) reloadForUpdateIfIdle();
@@ -5606,6 +5828,9 @@
       renderForgePlanOverview();
     } else if (action === 'forge-api-heroes') {
       showForgeApiHeroChoices().catch((error) => setStatus(`讀取角色失敗（${error.message}）`));
+    } else if (action === 'card-buy-reset') {
+      writeJsonStorage(CARD_BUY_STATE_KEY, { spent: 0, bought: 0 });
+      renderCardBuyStatus();
     } else if (action === 'transfer-refresh') {
       refreshTransferChoices(readSettingsFromPanel())
         .then(() => transferLog('已重新讀取'))
@@ -5957,6 +6182,7 @@
             if (response.ok && isEquipmentList) {
               try {
                 const equipments = JSON.parse(responseText).equipments || [];
+                matchPendingForges(equipments);
                 rememberForgedEquipments(equipments);
                 rememberLatestEquipments(equipments);
               } catch {
@@ -7330,7 +7556,7 @@
       type: FORGE_TYPE_NAMES[body.type] || body.type,
       materials: body.selectedMines.map((mine) => [itemName(mine.itemId), Number(mine.quantity) || 0]),
       time: Date.now(),
-      ...(hero ? { skills: { forge: hero.forge, tailor: hero.tailor, craft: hero.craft } } : {}),
+      ...(hero ? { heroName: hero.name, skills: { forge: hero.forge, tailor: hero.tailor, craft: hero.craft } } : {}),
     };
     writeJsonStorage(FORGE_PENDING_KEY, pending);
   }
@@ -7345,8 +7571,7 @@
 
   // 完成鍛造的回應有新裝備就用它，沒有就重讀裝備清單，挑鍛造開始後做出來、同名同類型、還沒對過的最新一件
   async function rememberForgeComplete(heroId, data) {
-    const pending = readJsonStorage(FORGE_PENDING_KEY, {});
-    const forge = pending[heroId];
+    const forge = readJsonStorage(FORGE_PENDING_KEY, {})[heroId];
     if (!forge) return;
     const found = [];
     const walk = (value, depth) => {
@@ -7359,23 +7584,37 @@
       Object.values(value).forEach((child) => walk(child, depth + 1));
     };
     walk(data, 0);
-    if (!found.length) found.push(...((await requestGameApi(EQUIPMENTS_API)).equipments || []).filter((item) => item.name === forge.name));
+    // 回應裡同名的可能是角色身上穿的舊裝備，對不上就照樣重讀清單
+    if (matchPendingForges(found)) return;
+    matchPendingForges((await requestGameApi(EQUIPMENTS_API)).equipments || []);
+  }
+
+  // 完成當下沒對上的（角色身上同名舊裝備、請求失敗、在沒裝腳本的地方按完成），之後讀到裝備清單再補對
+  function matchPendingForges(equipments) {
+    const pending = readJsonStorage(FORGE_PENDING_KEY, {});
     const saved = readJsonStorage(OWN_FORGE_MATERIALS_KEY, {});
-    const equipment = found
-      .filter((item) => !saved[item.id] && (!forge.type || item.type === forge.type))
-      // 修練也走 completeAction，同名的舊裝備不能算成這次做的
-      .filter((item) => !item.craftedTime || Date.parse(item.craftedTime) >= forge.time - 60000)
-      .sort((first, second) => second.id - first.id)[0];
-    if (!equipment) return;
-    saved[equipment.id] = {
-      materials: forge.materials,
-      time: equipment.craftedTime || new Date().toISOString(),
-      ...(forge.skills ? { skills: forge.skills } : {}),
-    };
+    const matched = [];
+    Object.entries(pending).forEach(([heroId, forge]) => {
+      const equipment = equipments
+        .filter((item) => item && item.name === forge.name && !saved[item.id] && (!forge.type || item.type === forge.type))
+        .filter((item) => !forge.heroName || !item.crafterHeroName || item.crafterHeroName === forge.heroName)
+        // 修練也走 completeAction，同名的舊裝備不能算成這次做的
+        .filter((item) => !item.craftedTime || Date.parse(item.craftedTime) >= forge.time - 60000)
+        .sort((first, second) => second.id - first.id)[0];
+      if (!equipment) return;
+      saved[equipment.id] = {
+        materials: forge.materials,
+        time: equipment.craftedTime || new Date().toISOString(),
+        ...(forge.skills ? { skills: forge.skills } : {}),
+      };
+      delete pending[heroId];
+      matched.push(equipment);
+    });
+    if (!matched.length) return false;
     writeJsonStorage(OWN_FORGE_MATERIALS_KEY, saved);
-    delete pending[heroId];
     writeJsonStorage(FORGE_PENDING_KEY, pending);
-    rememberForgedEquipments([equipment]);
+    rememberForgedEquipments(matched);
+    return true;
   }
 
   // 鍛造材料：API 不給，自己攔截鍛造請求記，也讀鍛造工具腳本存在 localStorage 的（裝備 id → 材料），別人的只讀不改。
@@ -8117,7 +8356,9 @@
 
   async function refreshMaterialSummary() {
     try {
-      rememberForgedEquipments((await requestGameApi(EQUIPMENTS_API)).equipments || []);
+      const equipments = (await requestGameApi(EQUIPMENTS_API)).equipments || [];
+      matchPendingForges(equipments);
+      rememberForgedEquipments(equipments);
     } catch (error) {
       setStatus(`讀取裝備清單失敗（${error.message}）`);
     }
