@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.18
+// @version      3.19
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -189,6 +189,8 @@
     lowProfileSleepHours: '2-9',
     // 多開輪流：同一台電腦的幾個帳號透過中繼站排隊，一次只有一個分頁打遊戲 API
     turnTakingEnabled: false,
+    // 三個帳號同步＝當成同一個人：共用設定經中繼站同步，低調模式的玩／休息／睡覺時間表也一樣
+    syncAccountsEnabled: true,
     statusPauseLevel: 3,
     expPauseEnabled: false,
     expSelectors: '',
@@ -771,6 +773,9 @@
       <div class="hint">開了之後掛機、API 鍛造每一步多等 1～8 秒（多數短、偶爾長），偶爾分心停 0.5～2 分鐘，要補給、換裝時晚幾秒才反應，動作之間的間隔也拉長；玩一陣子就整個停下休息，晚上睡覺。休息、睡覺時不會打怪、開爐，也不會躲紅名（血量、活人驗證照常監控）。反應變慢，補給門檻設高一點比較安全</div>
       <div class="hint" data-role="low-profile-personality"></div>
       <label class="row"><input data-field="turnTakingEnabled" type="checkbox" style="flex:none;width:auto"> <b>多開輪流</b>（同一台電腦的帳號一次只有一個送出請求）</label>
+      <label class="row"><input data-field="syncAccountsEnabled" type="checkbox" style="flex:none;width:auto"> <b>三個帳號同步</b>（當成同一個人）</label>
+      <div class="hint">要開中繼站。低調模式、多開輪流、轉移模式的設定在任一個帳號改了，其他帳號約 10 秒內跟著改；低調模式的玩／休息／睡覺時間表三個帳號一樣，一起停下來休息（手速、分心還是各帳號自己的）</div>
+      <div class="hint" data-role="sync-accounts-status"></div>
       <div class="hint">要開中繼站（啟動中繼站.cmd），每個帳號都要勾。腳本打的 API 一律經中繼站排隊，一次一個，換到別的帳號（或別的分頁）之前隔 1～3 秒，像一個人在幾個視窗之間切換；總覽、附近玩家、收入這類定時讀取會等這個帳號下次動作時順便送（最多等 30 秒）。中繼站沒開就照舊直接送。遊戲網頁自己發的請求不受管</div>
       <label class="row"><input data-field="autoNavigateEnabled" type="checkbox" style="flex:none;width:auto"> 執行中不在狩獵頁／鍛造頁就自動切過去（API 打怪、API 鍛造不需要）</label>
       <label>A 原地掛機（重複點）</label>
@@ -3324,6 +3329,73 @@
     }
   }
 
+  // 三個帳號一定要一樣才有意義的設定：任一個帳號改了就送到中繼站，其他帳號定時拿回來套用
+  const SHARED_SETTING_KEYS = [
+    'lowProfileEnabled',
+    'lowProfilePlayMinMinutes',
+    'lowProfilePlayMaxMinutes',
+    'lowProfileBreakMinMinutes',
+    'lowProfileBreakMaxMinutes',
+    'lowProfileSleepHours',
+    'turnTakingEnabled',
+    'transferTurnMode',
+  ];
+  const SHARED_SETTINGS_AT_KEY = 'autoClickerV2SharedSettingsAt';
+  const SHARED_SETTINGS_POLL_MILLISECONDS = 10000;
+  const sharedSettings = { at: Number(readJsonStorage(SHARED_SETTINGS_AT_KEY, 0)) || 0, checkedAt: 0, text: '' };
+
+  function rememberSharedSettingsAt(at) {
+    sharedSettings.at = at;
+    try {
+      localStorage.setItem(SHARED_SETTINGS_AT_KEY, JSON.stringify(at));
+    } catch {
+      // 記不住就下次重新整理時再跟中繼站對一次
+    }
+  }
+
+  async function pushSharedSettings(settings) {
+    const at = Date.now();
+    const values = Object.fromEntries(SHARED_SETTING_KEYS.map((key) => [key, settings[key]]));
+    try {
+      const response = await window.fetch(`${dashboardBaseUrl(settings)}/shared`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({ at, values }),
+      });
+      if (!response.ok) throw new Error(response.status === 404 ? 'monitor-server.ps1 是舊版，請關掉重開' : `HTTP ${response.status}`);
+      rememberSharedSettingsAt(at);
+      sharedSettings.text = `同步：已把這個帳號的設定送給其他帳號（${new Date(at).toLocaleTimeString('zh-TW', { hour12: false })}）`;
+    } catch (error) {
+      sharedSettings.text = `同步：送不出去（${error.message}）`;
+    }
+    renderSyncAccountsStatus();
+  }
+
+  async function syncSharedSettings(settings) {
+    if (!settings.syncAccountsEnabled || Date.now() - sharedSettings.checkedAt < SHARED_SETTINGS_POLL_MILLISECONDS) return;
+    sharedSettings.checkedAt = Date.now();
+    try {
+      const response = await window.fetch(`${dashboardBaseUrl(settings)}/shared`, { cache: 'no-store' });
+      if (!response.ok) throw new Error(response.status === 404 ? 'monitor-server.ps1 是舊版，請關掉重開' : `HTTP ${response.status}`);
+      const remote = await response.json();
+      // 中繼站剛開、還沒有人送過：拿這個帳號的當起點
+      if (!remote.at) return pushSharedSettings(settings);
+      if (remote.at <= sharedSettings.at) return;
+      const changed = SHARED_SETTING_KEYS.filter((key) => key in remote.values && remote.values[key] !== settings[key]);
+      changed.forEach((key) => setPanelField(key, remote.values[key]));
+      rememberSharedSettingsAt(remote.at);
+      if (changed.length) sharedSettings.text = `同步：其他帳號改了 ${changed.length} 項設定，已跟著改（${new Date().toLocaleTimeString('zh-TW', { hour12: false })}）`;
+    } catch (error) {
+      sharedSettings.text = `同步：連不上中繼站（${error.message}）`;
+    }
+    renderSyncAccountsStatus();
+  }
+
+  function renderSyncAccountsStatus() {
+    const element = panel.querySelector('[data-role="sync-accounts-status"]');
+    if (element) element.textContent = readSettingsFromPanel().syncAccountsEnabled ? sharedSettings.text : '';
+  }
+
   function dashboardMonitorText(settings) {
     if (!settings.dashboardEnabled) return '';
     const problem = dashboard.sendError || dashboard.dataError;
@@ -4391,7 +4463,8 @@
   }
 
   async function refreshZoneUsers() {
-    const data = await requestGameApi(ZONE_USERS_API, { background: true });
+    // 不能延後順便送：tick 會等這個讀完才繼續，延後的話要等下一個動作，而下一個動作又在等它
+    const data = await requestGameApi(ZONE_USERS_API);
     state.zoneUsers = (data && data.users) || [];
   }
 
@@ -4856,13 +4929,21 @@
   function accountPersonality() {
     const profile = dashboard.profile || {};
     const random = seededRandom(`personality:${profile.nickname || profile.id || ''}`);
-    return {
+    const personality = {
       speed: 0.75 + random() * 0.6,
       distractChance: 0.03 + random() * 0.05,
       play: 0.8 + random() * 0.45,
       rest: 0.8 + random() * 0.5,
       sleepShiftMinutes: Math.round(random() * 180 - 90),
     };
+    // 三個帳號同步＝同一個人：玩多久、休息多久、幾點睡用同一組，手速和分心還是各視窗自己的
+    if (readSettingsFromPanel().syncAccountsEnabled) {
+      const shared = seededRandom('personality:shared');
+      personality.play = 0.8 + shared() * 0.45;
+      personality.rest = 0.8 + shared() * 0.5;
+      personality.sleepShiftMinutes = Math.round(shared() * 180 - 90);
+    }
+    return personality;
   }
 
   function lowProfilePersonalityText() {
@@ -4893,13 +4974,35 @@
       const day = new Date(now);
       day.setDate(day.getDate() + dayOffset);
       day.setHours(0, 0, 0, 0);
-      const random = seededRandom(`sleep:${profile.nickname || profile.id || ''}:${day.toDateString()}`);
+      const sleeper = settings.syncAccountsEnabled ? 'shared' : profile.nickname || profile.id || '';
+      const random = seededRandom(`sleep:${sleeper}:${day.toDateString()}`);
       const startMinutes = from * 60 + personality.sleepShiftMinutes + (random() * 120 - 60);
       let endMinutes = (to <= from ? to + 24 : to) * 60 + personality.sleepShiftMinutes + (random() * 120 - 60);
       if (random() < 0.15) endMinutes += 60 + random() * 120;
       const start = day.getTime() + startMinutes * 60000;
       const end = day.getTime() + endMinutes * 60000;
       if (now >= start && now < end) return end;
+    }
+    return 0;
+  }
+
+  // 三個帳號同步時：玩／休息的時間表由日期決定，每個分頁自己算出來都一樣，不用互相通知就會一起停下來
+  function sharedBreakEndAt(settings, now) {
+    const personality = accountPersonality();
+    const random = seededRandom(`rhythm:${new Date(now).toDateString()}`);
+    const between = (minKey, maxKey, factor) => {
+      const low = Number(settings[minKey]) || 1;
+      const high = Math.max(low, Number(settings[maxKey]) || low);
+      return (low + random() * (high - low)) * 60000 * factor;
+    };
+    const midnight = new Date(now);
+    midnight.setHours(0, 0, 0, 0);
+    let at = midnight.getTime();
+    while (at <= now) {
+      at += between('lowProfilePlayMinMinutes', 'lowProfilePlayMaxMinutes', personality.play);
+      if (now < at) return 0;
+      at += between('lowProfileBreakMinMinutes', 'lowProfileBreakMaxMinutes', personality.rest);
+      if (now < at) return at;
     }
     return 0;
   }
@@ -4919,6 +5022,13 @@
       const wake = new Date(wakeAt);
       setStatus(`低調模式：睡覺中，${wake.getHours()}:${String(wake.getMinutes()).padStart(2, '0')} 起床`);
       return wakeAt - now;
+    }
+    if (settings.syncAccountsEnabled) {
+      const breakEnd = sharedBreakEndAt(settings, now);
+      if (!breakEnd) return 0;
+      lowProfile.breakUntil = breakEnd;
+      setStatus(`低調模式：玩了一陣子，三個帳號一起休息 ${Math.round((breakEnd - now) / 60000)} 分鐘`);
+      return breakEnd - now;
     }
     if (!lowProfile.sessionEnd) lowProfile.sessionEnd = now + playTime();
     if (now < lowProfile.sessionEnd) return 0;
@@ -5651,6 +5761,7 @@
     reportToDashboard(settings);
     checkForUpdate(settings);
     syncGrowth(settings);
+    syncSharedSettings(settings);
     syncCloud(settings);
     sampleMoney(settings);
     checkCloudTransfers(settings);
@@ -11891,6 +12002,14 @@
       panel.querySelector('[data-role="card-buy-next"]').textContent = '';
     }
     // 自己改了名稱＝今天就用這個名稱，自動換名稱等到下一個 00:00
+    if (event.isTrusted && SHARED_SETTING_KEYS.includes(event.target.dataset.field) && readSettingsFromPanel().syncAccountsEnabled) {
+      pushSharedSettings(readSettingsFromPanel());
+    }
+    if (event.isTrusted && event.target.dataset.field === 'syncAccountsEnabled' && event.target.checked) {
+      // 剛打開同步：先跟中繼站上的設定對齊，不要拿自己的蓋掉別人的
+      sharedSettings.at = 0;
+      sharedSettings.checkedAt = 0;
+    }
     if (event.isTrusted && (event.target.dataset.field === 'forgeRecipeName' || event.target.dataset.forgePlan === 'name')) {
       writeJsonStorage(FORGE_NAME_DAY_KEY, localDayKey(Date.now()));
     }

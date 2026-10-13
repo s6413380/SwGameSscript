@@ -18,9 +18,14 @@ $accounts = @{}
 $commands = @{}
 # Turn taking: all accounts share one computer, so only one tab may call the game API at a time,
 # and handing the turn to another tab waits a moment like a person switching windows
-$turn = @{ holder = ''; until = 0; lastHolder = ''; freeAt = 0; switchGap = 0; streak = 0 }
-# Tabs waiting for the turn, served oldest first so no account starves
+$turn = @{ holder = ''; until = 0; lastHolder = ''; freeAt = 0; switchGap = 0; streak = 0; pick = '' }
+# Tabs waiting for the turn; see Pick-Waiter for who goes next
 $turnWaiters = @{}
+# How many times each tab was passed over in a row, and recent grants (last 10 minutes) for fair shares
+$turnSkips = @{}
+$turnGrants = New-Object System.Collections.ArrayList
+# Settings that must match on every account (low profile, turn taking); the newest copy wins
+$sharedSettings = '{}'
 # Longer than the script's 30 s game request timeout; a crashed tab loses the turn after this
 $turnLeaseMs = 40000
 # While two local accounts transfer through the market, only their requests get the turn, so the listing
@@ -57,6 +62,35 @@ function Grant-Turn([string]$id, [long]$now) {
   $turn.until = $now + $turnLeaseMs
 }
 
+# A strict A-B-C rotation is easy to spot, so the next tab is a weighted random pick: waiting longer and
+# having had fewer turns lately raise the odds, and the tab that just went is unlikely (but possible) to go again.
+# Guarantees: a tab passed over twice, or waiting over 12 s, is served next.
+function Pick-Waiter([long]$now) {
+  $waiters = @($turnWaiters.Keys | Where-Object { -not $turnWaiters[$_].transfer })
+  if ($waiters.Count -eq 0) { return '' }
+  $forced = @($waiters | Where-Object { [int]$turnSkips[$_] -ge 2 -or $now - $turnWaiters[$_].since -gt 12000 })
+  if ($forced.Count -gt 0) { return ($forced | Sort-Object { $turnWaiters[$_].since } | Select-Object -First 1) }
+  while ($turnGrants.Count -gt 0 -and $turnGrants[0].at -lt $now - 600000) { $turnGrants.RemoveAt(0) }
+  $active = @($turnGrants | ForEach-Object { $_.id } | Sort-Object -Unique)
+  $mean = if ($active.Count -gt 0) { $turnGrants.Count / $active.Count } else { 0 }
+  $weights = @{}
+  $total = 0.0
+  foreach ($waiter in $waiters) {
+    $own = @($turnGrants | Where-Object { $_.id -eq $waiter }).Count
+    $share = [Math]::Min(2.0, [Math]::Max(0.5, ($mean + 1) / ($own + 1)))
+    $weight = (1 + ($now - $turnWaiters[$waiter].since) / 4000.0) * $share
+    if ($waiter -eq $turn.lastHolder) { $weight *= 0.35 }
+    $weights[$waiter] = $weight
+    $total += $weight
+  }
+  $roll = Get-Random -Minimum 0.0 -Maximum $total
+  foreach ($waiter in $waiters) {
+    $roll -= $weights[$waiter]
+    if ($roll -lt 0) { return $waiter }
+  }
+  return $waiters[-1]
+}
+
 function Request-Turn([string]$id, [bool]$isTransfer) {
   $now = Now-Milliseconds
   if ($turn.holder -and $turn.until -lt $now) { Release-Turn $now }
@@ -89,10 +123,17 @@ function Request-Turn([string]$id, [bool]$isTransfer) {
     $turn.streak++
     return 0
   }
-  $oldest = ($turnWaiters.GetEnumerator() | Sort-Object { $_.Value.since } | Select-Object -First 1).Key
-  if ($oldest -ne $id) { return 300 }
+  # The next tab is picked once and kept until it is served, so polling order does not decide it
+  if (-not $turn.pick -or -not $turnWaiters.ContainsKey($turn.pick)) { $turn.pick = Pick-Waiter $now }
+  if ($turn.pick -ne $id) { return 300 }
   $switchAt = $turn.freeAt + $turn.switchGap
   if ($id -ne $turn.lastHolder -and $now -lt $switchAt) { return [Math]::Max(100, $switchAt - $now) }
+  foreach ($waiter in @($turnWaiters.Keys)) {
+    if ($waiter -ne $id) { $turnSkips[$waiter] = 1 + [int]$turnSkips[$waiter] }
+  }
+  $turnSkips[$id] = 0
+  $null = $turnGrants.Add(@{ at = $now; id = $id })
+  $turn.pick = ''
   Grant-Turn $id $now
   $turn.streak = 0
   return 0
@@ -198,6 +239,28 @@ function Handle-Request($context) {
     $id = $request.QueryString['id']
     if ($id -and $turn.holder -eq $id) { Release-Turn (Now-Milliseconds) }
     if ($id) { $turnWaiters.Remove($id) }
+    Send-Response $response 200 'application/json; charset=utf-8' '{"ok":true}'
+    return
+  }
+  if ($request.HttpMethod -eq 'GET' -and $path -eq '/shared') {
+    Send-Response $response 200 'application/json; charset=utf-8' $script:sharedSettings
+    return
+  }
+  if ($request.HttpMethod -eq 'POST' -and $path -eq '/shared') {
+    $reader = New-Object System.IO.StreamReader($request.InputStream, $utf8)
+    $raw = $reader.ReadToEnd()
+    $reader.Close()
+    try { $parsed = $raw | ConvertFrom-Json } catch { $parsed = $null }
+    if ($raw.Length -gt 10000 -or -not $parsed -or -not $parsed.at) {
+      Send-Response $response 400 'text/plain' 'bad request'
+      return
+    }
+    # Two tabs saving at once: keep the newer one
+    $current = $script:sharedSettings | ConvertFrom-Json
+    if (-not $current.at -or [long]$parsed.at -ge [long]$current.at) {
+      $script:sharedSettings = $raw
+      Write-Host "$(Get-Date -Format HH:mm:ss) shared settings updated"
+    }
     Send-Response $response 200 'application/json; charset=utf-8' '{"ok":true}'
     return
   }
