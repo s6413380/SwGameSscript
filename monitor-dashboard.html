@@ -47,6 +47,13 @@
     border:1px solid #4a4a52; border-radius:5px; }
   button:hover { background:#4a4a54; }
   button.small { padding:0 5px; font-size:11px; }
+  .global button[data-current="run"] { background:#2e7d32; border-color:#2e7d32; font-weight:bold; }
+  .global button[data-current="temp"] { background:#e65100; border-color:#e65100; font-weight:bold; }
+  .global button[data-current="stop"] { background:#c62828; border-color:#c62828; font-weight:bold; }
+  .queue { font-size:13px; margin:-4px 0 10px; }
+  .last-action.stuck { color:#ffe066; font-weight:bold; }
+  .focus-name { cursor:pointer; text-decoration:underline dotted; }
+  .focus-name:hover { color:#90caf9; }
   input, select { padding:2px 4px; font:12px monospace; color:#fff; background:#2a2a30; border:1px solid #44444c; border-radius:4px; }
   input[type="number"] { width:56px; }
   input[type="checkbox"] { accent-color:#fff; }
@@ -74,7 +81,12 @@
   <span class="muted" id="updated"></span>
   <button id="collapse-all">全部縮小</button><button id="expand-all">全部展開</button>
   <button id="reload-all" title="更新腳本後按這個：每個分頁重新整理，原本在跑的會自動接著跑">全部重新整理</button>
+  <span class="global">全體
+    <button data-global="run">開始</button><button data-global="temp">暫時暫停</button><button data-global="stop">永久暫停</button>
+    <input id="global-minutes" type="number" min="1" value="10" style="width:48px"> 分鐘
+    <span class="muted" id="global-text"></span></span>
 </header>
+<div class="queue" id="queue"></div>
 <section class="income-board" id="income-board" style="display:none">
   <div class="periods"><b>收益</b><span id="income-periods"></span></div>
   <table id="income-table"></table>
@@ -351,7 +363,7 @@
         ${forgeData.heroes.map(forgeHeroHtml).join('') || '<div class="muted">沒有正在鍛造的角色</div>'}`
       : data.heroes.map(heroHtml).join('') || '<div class="muted">還沒讀到隊伍</div>';
     return `
-      <div class="top"><span class="name">${escapeHtml(data.nickname)}
+      <div class="top"><span class="name"><span class="focus-name" data-focus="${escapeHtml(data.nickname)}" title="切到這個帳號的瀏覽器視窗">${escapeHtml(data.nickname)}</span>
         <span class="badge ${forge ? 'forge' : 'hunt'}">${forge ? '鍛造分頁' : '狩獵分頁'}</span>
         ${versionHtml(data.version)}</span>
         <span><span class="money">💰 ${Number(data.money || 0).toLocaleString()}</span>
@@ -363,6 +375,7 @@
       ${body}
       ${incomeHtml(data)}
       <div class="status">${escapeHtml(data.status)}</div>
+      ${data.lastAction ? `<div class="status last-action ${data.lastAction.text.includes('⚠') ? 'stuck' : ''}">${escapeHtml(data.lastAction.text)}</div>` : ''}
       ${data.lastCommand ? `<div class="status">上一個指令：${escapeHtml(data.lastCommand)}</div>` : ''}
       ${account.pending ? `<div class="status">還有 ${account.pending} 個指令等分頁取走</div>` : ''}
       </div>`;
@@ -508,6 +521,8 @@
         document.getElementById('total').textContent = `合計 💰 ${total.toLocaleString()}`;
         renderIncomeBoard(accounts);
       }
+      renderQueue(accounts, now);
+      renderGlobal(await fetch('/global', { cache: 'no-store' }).then((response) => (response.ok ? response.json() : null)).catch(() => null));
       const updated = document.getElementById('updated');
       updated.textContent = oldServer
         ? 'monitor-server.ps1 是舊版，遠端操作不會生效，請關掉重開'
@@ -517,6 +532,56 @@
       document.getElementById('updated').textContent = '連不上 monitor-server.ps1，請確認它還在執行';
     }
   }
+
+  // 排序總覽：照每個分頁回報的下一步時間排先後
+  function renderQueue(accounts, now) {
+    const running = accounts
+      .filter((account) => account.data.running && account.data.nextActionAt)
+      .sort((first, second) => first.data.nextActionAt - second.data.nextActionAt);
+    const marks = ['①', '②', '③', '④', '⑤', '⑥'];
+    document.getElementById('queue').textContent = running.length
+      ? `排序：${running
+          .map((account, index) => {
+            const seconds = Math.round((account.data.nextActionAt - now) / 1000);
+            const when = seconds <= 0 ? '現在' : seconds < 60 ? `${seconds} 秒後` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒後`;
+            return `${marks[index] || `${index + 1}.`}${account.data.nickname}${account.data.role === 'forge' ? '（鍛造）' : ''} ${when}`;
+          })
+          .join(' → ')}`
+      : '';
+  }
+
+  // 全體暫停：亮起目前的狀態；按鈕直接改中繼站，各分頁 2 秒內跟上
+  function renderGlobal(state) {
+    const mode = state && ['temp', 'stop'].includes(state.mode) ? state.mode : 'run';
+    document.querySelectorAll('[data-global]').forEach((button) => {
+      if (button.dataset.global === mode) button.dataset.current = mode;
+      else delete button.dataset.current;
+    });
+    document.getElementById('global-text').textContent =
+      mode === 'temp' ? `${Math.ceil((state.until - state.now) / 60000)} 分鐘後自動開始` : mode === 'stop' ? '按「開始」才會繼續' : '';
+  }
+
+  document.querySelectorAll('[data-global]').forEach((button) =>
+    button.addEventListener('click', async () => {
+      const minutes = Math.max(1, Number(document.getElementById('global-minutes').value) || 10);
+      const response = await fetch(`/global?mode=${button.dataset.global}&minutes=${minutes}`, { method: 'POST' }).catch(() => null);
+      if (response && response.ok) renderGlobal(await response.json());
+    })
+  );
+
+  // 點帳號名稱：中繼站找標題是「名稱｜…」的瀏覽器視窗拉到最上層
+  document.getElementById('grid').addEventListener('click', async (event) => {
+    const target = event.target.closest('[data-focus]');
+    if (!target) return;
+    const updated = document.getElementById('updated');
+    const response = await fetch(`/focus?name=${encodeURIComponent(target.dataset.focus)}`, { method: 'POST' }).catch(() => null);
+    const result = response && response.ok ? (await response.json()).result : response ? `HTTP ${response.status}（中繼站要重開）` : '連不上中繼站';
+    updated.textContent = {
+      ok: `已切到「${target.dataset.focus}」`,
+      notfound: `找不到「${target.dataset.focus}」的視窗：遊戲分頁要是那個視窗正在顯示的分頁，而且「提醒」頁有勾顯示帳號名稱`,
+      blocked: `Windows 擋住了切換，「${target.dataset.focus}」的視窗在工作列上閃，點一下就好`,
+    }[result] || `切換失敗：${result}`;
+  });
 
   // 最近一次回報的內容，全部重新整理時用來決定哪些分頁要自動接著跑
   const latestData = new Map();

@@ -1,7 +1,7 @@
 # Multi-account monitor relay for auto-clicker-v2.user.js
 # Each game tab POSTs its status to /status?id=<accountId>; open http://localhost:8787/ to see all accounts.
 # Usage: powershell -ExecutionPolicy Bypass -File .\monitor-server.ps1
-param([int]$Port = 8787, [int]$StaleMinutes = 10, [int]$TurnSwitchMinMs = 1000, [int]$TurnSwitchMaxMs = 3000, [int]$TransferSwitchMinMs = 600, [int]$TransferSwitchMaxMs = 1500)
+param([int]$Port = 8787, [int]$StaleMinutes = 10, [int]$TurnSwitchMinMs = 500, [int]$TurnSwitchMaxMs = 1500, [int]$TransferSwitchMinMs = 600, [int]$TransferSwitchMaxMs = 1500)
 
 $ErrorActionPreference = 'Stop'
 $dashboardPath = Join-Path $PSScriptRoot 'monitor-dashboard.html'
@@ -26,11 +26,68 @@ $turnSkips = @{}
 $turnGrants = New-Object System.Collections.ArrayList
 # Settings that must match on every account (low profile, turn taking); the newest copy wins
 $sharedSettings = '{}'
+# Pause for every account at once (buttons on each panel and the dashboard): run, temp (until a time) or stop.
+# Saved to a file so a permanent pause is still there after the relay restarts
+$globalPausePath = Join-Path $PSScriptRoot 'global-pause.json'
+$globalPause = @{ mode = 'run'; until = 0 }
+if (Test-Path $globalPausePath) {
+  try {
+    $saved = Get-Content -Raw $globalPausePath | ConvertFrom-Json
+    $globalPause.mode = [string]$saved.mode
+    $globalPause.until = [long]$saved.until
+  } catch { }
+}
+
+function Global-PauseJson {
+  $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+  if ($globalPause.mode -eq 'temp' -and $globalPause.until -le $now) { $globalPause.mode = 'run' }
+  return '{"mode":"' + $globalPause.mode + '","until":' + $globalPause.until + ',"now":' + $now + '}'
+}
 # Longer than the script's 30 s game request timeout; a crashed tab loses the turn after this
 $turnLeaseMs = 40000
 # While two local accounts transfer through the market, only their requests get the turn, so the listing
 # is bought quickly; mode 'human' still waits a little between the two windows, 'fast' does not
 $transfer = @{ ids = @{}; mode = 'human'; until = 0 }
+
+# Dashboard 'go to this account': each game tab puts '<nickname>|' (full-width bar) in front of its title,
+# so the relay can find that browser window and bring it to the front
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WindowFocus {
+  delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] static extern bool IsIconic(IntPtr hWnd);
+  [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hWnd, int command);
+  [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
+
+  // Windows only lets the foreground app hand focus to another window; a quick Alt press lifts that lock
+  public static string Focus(string marker) {
+    var found = new List<IntPtr>();
+    EnumWindows((hWnd, lParam) => {
+      if (!IsWindowVisible(hWnd)) return true;
+      var text = new StringBuilder(512);
+      GetWindowText(hWnd, text, text.Capacity);
+      if (text.ToString().Contains(marker)) found.Add(hWnd);
+      return true;
+    }, IntPtr.Zero);
+    if (found.Count == 0) return "notfound";
+    IntPtr target = found[0];
+    if (IsIconic(target)) ShowWindow(target, 9);
+    keybd_event(0x12, 0, 0, UIntPtr.Zero);
+    keybd_event(0x12, 0, 2, UIntPtr.Zero);
+    SetForegroundWindow(target);
+    return GetForegroundWindow() == target ? "ok" : "blocked";
+  }
+}
+'@
 
 function Now-Milliseconds {
   [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
@@ -240,6 +297,39 @@ function Handle-Request($context) {
     if ($id -and $turn.holder -eq $id) { Release-Turn (Now-Milliseconds) }
     if ($id) { $turnWaiters.Remove($id) }
     Send-Response $response 200 'application/json; charset=utf-8' '{"ok":true}'
+    return
+  }
+  if ($request.HttpMethod -eq 'POST' -and $path -eq '/focus') {
+    # Decode the raw query as UTF-8 ourselves; account names are Chinese
+    $name = ''
+    foreach ($pair in $request.Url.Query.TrimStart('?').Split('&')) {
+      $parts = $pair.Split('=', 2)
+      if ($parts[0] -eq 'name' -and $parts.Count -eq 2) { $name = [Uri]::UnescapeDataString($parts[1].Replace('+', ' ')) }
+    }
+    if (-not $name -or $name.Length -gt 40) {
+      Send-Response $response 400 'text/plain' 'bad request'
+      return
+    }
+    $result = [WindowFocus]::Focus($name + [char]0xFF5C)
+    Send-Response $response 200 'application/json; charset=utf-8' ('{"result":"' + $result + '"}')
+    return
+  }
+  if ($request.HttpMethod -eq 'GET' -and $path -eq '/global') {
+    Send-Response $response 200 'application/json; charset=utf-8' (Global-PauseJson)
+    return
+  }
+  if ($request.HttpMethod -eq 'POST' -and $path -eq '/global') {
+    $mode = $request.QueryString['mode']
+    if ($mode -notin @('run', 'temp', 'stop')) {
+      Send-Response $response 400 'text/plain' 'bad request'
+      return
+    }
+    $minutes = [Math]::Min([Math]::Max([int]$request.QueryString['minutes'], 1), 1440)
+    $globalPause.mode = $mode
+    $globalPause.until = if ($mode -eq 'temp') { [long](Now-Milliseconds) + [long]$minutes * 60000 } else { 0 }
+    [System.IO.File]::WriteAllText($globalPausePath, ('{"mode":"' + $globalPause.mode + '","until":' + $globalPause.until + '}'), $utf8)
+    Write-Host "$(Get-Date -Format HH:mm:ss) global pause: $mode"
+    Send-Response $response 200 'application/json; charset=utf-8' (Global-PauseJson)
     return
   }
   if ($request.HttpMethod -eq 'GET' -and $path -eq '/shared') {

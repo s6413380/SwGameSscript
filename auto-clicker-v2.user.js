@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.19
+// @version      3.20
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -191,6 +191,8 @@
     turnTakingEnabled: false,
     // 三個帳號同步＝當成同一個人：共用設定經中繼站同步，低調模式的玩／休息／睡覺時間表也一樣
     syncAccountsEnabled: true,
+    // 全體暫時暫停幾分鐘後自動開始
+    globalPauseMinutes: 10,
     statusPauseLevel: 3,
     expPauseEnabled: false,
     expSelectors: '',
@@ -758,6 +760,11 @@
       <button data-action="start">開始</button>
       <button data-action="stop">停止</button>
     </div>
+    <div class="row global-row">全體
+      <button data-action="global-run" data-global-mode="run">開始</button>
+      <button data-action="global-temp" data-global-mode="temp">暫時暫停</button>
+      <button data-action="global-stop" data-global-mode="stop">永久暫停</button>
+    </div>
     <div data-role="status" style="margin-top:6px">待命中</div>
     <div data-role="monitor" class="monitor"></div>
     <hr class="divider">
@@ -776,7 +783,9 @@
       <label class="row"><input data-field="syncAccountsEnabled" type="checkbox" style="flex:none;width:auto"> <b>三個帳號同步</b>（當成同一個人）</label>
       <div class="hint">要開中繼站。低調模式、多開輪流、轉移模式的設定在任一個帳號改了，其他帳號約 10 秒內跟著改；低調模式的玩／休息／睡覺時間表三個帳號一樣，一起停下來休息（手速、分心還是各帳號自己的）</div>
       <div class="hint" data-role="sync-accounts-status"></div>
-      <div class="hint">要開中繼站（啟動中繼站.cmd），每個帳號都要勾。腳本打的 API 一律經中繼站排隊，一次一個，換到別的帳號（或別的分頁）之前隔 1～3 秒，像一個人在幾個視窗之間切換；總覽、附近玩家、收入這類定時讀取會等這個帳號下次動作時順便送（最多等 30 秒）。中繼站沒開就照舊直接送。遊戲網頁自己發的請求不受管</div>
+      <div class="row">全體「暫時暫停」${numberInput('globalPauseMinutes', 'min="1"')} 分鐘後自動開始</div>
+      <div class="hint">最上面「全體」三顆按鈕要開中繼站：一按，同一台電腦上所有帳號（掛機、鍛造、補給…）的請求都先停住，送出去的會做完；按「開始」從停下的地方接著跑。你自己點遊戲畫面不受影響，適合手動操作時用。中繼站重開後永久暫停還在</div>
+      <div class="hint">要開中繼站（啟動中繼站.cmd），每個帳號都要勾。腳本打的 API 一律經中繼站排隊，一次一個，換到別的帳號（或別的分頁）之前隔 0.5～1.5 秒；讀完畫面接著打怪算同一次，不用再排，像一個人在幾個視窗之間切換；總覽、附近玩家、收入這類定時讀取會等這個帳號下次動作時順便送（最多等 30 秒）。中繼站沒開就照舊直接送。遊戲網頁自己發的請求不受管</div>
       <label class="row"><input data-field="autoNavigateEnabled" type="checkbox" style="flex:none;width:auto"> 執行中不在狩獵頁／鍛造頁就自動切過去（API 打怪、API 鍛造不需要）</label>
       <label>A 原地掛機（重複點）</label>
       <div class="row"><input data-field="selectorA" placeholder="CSS selector"><button data-pick="selectorA">選取</button></div>
@@ -930,7 +939,7 @@
       <div class="row">音量<input data-field="alertVolume" type="range" min="0" max="100"><button data-action="test-sound">試聽</button></div>
       <label class="row"><input data-field="alertPopupEnabled" type="checkbox" style="flex:none;width:auto"> 彈出提示視窗</label>
       <label class="row"><input data-field="alertNotifyEnabled" type="checkbox" style="flex:none;width:auto"> 系統通知＋分頁標題閃爍</label>
-      <label class="row"><input data-field="showAccountName" type="checkbox" style="flex:none;width:auto"> 面板標題和提醒顯示帳號名稱（例如「愛吉吉的小明」）</label>
+      <label class="row"><input data-field="showAccountName" type="checkbox" style="flex:none;width:auto"> 面板標題、分頁標題和提醒顯示帳號名稱（例如「愛吉吉的小明」）；總覽頁點帳號名稱切到這個視窗要靠它</label>
       <fieldset class="group">
         <legend>多帳號總覽</legend>
         <label class="row"><input data-field="dashboardEnabled" type="checkbox" style="flex:none;width:auto"> 回報到總覽頁（每 5 秒）</label>
@@ -1185,6 +1194,10 @@
     [data-auto-clicker] fieldset.group fieldset.group { margin:6px 0; padding:2px 6px 6px; }
     [data-auto-clicker] fieldset.group.folded > :not(legend) { display:none !important; }
     [data-auto-clicker] .hint { font-size:12px; color:#a0a0aa; margin:3px 0; }
+    [data-auto-clicker] .global-row { font-size:12px; color:#a0a0aa; }
+    [data-auto-clicker] .global-row button[data-current="run"] { background:#2e7d32; border-color:#2e7d32; color:#fff; font-weight:bold; }
+    [data-auto-clicker] .global-row button[data-current="temp"] { background:#e65100; border-color:#e65100; color:#fff; font-weight:bold; }
+    [data-auto-clicker] .global-row button[data-current="stop"] { background:#c62828; border-color:#c62828; color:#fff; font-weight:bold; }
     [data-auto-clicker] .hint.fold { cursor:pointer; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:1; overflow:hidden; }
     [data-auto-clicker] .hint.fold::before { content:'▸ '; color:#7a7a84; }
     [data-auto-clicker] .hint.fold.open { display:block; }
@@ -1547,6 +1560,21 @@
 
   function wait(milliseconds) {
     return new Promise((resolve) => backgroundTimer.setTimeout(resolve, milliseconds));
+  }
+
+  // 排序總覽要知道這個分頁下一步大約什麼時候動：掛機每一步、API 鍛造每一輪排下一次時記下來
+  const nextTickAt = { hunt: 0, forge: 0 };
+
+  function planTick(run, delay = 0) {
+    nextTickAt.hunt = Date.now() + Math.max(0, Number(delay) || 0);
+    return backgroundTimer.setTimeout(run, delay);
+  }
+
+  function nextActionAt() {
+    const times = [];
+    if (state.running) times.push(nextTickAt.hunt);
+    if (forgeRunner.running) times.push(nextTickAt.forge);
+    return times.length ? Math.min(...times) : 0;
   }
 
   function isVisible(element) {
@@ -2143,6 +2171,7 @@
     dashboard.profile = { id: profile.id, nickname: profile.nickname, money: profile.money };
     renderAppName();
     renderLowProfilePersonality();
+    applyTitlePrefix();
   }
 
   // 「愛吉吉的小明」；截圖分享時可以選擇不顯示帳號名稱
@@ -2266,6 +2295,9 @@
       townName: settings.townName,
       areas: configuredAreas(settings).map((area) => area.name),
       lastCommand: dashboard.lastCommand,
+      lastAction: { at: lastGameRequest.actionAt, label: lastGameRequest.actionLabel, readAt: lastGameRequest.readAt, text: lastActionText() },
+      globalMode: globalPauseActive() ? globalPause.mode : 'run',
+      nextActionAt: nextActionAt(),
       // 轉移時賣方看這個確認買方已經待命，才掛單
       transferArmed: transferWatch.arm ? transferWatch.arm.token : '',
       transferRefused: transferWatch.refused,
@@ -3444,7 +3476,7 @@
   const TURN_ID = `${tabKey}-${Math.random().toString(36).slice(2, 6)}`;
   const TURN_RELAY_TIMEOUT_MILLISECONDS = 2000;
   const TURN_GIVE_UP_MILLISECONDS = 180000;
-  const turnTaking = { chain: Promise.resolve(), downUntil: 0, error: '', waitingSince: 0, background: [], transferWaiting: false };
+  const turnTaking = { chain: Promise.resolve(), downUntil: 0, error: '', waitingSince: 0, background: [], transferWaiting: false, held: false, lingerTimer: null };
   // 轉移的請求用另一個 id、另一條隊伍：自己分頁的掛機請求正卡在等轉移結束時，轉移不能排在它後面
   const TRANSFER_TURN_ID = `${TURN_ID}-t`;
   let transferTurnChain = Promise.resolve();
@@ -3499,22 +3531,213 @@
     return false;
   }
 
-  function sendGameRequest(path, { background = false, ...options } = {}) {
+  // 全體暫停：狀態放在中繼站，每個分頁每 2 秒看一次；暫停時腳本的請求在這裡等，遊戲網頁自己的請求不管
+  const GLOBAL_POLL_MILLISECONDS = 2000;
+  const globalPause = { mode: 'run', until: 0, checkedAt: 0, error: '' };
+
+  function globalPauseActive() {
+    if (globalPause.mode === 'temp' && Date.now() >= globalPause.until) globalPause.mode = 'run';
+    return globalPause.mode !== 'run';
+  }
+
+  async function waitGlobalResume() {
+    while (globalPauseActive()) await wait(1000);
+  }
+
+  function applyGlobalPause(reply) {
+    globalPause.mode = ['temp', 'stop'].includes(reply.mode) ? reply.mode : 'run';
+    // 中繼站和分頁在同一台電腦，時間一樣；還是換算成剩餘時間，免得時鐘差一點
+    globalPause.until = reply.mode === 'temp' ? Date.now() + Math.max(0, Number(reply.until) - Number(reply.now)) : 0;
+    globalPause.error = '';
+    renderGlobalButtons();
+  }
+
+  async function pollGlobalPause(settings) {
+    if (Date.now() - globalPause.checkedAt < GLOBAL_POLL_MILLISECONDS) return;
+    globalPause.checkedAt = Date.now();
+    try {
+      const response = await window.fetch(`${dashboardBaseUrl(settings)}/global`, { cache: 'no-store' });
+      if (!response.ok) throw new Error(response.status === 404 ? 'monitor-server.ps1 是舊版，請關掉重開' : `HTTP ${response.status}`);
+      applyGlobalPause(await response.json());
+    } catch (error) {
+      // 連不上就維持最後知道的狀態：永久暫停時中繼站掛了，也不能自己跑起來跟你的操作撞在一起
+      globalPause.error = error.message;
+      renderGlobalButtons();
+    }
+  }
+
+  async function setGlobalPause(settings, mode) {
+    const minutes = Math.max(1, Number(settings.globalPauseMinutes) || 10);
+    try {
+      const response = await window.fetch(`${dashboardBaseUrl(settings)}/global?mode=${mode}&minutes=${minutes}`, { method: 'POST' });
+      if (!response.ok) throw new Error(response.status === 404 ? 'monitor-server.ps1 是舊版，請關掉重開' : `HTTP ${response.status}`);
+      applyGlobalPause(await response.json());
+    } catch (error) {
+      // 中繼站連不上時「開始」至少要讓這個分頁自己動起來
+      if (mode === 'run') applyGlobalPause({ mode: 'run' });
+      setStatus(`全體${{ run: '開始', temp: '暫時暫停', stop: '永久暫停' }[mode]}：連不上中繼站（${error.message}）`);
+    }
+  }
+
+  function renderGlobalButtons() {
+    const mode = globalPauseActive() ? globalPause.mode : 'run';
+    panel.querySelectorAll('[data-global-mode]').forEach((button) => {
+      if (button.dataset.globalMode === mode) button.dataset.current = mode;
+      else delete button.dataset.current;
+    });
+  }
+
+  function globalMonitorText() {
+    const problem = globalPause.error ? `（中繼站：${globalPause.error}）` : '';
+    if (!globalPauseActive()) return problem ? `全體：${problem}` : '';
+    if (globalPause.mode === 'stop') return `全體：永久暫停中，按「全體 開始」才會繼續${problem}`;
+    return `全體：暫時暫停中，${Math.ceil((globalPause.until - Date.now()) / 60000)} 分鐘後自動開始${problem}`;
+  }
+
+  // 監控欄「上次動作」：看得出來是不是卡住了。讀取（GET）也記，才分得出是沒動作還是整個沒在跑
+  const GAME_ACTION_LABELS = [
+    [/\/api\/hunt\?type=forward/, '前進一層'],
+    [/\/api\/hunt\?type=back/, '後退一層'],
+    [/\/api\/hunt$/, '打怪'],
+    [/\/restAll\/complete/, '休息完成'],
+    [/\/restAll/, '全隊休息'],
+    [/\/api\/move\/complete/, '移動完成'],
+    [/\/api\/move/, '移動'],
+    [/\/api\/moveForkPath/, '進分支'],
+    [/\/api\/forge/, '開爐'],
+    [/\/completeForge/, '收爐'],
+    [/\/completeAction/, '完成行動'],
+    [/\/api\/items\/\d+\/use/, '使用道具'],
+    [/\/(un)?equip$/, '換裝'],
+    [/\/buy$/, '購買'],
+    [/\/sell$/, '掛單'],
+    [/\/cancel/, '撤單'],
+    [/\/attack/, '攻擊'],
+    [/\/(select|deselect)$/, '換隊員'],
+  ];
+  const lastGameRequest = { actionAt: 0, actionLabel: '', readAt: 0, runningSince: 0 };
+
+  function rememberGameRequest(path, method) {
+    if (String(method || 'GET').toUpperCase() === 'GET') {
+      lastGameRequest.readAt = Date.now();
+      return;
+    }
+    const plain = String(path).replace(/\?(?!type=).*$/, '');
+    const match = GAME_ACTION_LABELS.find(([pattern]) => pattern.test(plain));
+    lastGameRequest.actionAt = Date.now();
+    lastGameRequest.actionLabel = match ? match[1] : plain.replace(/^\/api\//, '');
+  }
+
+  function agoText(at) {
+    const seconds = Math.round((Date.now() - at) / 1000);
+    if (seconds < 60) return `${seconds} 秒前`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒前`;
+    return `${Math.floor(seconds / 3600)} 小時前`;
+  }
+
+  // 正在跑、不是在休息或暫停，卻這麼久沒有任何動作，就標出來
+  const STUCK_WARNING_MILLISECONDS = 5 * 60000;
+
+  function lastActionText() {
+    if (!lastGameRequest.actionAt && !lastGameRequest.readAt) return '上次動作：還沒有';
+    const parts = [];
+    if (lastGameRequest.actionAt) parts.push(`上次動作：${lastGameRequest.actionLabel}（${agoText(lastGameRequest.actionAt)}）`);
+    if (lastGameRequest.readAt) parts.push(`讀取 ${agoText(lastGameRequest.readAt)}`);
+    const running = state.running || forgeRunner.running;
+    if (!running) lastGameRequest.runningSince = 0;
+    else if (!lastGameRequest.runningSince) lastGameRequest.runningSince = Date.now();
+    const resting = state.apiResting || Date.now() < lowProfile.breakUntil || Date.now() < lowProfile.sleepUntil;
+    const idleFor = Date.now() - Math.max(lastGameRequest.actionAt, lastGameRequest.runningSince);
+    if (running && !resting && !globalPauseActive() && idleFor > STUCK_WARNING_MILLISECONDS) parts.push('⚠ 很久沒動作，可能卡住');
+    return parts.join('・');
+  }
+
+  // 排序總覽：從中繼站拿每個分頁回報的「下一步時間」，照先後排出接下來輪到誰
+  const QUEUE_POLL_MILLISECONDS = 5000;
+  const queueOverview = { checkedAt: 0, entries: [], error: '' };
+
+  async function pollQueueOverview(settings) {
+    if (!settings.dashboardEnabled || Date.now() - queueOverview.checkedAt < QUEUE_POLL_MILLISECONDS) return;
+    queueOverview.checkedAt = Date.now();
+    try {
+      const response = await window.fetch(`${dashboardBaseUrl(settings)}/status`, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const { now, accounts = [] } = await response.json();
+      // 時間換成相對中繼站的現在，分頁之間時鐘差一點也排得對
+      queueOverview.entries = accounts
+        .filter((account) => account.data && account.data.running && account.data.nextActionAt && now - account.at < 30000)
+        .map((account) => ({
+          name: `${account.data.nickname || account.id}${account.data.role === 'forge' ? '（鍛造）' : ''}`,
+          self: account.id === dashboard.reportingId,
+          inMilliseconds: account.data.nextActionAt - now,
+          readAt: Date.now(),
+        }))
+        .sort((first, second) => first.inMilliseconds - second.inMilliseconds);
+      queueOverview.error = '';
+    } catch (error) {
+      queueOverview.error = error.message;
+    }
+  }
+
+  function inText(milliseconds) {
+    const seconds = Math.round(milliseconds / 1000);
+    if (seconds <= 0) return '現在';
+    if (seconds < 60) return `${seconds} 秒後`;
+    return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒後`;
+  }
+
+  function queueMonitorText(settings) {
+    if (!settings.dashboardEnabled) return '';
+    if (queueOverview.error) return `排序：讀不到（${queueOverview.error}）`;
+    if (!queueOverview.entries.length) return '排序：沒有帳號在跑';
+    if (globalPauseActive()) return '排序：全體暫停中';
+    const marks = ['①', '②', '③', '④', '⑤', '⑥'];
+    return `排序：${queueOverview.entries
+      .map((entry, index) => {
+        const left = entry.inMilliseconds - (Date.now() - entry.readAt);
+        return `${marks[index] || index + 1 + '.'}${entry.self ? '★' : ''}${entry.name} ${inText(left)}`;
+      })
+      .join(' → ')}`;
+  }
+
+  function sendGameRequest(path, options = {}) {
+    if (globalPauseActive()) return waitGlobalResume().then(() => sendGameRequest(path, options));
+    return sendGameRequestUnpaused(path, options);
+  }
+
+  function sendGameRequestUnpaused(path, { background = false, ...options } = {}) {
     const settings = readSettingsFromPanel();
     if (!settings.turnTakingEnabled) return sendGameRequestNow(path, options);
     if (background) return deferBackgroundRequest(settings, path, options);
     return sendInTurn(settings, path, options);
   }
 
+  // 讀完（GET）先別交出去：同一輪接著要打怪、吃藥，像人看完畫面就按，不用再排一次隊、多等一次換帳號。
+  // 送出動作（POST）或這麼久沒下一個請求才交給別的帳號
+  const TURN_LINGER_MILLISECONDS = 3000;
+
+  function releaseTurn(settings) {
+    turnTaking.held = false;
+    return askTurnRelay(settings, 'turn/release', 'POST').catch(() => {});
+  }
+
   function sendInTurn(settings, path, options) {
     // 同一個分頁也一次一個：掛機和鍛造的 GET 不排隊，不串起來就會疊在一起送
     const next = turnTaking.chain.then(async () => {
-      const held = await takeTurn(settings);
+      backgroundTimer.clearTimeout(turnTaking.lingerTimer);
+      if (!turnTaking.held) turnTaking.held = await takeTurn(settings);
+      const isRead = String(options.method || 'GET').toUpperCase() === 'GET';
       try {
         return await sendGameRequestNow(path, options);
       } finally {
         await runBackgroundRequests();
-        if (held) await askTurnRelay(settings, 'turn/release', 'POST').catch(() => {});
+        if (turnTaking.held && !isRead) await releaseTurn(settings);
+        else if (turnTaking.held) {
+          // 交出去也排進同一條隊伍，才不會在下一個請求送到一半時放掉
+          turnTaking.lingerTimer = backgroundTimer.setTimeout(() => {
+            turnTaking.chain = turnTaking.chain.then(() => (turnTaking.held ? releaseTurn(settings) : null));
+          }, TURN_LINGER_MILLISECONDS);
+        }
       }
     });
     turnTaking.chain = next.catch(() => {});
@@ -3613,6 +3836,7 @@
       }
       throw error;
     }
+    rememberGameRequest(path, options.method);
     return JSON.parse(text);
   }
 
@@ -4257,7 +4481,7 @@
 
   // 補給是原地掛機／移動前的準備，補完立刻回到流程檢查下一條或接著行動，不用再等一個掛機間隔
   function continueAfterItem(settings) {
-    state.timerId = backgroundTimer.setTimeout(() => tick(settings), 0);
+    state.timerId = planTick(() => tick(settings), 0);
   }
 
   // 跳過只限這一次行動前，行動後每條都要重新檢查；留到全隊休息才清，偶發失敗的那條會整輪都不補
@@ -4790,6 +5014,26 @@
 
   window.addEventListener('focus', stopTitleFlash);
 
+  // 分頁標題前面加「帳號名稱｜」：分頁上一眼看出是哪個帳號，總覽頁點帳號名稱時中繼站也靠它找到這個瀏覽器視窗
+  const TITLE_MARK = '｜';
+  let appliedTitlePrefix = '';
+
+  function applyTitlePrefix() {
+    // 標題閃爍提醒時不要搶著改，停下來時會還原成帶前綴的標題
+    if (titleFlashTimer) return;
+    const nickname = dashboard.profile && dashboard.profile.nickname;
+    const prefix = nickname && readSettingsFromPanel().showAccountName ? `${nickname}${TITLE_MARK}` : '';
+    const current = document.title;
+    const base = appliedTitlePrefix && current.startsWith(appliedTitlePrefix) ? current.slice(appliedTitlePrefix.length) : current;
+    appliedTitlePrefix = prefix;
+    if (current !== prefix + base) document.title = prefix + base;
+  }
+
+  // 遊戲自己換標題（切頁面）時再補上前綴
+  new MutationObserver(() => {
+    if (appliedTitlePrefix && !document.title.startsWith(appliedTitlePrefix)) applyTitlePrefix();
+  }).observe(document.head, { subtree: true, childList: true, characterData: true });
+
   // 看血條的「目前值」是不是 0，不看百分比門檻；門檻設 0 或補血流程先動時也擋得住
   function pauseIfDeath(settings) {
     if (!settings.deathPauseEnabled) return false;
@@ -5067,7 +5311,7 @@
     const left = lowProfileReactionLeft(settings, key);
     if (!left) return false;
     setStatus(`低調模式：${(left / 1000).toFixed(1)} 秒後才反應過來要${label}`);
-    state.timerId = backgroundTimer.setTimeout(() => tick(settings), left);
+    state.timerId = planTick(() => tick(settings), left);
     return true;
   }
 
@@ -5757,11 +6001,18 @@
     if (dashboardLine) lines.push(dashboardLine);
     const turnLine = turnMonitorText(settings);
     if (turnLine) lines.push(turnLine);
+    const globalLine = globalMonitorText();
+    if (globalLine) lines.push(globalLine);
+    const queueLine = queueMonitorText(settings);
+    if (queueLine) lines.unshift(queueLine);
+    lines.unshift(lastActionText());
     monitorElement.textContent = lines.join('\n');
     reportToDashboard(settings);
     checkForUpdate(settings);
     syncGrowth(settings);
     syncSharedSettings(settings);
+    pollGlobalPause(settings);
+    pollQueueOverview(settings);
     syncCloud(settings);
     sampleMoney(settings);
     checkCloudTransfers(settings);
@@ -5962,7 +6213,7 @@
       if (heroes.some((hero) => hero.actionState === 1)) {
         state.apiMoving = true;
         state.apiMoveUntil = restUntilOf(heroes);
-        state.timerId = backgroundTimer.setTimeout(() => tick(settings), randomGap(1000, 3000));
+        state.timerId = planTick(() => tick(settings), randomGap(1000, 3000));
         return;
       }
       scheduleApiHunt(settings, state.huntInfo);
@@ -5971,7 +6222,7 @@
       if (!error.captchaRequired && /^\/api\/move\/[1-9]/.test(move.path) && !state.apiDirectMoveFailed) {
         state.apiDirectMoveFailed = true;
         setStatus(`${move.from}：直接${move.label}失敗（${error.message}），改成先回城`);
-        state.timerId = backgroundTimer.setTimeout(() => tick(settings), randomGap(3000, 6000));
+        state.timerId = planTick(() => tick(settings), randomGap(3000, 6000));
         return;
       }
       handleApiHuntError(settings, error);
@@ -5982,7 +6233,7 @@
     if (Date.now() < state.apiMoveUntil) {
       const delay = state.apiMoveUntil - Date.now() + finishMoveGap(settings);
       setStatus(`移動中，${Math.ceil(delay / 1000)} 秒後完成移動`);
-      state.timerId = backgroundTimer.setTimeout(() => tick(settings), delay);
+      state.timerId = planTick(() => tick(settings), delay);
       return;
     }
     const runId = state.runId;
@@ -6011,7 +6262,7 @@
     if (reloadForUpdateIfIdle()) return;
     const availableAt = huntInfo && huntInfo.huntAvailableAt ? Date.parse(huntInfo.huntAvailableAt) : 0;
     const delay = lowProfileDelay(settings, Math.max(0, (availableAt || 0) - Date.now()) + randomGap(1000, 3000));
-    state.timerId = backgroundTimer.setTimeout(() => tick(settings), delay);
+    state.timerId = planTick(() => tick(settings), delay);
     statusElement.textContent += `（${(delay / 1000).toFixed(1)} 秒後下一步）`;
   }
 
@@ -6026,7 +6277,7 @@
       return;
     }
     setStatus(`API 打怪失敗（${error.message}），稍後重試`);
-    state.timerId = backgroundTimer.setTimeout(() => tick(settings), randomGap(5000, 10000));
+    state.timerId = planTick(() => tick(settings), randomGap(5000, 10000));
   }
 
   // 重複按開始時上一次打怪可能還在路上；不跟著 runId 重設，才擋得住緊接著再打一次
@@ -6037,7 +6288,7 @@
     if (move && !move.type) return false;
     if (apiHuntInFlight) {
       setStatus('上一次打怪還沒回來，等一下再打');
-      state.timerId = backgroundTimer.setTimeout(() => tick(settings), randomGap(1000, 2000));
+      state.timerId = planTick(() => tick(settings), randomGap(1000, 2000));
       return true;
     }
     if (!state.huntInfo) {
@@ -6045,7 +6296,7 @@
       refreshHeroStats()
         .catch((error) => setStatus(`讀取狩獵資訊失敗（${error.message}）`))
         .then(() => {
-          if (runId === state.runId) state.timerId = backgroundTimer.setTimeout(() => tick(settings), randomGap(1000, 2000));
+          if (runId === state.runId) state.timerId = planTick(() => tick(settings), randomGap(1000, 2000));
         });
       return true;
     }
@@ -6108,7 +6359,7 @@
     if (Date.now() < state.apiRestUntil) {
       const delay = lowProfileDelay(settings, state.apiRestUntil - Date.now() + randomGap(1000, 3000));
       setStatus(`全隊休息中，${Math.ceil(delay / 1000)} 秒後完成休息`);
-      state.timerId = backgroundTimer.setTimeout(() => tick(settings), delay);
+      state.timerId = planTick(() => tick(settings), delay);
       return;
     }
     const runId = state.runId;
@@ -6135,7 +6386,7 @@
   function scheduleNext(settings) {
     if (reloadForUpdateIfIdle()) return;
     const delaySeconds = lowProfileDelay(settings, randomIntervalSeconds(settings) * 1000) / 1000;
-    state.timerId = backgroundTimer.setTimeout(() => tick(settings), delaySeconds * 1000);
+    state.timerId = planTick(() => tick(settings), delaySeconds * 1000);
     statusElement.textContent += `（${delaySeconds.toFixed(1)} 秒後下一步）`;
   }
 
@@ -6161,7 +6412,7 @@
   function scheduleForge(settings) {
     if (reloadForUpdateIfIdle()) return;
     const delaySeconds = randomSkewedSeconds(settings.forgeIntervalMinSeconds, settings.forgeIntervalMaxSeconds);
-    state.timerId = backgroundTimer.setTimeout(() => tick(settings), delaySeconds * 1000);
+    state.timerId = planTick(() => tick(settings), delaySeconds * 1000);
     statusElement.textContent += `（${delaySeconds.toFixed(1)} 秒後巡下一個）`;
   }
 
@@ -6276,7 +6527,7 @@
       }
       setStatus(`不在${state.forgeMode ? '鍛造' : '狩獵'}頁，自動切過去`);
     }
-    state.timerId = backgroundTimer.setTimeout(() => tick(settings), 2500);
+    state.timerId = planTick(() => tick(settings), 2500);
     return true;
   }
 
@@ -6293,12 +6544,12 @@
     if (finishMove === 'waiting') {
       const delay = state.finishMoveAt - Date.now();
       setStatus(`移動時間到了，${Math.ceil(delay / 1000)} 秒後按完成移動`);
-      state.timerId = backgroundTimer.setTimeout(() => tick(settings), Math.max(delay, 200));
+      state.timerId = planTick(() => tick(settings), Math.max(delay, 200));
       return;
     }
     if (finishMove) {
       setStatus('已按完成移動');
-      state.timerId = backgroundTimer.setTimeout(() => tick(settings), settings.itemStepSeconds * 1000);
+      state.timerId = planTick(() => tick(settings), settings.itemStepSeconds * 1000);
       return;
     }
 
@@ -6322,11 +6573,11 @@
       return;
     }
     if (!inTown && escapeFromPlayers(settings)) {
-      state.timerId = backgroundTimer.setTimeout(() => tick(settings), 0);
+      state.timerId = planTick(() => tick(settings), 0);
       return;
     }
     if (!moving && returnAfterPlayerEscape(settings)) {
-      state.timerId = backgroundTimer.setTimeout(() => tick(settings), 0);
+      state.timerId = planTick(() => tick(settings), 0);
       return;
     }
 
@@ -6410,7 +6661,7 @@
         const move = planApiMove(settings);
         if (move && move.problem) {
           setStatus(`移動：${move.problem}`);
-          state.timerId = backgroundTimer.setTimeout(() => tick(settings), randomGap(10000, 20000));
+          state.timerId = planTick(() => tick(settings), randomGap(10000, 20000));
         } else if (!waitForHuntCooldown(settings, move)) {
           if (move) performApiMove(settings, move);
           else huntByApi(settings, '');
@@ -6460,7 +6711,7 @@
       state.equipSkipped.clear();
       state.equipApiSkipped.clear();
       setStatus(`${reason}，已全隊休息（完成 ${state.cycleCount} 輪），${settings.loopDelaySeconds} 秒後開始下一輪`);
-      state.timerId = backgroundTimer.setTimeout(() => tick(settings), settings.loopDelaySeconds * 1000);
+      state.timerId = planTick(() => tick(settings), settings.loopDelaySeconds * 1000);
     } else {
       stop(`完成：${reason}，已全隊休息`);
     }
@@ -6666,7 +6917,7 @@
     if (!inTown) {
       if (settings.stageTargetArea !== town || !settings.stageEnabled) {
         setTrainTarget(town, 0);
-        state.timerId = backgroundTimer.setTimeout(() => tick(), 0);
+        state.timerId = planTick(() => tick(), 0);
         return true;
       }
       // 回城不用照原地掛機次數，直接走
@@ -6770,7 +7021,7 @@
       state.heroStatsAt = 0;
       refreshGameView(HUNT_QUERY_KEYS);
       trainLog(`隊伍換好了，前往練等關卡 ${settings.trainTargetArea} ${settings.trainTargetNumber}`);
-      if (runId === state.runId) state.timerId = backgroundTimer.setTimeout(() => tick(), randomGap(1000, 3000));
+      if (runId === state.runId) state.timerId = planTick(() => tick(), randomGap(1000, 3000));
     } catch (error) {
       if (runId === state.runId) trainFailed(settings, error, '換隊伍');
     }
@@ -6808,7 +7059,7 @@
       trainLog(message);
       if (failed.length) alertUser(message);
       else showToast(message);
-      if (runId === state.runId) state.timerId = backgroundTimer.setTimeout(() => tick(), randomGap(1000, 3000));
+      if (runId === state.runId) state.timerId = planTick(() => tick(), randomGap(1000, 3000));
     } catch (error) {
       if (runId === state.runId) trainFailed(settings, error, '換回隊伍');
     }
@@ -7119,6 +7370,8 @@
       saveSettings(readSettingsFromPanel());
     } else if (action === 'start') {
       start();
+    } else if (action === 'global-run' || action === 'global-temp' || action === 'global-stop') {
+      setGlobalPause(readSettingsFromPanel(), action.slice('global-'.length));
     } else if (action === 'forge-start') {
       start(true);
     } else if (action === 'forge-stop') {
@@ -11052,6 +11305,7 @@
     delay = lowProfileDelay(readSettingsFromPanel(), delay);
     backgroundTimer.clearTimeout(forgeRunner.timerId);
     const runId = forgeRunner.runId;
+    nextTickAt.forge = Date.now() + Math.max(0, Number(delay) || 0);
     forgeRunner.timerId = backgroundTimer.setTimeout(() => {
       if (runId === forgeRunner.runId) forgeApiTick(readSettingsFromPanel());
     }, delay);
@@ -11992,7 +12246,10 @@
     if (event.target.dataset.trainChoice) updateTrainFromChoices();
     if (event.target.dataset.cardRule) updateCardRulesFromRows();
     if (event.target.dataset.field === 'trainEnabled') renderTrainStatus();
-    if (event.target.dataset.field === 'showAccountName') renderAppName();
+    if (event.target.dataset.field === 'showAccountName') {
+      renderAppName();
+      applyTitlePrefix();
+    }
     // 剛切到主動：從現在起算自動切回的時間，第一次馬上查
     if (event.target.dataset.field === 'cardWatchMode' && event.target.value === 'active') {
       writeJsonStorage(CARD_ACTIVE_SINCE_KEY, Date.now());
