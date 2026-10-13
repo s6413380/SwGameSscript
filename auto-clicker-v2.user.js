@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.21
+// @version      3.22
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -3544,6 +3544,16 @@
     while (globalPauseActive()) await wait(1000);
   }
 
+  // 暫停是為了不跟你的操作撞在一起；你自己按面板上的按鈕（讀取角色、讀取材料…）就是要它現在送，
+  // 所以按下後這一小段時間的請求不等暫停。開始類（會一直跑下去）和暫停按鈕本身不算
+  const MANUAL_REQUEST_MILLISECONDS = 15000;
+  const NOT_MANUAL_ACTIONS = ['start', 'forge-start', 'recipe-auto-forge', 'quality-pick', 'global-run', 'global-temp', 'global-stop'];
+  let manualRequestUntil = 0;
+
+  function noteManualAction(event, action) {
+    if (event.isTrusted && action && !NOT_MANUAL_ACTIONS.includes(action)) manualRequestUntil = Date.now() + MANUAL_REQUEST_MILLISECONDS;
+  }
+
   function applyGlobalPause(reply) {
     globalPause.mode = ['temp', 'stop'].includes(reply.mode) ? reply.mode : 'run';
     // 中繼站和分頁在同一台電腦，時間一樣；還是換算成剩餘時間，免得時鐘差一點
@@ -3701,7 +3711,7 @@
   }
 
   function sendGameRequest(path, options = {}) {
-    if (globalPauseActive()) return waitGlobalResume().then(() => sendGameRequest(path, options));
+    if (globalPauseActive() && Date.now() >= manualRequestUntil) return waitGlobalResume().then(() => sendGameRequest(path, options));
     return sendGameRequestUnpaused(path, options);
   }
 
@@ -7314,6 +7324,7 @@
     const clearField = event.target.dataset.clear;
     const clearSlot = event.target.dataset.clearSlot;
     const action = event.target.dataset.action;
+    noteManualAction(event, action);
     if (pickField) {
       endPicking();
       state.pickingTarget = pickField;
