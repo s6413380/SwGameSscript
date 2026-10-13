@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.10
+// @version      3.13
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -180,6 +180,13 @@
     autoNavigateEnabled: true,
     // 打怪改直接打 API：不用停在狩獵頁，同一個分頁可以同時 API 鍛造
     huntByApiEnabled: false,
+    // 低調模式：每步多等一點、偶爾分心、玩一陣子就休息，節奏像人
+    lowProfileEnabled: false,
+    lowProfilePlayMinMinutes: 40,
+    lowProfilePlayMaxMinutes: 90,
+    lowProfileBreakMinMinutes: 5,
+    lowProfileBreakMaxMinutes: 20,
+    lowProfileSleepHours: '2-9',
     statusPauseLevel: 3,
     expPauseEnabled: false,
     expSelectors: '',
@@ -747,6 +754,11 @@
     <div data-tab="main">
       <label class="row"><input data-field="huntByApiEnabled" type="checkbox" style="flex:none;width:auto"> <b>用 API 打怪</b>（不用停在狩獵頁，可以同一個分頁 API 鍛造）</label>
       <div class="hint">開了之後原地掛機、前進後退、全隊休息都直接打 API；補給、換裝請用 API 版。目標關卡只會在同一張地圖裡前進後退</div>
+      <label class="row"><input data-field="lowProfileEnabled" type="checkbox" style="flex:none;width:auto"> <b>低調模式</b>（模擬人類操作的延遲）</label>
+      <div class="row">玩 ${numberInput('lowProfilePlayMinMinutes', 'min="5"')}～${numberInput('lowProfilePlayMaxMinutes', 'min="5"')} 分鐘，休息 ${numberInput('lowProfileBreakMinMinutes', 'min="1"')}～${numberInput('lowProfileBreakMaxMinutes', 'min="1"')} 分鐘</div>
+      <div class="row">每天 <input data-field="lowProfileSleepHours" placeholder="留空＝不睡" style="width:70px;flex:none"> 點睡覺（例：2-9；每天前後飄 1 小時，偶爾多睡）</div>
+      <div class="hint">開了之後掛機、API 鍛造每一步多等 1～8 秒（多數短、偶爾長），偶爾分心停 0.5～2 分鐘，要補給、換裝時晚幾秒才反應，動作之間的間隔也拉長；玩一陣子就整個停下休息，晚上睡覺。休息、睡覺時不會打怪、開爐，也不會躲紅名（血量、活人驗證照常監控）。反應變慢，補給門檻設高一點比較安全</div>
+      <div class="hint" data-role="low-profile-personality"></div>
       <label class="row"><input data-field="autoNavigateEnabled" type="checkbox" style="flex:none;width:auto"> 執行中不在狩獵頁／鍛造頁就自動切過去（API 打怪、API 鍛造不需要）</label>
       <label>A 原地掛機（重複點）</label>
       <div class="row"><input data-field="selectorA" placeholder="CSS selector"><button data-pick="selectorA">選取</button></div>
@@ -2068,6 +2080,7 @@
   function rememberProfile(profile) {
     dashboard.profile = { id: profile.id, nickname: profile.nickname, money: profile.money };
     renderAppName();
+    renderLowProfilePersonality();
   }
 
   // 「愛吉吉的小明」；截圖分享時可以選擇不顯示帳號名稱
@@ -3242,7 +3255,7 @@
   let lastActionAt = 0;
   function queueAction(run) {
     const next = actionQueue.then(async () => {
-      const gap = randomGap(800, 1600) - (Date.now() - lastActionAt);
+      const gap = (readSettingsFromPanel().lowProfileEnabled ? randomGap(1500, 4000) : randomGap(800, 1600)) - (Date.now() - lastActionAt);
       if (gap > 0) await wait(gap);
       try {
         return await run();
@@ -4592,6 +4605,130 @@
   // 沒選取這顆按鈕時，用預設文字「完成移動」找
   const FINISH_MOVE_DEFAULT_TEXT = '完成移動';
 
+  // 低調模式：休息時間是這個分頁自己的，掛機和 API 鍛造一起休息
+  const lowProfile = { sessionEnd: 0, breakUntil: 0, sleepUntil: 0, reaction: null };
+
+  // 同一個字串永遠得到同一串亂數：帳號個性、每天的睡覺時間重新整理後才不會變
+  function seededRandom(text) {
+    let seed = 2166136261;
+    for (const character of String(text)) seed = Math.imul(seed ^ character.codePointAt(0), 16777619);
+    return () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let value = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      value ^= value + Math.imul(value ^ (value >>> 7), 61 | value);
+      return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // 每個帳號固定一組節奏，三個帳號開同樣的設定也不會步調一致
+  function accountPersonality() {
+    const profile = dashboard.profile || {};
+    const random = seededRandom(`personality:${profile.nickname || profile.id || ''}`);
+    return {
+      speed: 0.75 + random() * 0.6,
+      distractChance: 0.03 + random() * 0.05,
+      play: 0.8 + random() * 0.45,
+      rest: 0.8 + random() * 0.5,
+      sleepShiftMinutes: Math.round(random() * 180 - 90),
+    };
+  }
+
+  function lowProfilePersonalityText() {
+    const personality = accountPersonality();
+    const shift = personality.sleepShiftMinutes;
+    return `這個帳號的節奏：手速 ×${(1 / personality.speed).toFixed(2)}、分心 ${Math.round(personality.distractChance * 100)}%、玩 ×${personality.play.toFixed(2)}、休息 ×${personality.rest.toFixed(2)}、睡覺${shift >= 0 ? '晚' : '早'} ${Math.abs(shift)} 分鐘`;
+  }
+
+  function renderLowProfilePersonality() {
+    const element = panel.querySelector('[data-role="low-profile-personality"]');
+    if (element) element.textContent = lowProfilePersonalityText();
+  }
+
+  function minutesBetween(settings, minKey, maxKey, factor = 1) {
+    const low = Number(settings[minKey]) || 1;
+    return randomGap(low, Math.max(low, Number(settings[maxKey]) || low)) * 60000 * factor;
+  }
+
+  // 「2-9」＝每天 2 點睡到 9 點；起床、睡覺時間每天各自前後飄最多 1 小時，偶爾多睡 1～3 小時（那天少玩）
+  function sleepEndAt(settings, now = Date.now()) {
+    const match = String(settings.lowProfileSleepHours || '').trim().match(/^(\d{1,2}(?:\.\d+)?)[-~～](\d{1,2}(?:\.\d+)?)$/);
+    if (!match) return 0;
+    const from = Number(match[1]);
+    const to = Number(match[2]);
+    const personality = accountPersonality();
+    const profile = dashboard.profile || {};
+    for (const dayOffset of [-1, 0]) {
+      const day = new Date(now);
+      day.setDate(day.getDate() + dayOffset);
+      day.setHours(0, 0, 0, 0);
+      const random = seededRandom(`sleep:${profile.nickname || profile.id || ''}:${day.toDateString()}`);
+      const startMinutes = from * 60 + personality.sleepShiftMinutes + (random() * 120 - 60);
+      let endMinutes = (to <= from ? to + 24 : to) * 60 + personality.sleepShiftMinutes + (random() * 120 - 60);
+      if (random() < 0.15) endMinutes += 60 + random() * 120;
+      const start = day.getTime() + startMinutes * 60000;
+      const end = day.getTime() + endMinutes * 60000;
+      if (now >= start && now < end) return end;
+    }
+    return 0;
+  }
+
+  // 回傳還要休息多久（毫秒）；0＝正在玩
+  function lowProfileBreakLeft(settings) {
+    if (!settings.lowProfileEnabled) return 0;
+    const now = Date.now();
+    if (now < lowProfile.sleepUntil) return lowProfile.sleepUntil - now;
+    if (now < lowProfile.breakUntil) return lowProfile.breakUntil - now;
+    const personality = accountPersonality();
+    const playTime = () => minutesBetween(settings, 'lowProfilePlayMinMinutes', 'lowProfilePlayMaxMinutes', personality.play);
+    const wakeAt = sleepEndAt(settings, now);
+    if (wakeAt) {
+      lowProfile.sleepUntil = wakeAt;
+      lowProfile.sessionEnd = wakeAt + playTime();
+      const wake = new Date(wakeAt);
+      setStatus(`低調模式：睡覺中，${wake.getHours()}:${String(wake.getMinutes()).padStart(2, '0')} 起床`);
+      return wakeAt - now;
+    }
+    if (!lowProfile.sessionEnd) lowProfile.sessionEnd = now + playTime();
+    if (now < lowProfile.sessionEnd) return 0;
+    lowProfile.breakUntil = now + minutesBetween(settings, 'lowProfileBreakMinMinutes', 'lowProfileBreakMaxMinutes', personality.rest);
+    lowProfile.sessionEnd = lowProfile.breakUntil + playTime();
+    setStatus(`低調模式：玩了一陣子，休息 ${Math.round((lowProfile.breakUntil - now) / 60000)} 分鐘`);
+    return lowProfile.breakUntil - now;
+  }
+
+  function lowProfileDelay(settings, delay) {
+    if (!settings.lowProfileEnabled) return delay;
+    const breakLeft = lowProfileBreakLeft(settings);
+    if (breakLeft) return Math.max(delay, breakLeft + randomGap(1000, 5000));
+    const personality = accountPersonality();
+    const extra =
+      Math.random() < personality.distractChance ? randomGap(30000, 120000) : randomSkewedSeconds(1, 8) * 1000 * personality.speed;
+    return delay + extra;
+  }
+
+  // 要補給、換裝時人不會下一步就發現，晚幾秒才反應；回傳還要等多久（毫秒），0＝可以動了。
+  // 躲紅名不走這裡，太晚躲會被打
+  function lowProfileReactionLeft(settings, key) {
+    if (!settings.lowProfileEnabled) return 0;
+    const now = Date.now();
+    // 上次反應完很久了才又需要，是新的一次，要重新反應
+    if (!lowProfile.reaction || lowProfile.reaction.key !== key || now - lowProfile.reaction.due > 30000) {
+      lowProfile.reaction = { key, due: now + randomSkewedSeconds(2, 10) * 1000 * accountPersonality().speed };
+    }
+    const left = lowProfile.reaction.due - now;
+    if (left > 0) return left;
+    lowProfile.reaction = null;
+    return 0;
+  }
+
+  function waitToReact(settings, key, label) {
+    const left = lowProfileReactionLeft(settings, key);
+    if (!left) return false;
+    setStatus(`低調模式：${(left / 1000).toFixed(1)} 秒後才反應過來要${label}`);
+    state.timerId = backgroundTimer.setTimeout(() => tick(settings), left);
+    return true;
+  }
+
   // selector 是位置路徑，換到別的畫面（例如鍛造）同一個位置可能是別顆按鈕；字不對就不按，
   // 否則每一步都會先誤按那顆按鈕、又只隔一個道具步驟就重來，後面的流程永遠輪不到
   function finishMoveGap(settings) {
@@ -5528,7 +5665,7 @@
   function scheduleApiHunt(settings, huntInfo) {
     if (reloadForUpdateIfIdle()) return;
     const availableAt = huntInfo && huntInfo.huntAvailableAt ? Date.parse(huntInfo.huntAvailableAt) : 0;
-    const delay = Math.max(0, (availableAt || 0) - Date.now()) + randomGap(1000, 3000);
+    const delay = lowProfileDelay(settings, Math.max(0, (availableAt || 0) - Date.now()) + randomGap(1000, 3000));
     state.timerId = backgroundTimer.setTimeout(() => tick(settings), delay);
     statusElement.textContent += `（${(delay / 1000).toFixed(1)} 秒後下一步）`;
   }
@@ -5547,10 +5684,41 @@
     state.timerId = backgroundTimer.setTimeout(() => tick(settings), randomGap(5000, 10000));
   }
 
+  // 重複按開始時上一次打怪可能還在路上；不跟著 runId 重設，才擋得住緊接著再打一次
+  let apiHuntInFlight = false;
+
+  // 冷卻還沒過、或上一次還沒回來就打，伺服器一定回「仍在CD中」：先等。回傳 true＝已排好下一步
+  function waitForHuntCooldown(settings, move) {
+    if (move && !move.type) return false;
+    if (apiHuntInFlight) {
+      setStatus('上一次打怪還沒回來，等一下再打');
+      state.timerId = backgroundTimer.setTimeout(() => tick(settings), randomGap(1000, 2000));
+      return true;
+    }
+    if (!state.huntInfo) {
+      const runId = state.runId;
+      refreshHeroStats()
+        .catch((error) => setStatus(`讀取狩獵資訊失敗（${error.message}）`))
+        .then(() => {
+          if (runId === state.runId) state.timerId = backgroundTimer.setTimeout(() => tick(settings), randomGap(1000, 2000));
+        });
+      return true;
+    }
+    const availableAt = Date.parse(state.huntInfo.huntAvailableAt) || 0;
+    if (availableAt <= Date.now()) return false;
+    setStatus('打怪冷卻中，冷卻結束再打');
+    scheduleApiHunt(settings, state.huntInfo);
+    return true;
+  }
+
   async function huntByApi(settings, type, note = '') {
     const runId = state.runId;
+    apiHuntInFlight = true;
     try {
-      const data = await requestGameApi(`/api/hunt${type ? `?type=${type}` : ''}`, { method: 'POST' });
+      const data = await requestGameApi(`/api/hunt${type ? `?type=${type}` : ''}`, { method: 'POST' }).finally(() => {
+        apiHuntInFlight = false;
+      });
+      if (data && data.huntInfo) state.huntInfo = data.huntInfo;
       if (runId !== state.runId) return;
       state.apiHuntFailures = 0;
       syncGameHuntView(data);
@@ -5593,7 +5761,7 @@
   // 休息要到角色的完成時間才能結束；還沒到就等到那時候
   async function finishRestByApi(settings) {
     if (Date.now() < state.apiRestUntil) {
-      const delay = state.apiRestUntil - Date.now() + randomGap(1000, 3000);
+      const delay = lowProfileDelay(settings, state.apiRestUntil - Date.now() + randomGap(1000, 3000));
       setStatus(`全隊休息中，${Math.ceil(delay / 1000)} 秒後完成休息`);
       state.timerId = backgroundTimer.setTimeout(() => tick(settings), delay);
       return;
@@ -5621,7 +5789,7 @@
 
   function scheduleNext(settings) {
     if (reloadForUpdateIfIdle()) return;
-    const delaySeconds = randomIntervalSeconds(settings);
+    const delaySeconds = lowProfileDelay(settings, randomIntervalSeconds(settings) * 1000) / 1000;
     state.timerId = backgroundTimer.setTimeout(() => tick(settings), delaySeconds * 1000);
     statusElement.textContent += `（${delaySeconds.toFixed(1)} 秒後下一步）`;
   }
@@ -5858,6 +6026,7 @@
 
     const supplyTarget = state.needRest ? null : findSlotNeedingItem(settings);
     if (supplyTarget) {
+      if (waitToReact(settings, 'supply', '補給')) return;
       useItem(settings, supplyTarget);
       return;
     }
@@ -5874,6 +6043,7 @@
       }
       const worn = findWornEquipmentNeedingSwap(settings);
       if (worn) {
+        if (waitToReact(settings, 'equip', '換裝')) return;
         swapEquipmentByApi(settings, worn);
         return;
       }
@@ -5881,6 +6051,7 @@
 
     const equipCharacter = state.needRest || settings.equipApiEnabled ? -1 : findCharacterNeedingEquipment(settings);
     if (equipCharacter !== -1) {
+      if (waitToReact(settings, 'equip', '換裝')) return;
       swapEquipment(settings, equipCharacter);
       return;
     }
@@ -5895,10 +6066,9 @@
         if (move && move.problem) {
           setStatus(`移動：${move.problem}`);
           state.timerId = backgroundTimer.setTimeout(() => tick(settings), randomGap(10000, 20000));
-        } else if (move) {
-          performApiMove(settings, move);
-        } else {
-          huntByApi(settings, '');
+        } else if (!waitForHuntCooldown(settings, move)) {
+          if (move) performApiMove(settings, move);
+          else huntByApi(settings, '');
         }
         return;
       }
@@ -6987,7 +7157,9 @@
             if (response.ok && isMoney && readSettingsFromPanel().incomeEnabled) {
               const data = parseJsonText(responseText);
               if (data && typeof data.money === 'number') {
-                recordMoneyChange(data.money, url, method, isHunt && method === 'POST' ? huntMessageMoney(data.report && data.report.messages) : {});
+                recordMoneyChange(data.money, url, method, isHunt && method === 'POST' ? huntMessageMoney(data.report && data.report.messages) : {}, data.robbedMoney);
+              } else if (method !== 'GET' && !isHunt) {
+                rememberMoneyAction(url);
               }
             }
             if (response.ok && isCardMarket && method === 'GET') noticeGameMarket(url, parseJsonText(responseText));
@@ -10532,6 +10704,7 @@
   }
 
   function scheduleForgeRunner(delay) {
+    delay = lowProfileDelay(readSettingsFromPanel(), delay);
     backgroundTimer.clearTimeout(forgeRunner.timerId);
     const runId = forgeRunner.runId;
     forgeRunner.timerId = backgroundTimer.setTimeout(() => {
@@ -10823,8 +10996,47 @@
     return parts;
   }
 
+  // 花了錢、回應卻沒帶餘額的動作（信仰捐獻、賭場、擴充欄位…）：先記著，下次看到餘額時這段差額算它的
+  const MONEY_ACTION_KEY = 'autoClickerV2MoneyAction';
+  const MONEY_ACTION_MILLISECONDS = 5 * 60000;
+  // 只記會花錢的；移動、吃藥這類也是 POST，記了會把之後的被搶、拍賣算到它頭上
+  const MONEY_ACTION_PATTERN = /\/api\/(?:beliefs|expand|monument|casino)|\/(?:revive|reincarnate)/;
+
+  function rememberMoneyAction(url) {
+    if (!MONEY_ACTION_PATTERN.test(url)) return;
+    writeJsonStorage(MONEY_ACTION_KEY, { path: new URL(url, location.href).pathname, at: Date.now() });
+  }
+
+  // 被搶只有 /api/profile 的 robbedMoney（累計被搶走的錢）看得到；那時錢的差額多半已經在狩獵回應裡算成不明支出了，
+  // 所以回頭把最近的不明支出改記成被搶
+  function reclassifyRobbery(amount) {
+    const income = loadIncome();
+    let left = amount;
+    Object.keys(income.buckets)
+      .map(Number)
+      .filter((start) => start >= Date.now() - MONEY_GAP_LIMIT_MILLISECONDS - INCOME_BUCKET_MILLISECONDS)
+      .sort((first, second) => second - first)
+      .forEach((start) => {
+        const out = income.buckets[start].moneyOut;
+        const unknown = out && out[UNKNOWN_SPENT_LABEL];
+        if (!left || !unknown) return;
+        const moved = Math.min(left, unknown);
+        out[UNKNOWN_SPENT_LABEL] -= moved;
+        if (!out[UNKNOWN_SPENT_LABEL]) delete out[UNKNOWN_SPENT_LABEL];
+        out['被搶'] = (out['被搶'] || 0) + moved;
+        left -= moved;
+      });
+    if (left < amount) saveIncome(income);
+    return amount - left;
+  }
+
   function moneySourceLabel(path) {
     if (/\/attack/.test(path)) return '打劫';
+    if (/\/api\/beliefs/.test(path)) return '信仰捐獻';
+    if (/\/api\/expand/.test(path)) return '擴充欄位';
+    if (/\/revive/.test(path)) return '復活';
+    if (/\/reincarnate/.test(path)) return '轉生';
+    if (/\/api\/monument/.test(path)) return '紀念碑';
     if (/recycle/i.test(path)) return '回收';
     if (/\/api\/forge|complete(?:Forge|Action)/.test(path)) return '鍛造';
     if (/\/api\/(?:items|mines)/.test(path)) return '道具';
@@ -10833,9 +11045,14 @@
     return path.replace(/^\/api\//, '').split('/')[0] || '其他';
   }
 
-  function recordMoneyChange(money, url, method, known = {}) {
+  const UNKNOWN_SPENT_LABEL = '不明支出（被搶等）';
+
+  function recordMoneyChange(money, url, method, known = {}, robbedMoney) {
     const last = readJsonStorage(LAST_MONEY_KEY, null);
-    writeJsonStorage(LAST_MONEY_KEY, { money, at: Date.now() });
+    const robbedBefore = last && typeof last.robbed === 'number' ? last.robbed : null;
+    writeJsonStorage(LAST_MONEY_KEY, { money, at: Date.now(), robbed: typeof robbedMoney === 'number' ? robbedMoney : robbedBefore });
+    let robbed = typeof robbedMoney === 'number' && robbedBefore !== null ? Math.max(0, robbedMoney - robbedBefore) : 0;
+    if (robbed) robbed -= reclassifyRobbery(robbed);
     if (!last || typeof last.money !== 'number' || Date.now() - last.at > MONEY_GAP_LIMIT_MILLISECONDS) return;
     const delta = money - last.money;
     const path = new URL(url, location.href).pathname;
@@ -10855,8 +11072,19 @@
         rest = 0;
       }
     }
+    if (rest < 0 && robbed) {
+      const amount = Math.min(robbed, -rest);
+      changes.push(['out', '被搶', -amount]);
+      rest += amount;
+    }
+    const action = readJsonStorage(MONEY_ACTION_KEY, null);
+    if (rest && action && action.at >= last.at && Date.now() - action.at < MONEY_ACTION_MILLISECONDS) {
+      changes.push([rest > 0 ? 'in' : 'out', moneySourceLabel(action.path), rest]);
+      rest = 0;
+      writeJsonStorage(MONEY_ACTION_KEY, null);
+    }
     if (rest > 0) changes.push(['market', '不明入帳（多半是拍賣售出）', rest]);
-    else if (rest < 0) changes.push(['out', '不明支出（被搶等）', rest]);
+    else if (rest < 0) changes.push(['out', UNKNOWN_SPENT_LABEL, rest]);
     if (!changes.some(([, , amount]) => amount)) return;
     const income = loadIncome();
     const start = Math.floor(Date.now() / INCOME_BUCKET_MILLISECONDS) * INCOME_BUCKET_MILLISECONDS;
