@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      2.99
+// @version      3.02
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -277,7 +277,14 @@
     // 0＝不買：花的是真錢，一定要自己設上限
     cardBuyBudget: 0,
     cardBuyMaxCount: 1,
+    // passive＝只看遊戲自己抓的清單（不多發請求）；active＝自己去查（搶卡用）
+    cardWatchMode: 'passive',
     cardBuyIntervalSeconds: 25,
+    cardBuyIntervalMaxSeconds: 90,
+    // 主動查的時段（「8-24」「20-2」）；留空＝整天
+    cardActiveHours: '',
+    // 主動查開幾分鐘後自動切回被動；0＝不切
+    cardActiveMinutes: 60,
     cardBuyExcludeSellerIds: '',
     autoUpdateEnabled: true,
   };
@@ -854,7 +861,7 @@
       <div class="row">　⏸ 暫停：<select data-field="statusPauseLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">不處理</option><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select></div>
       <div class="hint">例：提醒選「輕度以上」、暫停選「重度」＝輕度、中度只響提醒，重度才停下來</div>
       <div class="row">撿到稀有道具提醒<input data-field="lootRareNames" placeholder="名稱包含這些字就提醒，逗號分隔"></div>
-      <label class="row"><input data-field="lootRarePause" type="checkbox" style="flex:none;width:auto"> 撿到稀有道具時暫停掛機（沒勾就只提醒）</label>
+      <label class="row"><input data-field="lootRarePause" type="checkbox" style="flex:none;width:auto"> 撿到稀有道具時暫停掛機（沒勾就只在右下角小提示）</label>
       <fieldset class="group">
         <legend>避難：換關卡掛機</legend>
         <label class="row"><input data-field="healthEscapeEnabled" type="checkbox" style="flex:none;width:auto"> 血量低於上面「緊急暫停」的 % 時，不暫停、改去</label>
@@ -1029,12 +1036,24 @@
     </div>
 
     <div data-tab="cardBuy">
-      <div class="row"><label style="flex:1"><input data-field="cardBuyEnabled" type="checkbox" style="width:auto"> <b>查拍賣場英雄</b></label>每 <input data-field="cardBuyIntervalSeconds" type="number" min="10" style="width:50px;flex:none"> 秒<button data-action="card-buy-check-now" title="不等間隔，馬上查一次">立即查</button></div>
+      <div class="row"><label style="flex:1"><input data-field="cardBuyEnabled" type="checkbox" style="width:auto"> <b>看拍賣場英雄</b></label><select data-field="cardWatchMode" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="passive">被動（不多發請求）</option><option value="active">主動查（搶卡用）</option></select></div>
+      <div class="hint">被動：你在遊戲開拍賣場的英雄頁、切回這個視窗，或停在人口販子頁時，遊戲抓到清單就順便比對，伺服器看到的跟一般玩家一樣。主動：自己去查，要搶卡時才開</div>
       <div class="hint">操作：<span data-role="card-buy-log"></span></div>
       <fieldset class="group">
+        <legend>主動查（選「主動查」時才用）</legend>
+        <div class="row">每 <input data-field="cardBuyIntervalSeconds" type="number" min="10" style="width:50px;flex:none"> ～ <input data-field="cardBuyIntervalMaxSeconds" type="number" min="10" style="width:50px;flex:none"> 秒查一次</div>
+        <div class="hint">像人刷商店：間隔大多靠近短的、偶爾拉長；連查 3～8 次後休息 5～20 分鐘</div>
+        <div class="row">只在 <input data-field="cardActiveHours" placeholder="留空＝整天" style="width:110px;flex:none"> 點查（例：8-24、20-2）</div>
+        <div class="row">開 <input data-field="cardActiveMinutes" type="number" min="0" style="width:50px;flex:none"> 分鐘後自動切回被動（0＝不切）</div>
+        <div class="row"><span data-role="card-buy-next" class="hint" style="flex:1"></span><button data-action="card-buy-check-now" title="不管模式和間隔，馬上查一次">立即查</button></div>
+      </fieldset>
+      <fieldset class="group">
         <legend>要找的卡（每行一條）</legend>
-        <textarea data-field="cardBuyRules" rows="4" placeholder="古老樹人 等級1&#10;房東阿姨 價格≤50000 等級≥20 潛能≥A" style="width:100%;box-sizing:border-box;font:11px monospace"></textarea>
-        <details class="hint"><summary>規則寫法</summary>第一個字是卡片種類（例如房東阿姨，不是玩家取的名字），後面的條件都可以不寫，寫了就全部要符合：<br>價格≤50000（含 50000）<br>等級1＝剛好 1 級；等級1-5；等級≥20＝20 級以上都算（含 20）；等級≤5<br>≥ 也可以寫成 >=、≧ 或「等級20以上」，≤ 同理<br>潛能≥A（由高到低 S A B C D E F，不認得的評價不算）<br>行尾加「提醒」＝這條永遠只提醒、不會買。開自動購買時，沒寫價格的規則也只提醒</details>
+        <input type="hidden" data-field="cardBuyRules">
+        <div data-role="card-rules"></div>
+        <datalist id="autoClickerCardTypes"></datalist>
+        <div class="row"><button data-action="card-rule-add">＋ 新增一張要找的卡</button></div>
+        <div class="hint">卡片名稱是卡片種類（例如房東阿姨），不是玩家取的名字；打字時會列出看過的卡。空著的條件＝不限，等級兩格填一樣＝剛好那一級。沒填價格的只提醒；勾「只提醒不買」的開了自動購買也不買</div>
       </fieldset>
       <fieldset class="group">
         <legend>提醒</legend>
@@ -1323,6 +1342,7 @@
       if (input.type === 'checkbox') input.checked = settings[key];
       else setFieldValue(input, settings[key]);
     });
+    renderCardRules();
   }
 
   // 下拉選單的選項是之後才填的（例如區域表），先放一個同名選項，值才不會被丟掉
@@ -2404,7 +2424,73 @@
   // 轉移功能掛單時留言的暗號（transferToken）
   const TRANSFER_TOKEN_PATTERN = /^#[0-9a-z]{6}$/;
   const RELEASED_MARKET_API = '/api/releasedHeroMarket';
-  const cardBuy = { checkedAt: 0, busy: false, limitNoted: false };
+  const cardBuy = { checkedAt: 0, busy: false, burstLeft: 5 };
+
+  // 找卡清單：一列一張卡，欄位改了就轉回原本的規則文字（cardBuyRules）存，舊設定照樣能用
+  const CARD_TYPES_KEY = 'autoClickerV2CardTypes';
+  const CARD_TYPES_LIMIT = 300;
+  const CARD_RULE_SELECT_STYLE = 'flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px';
+
+  // 看過的卡片種類記起來，輸入卡片名稱時可以直接挑
+  function rememberCardTypes(cards) {
+    const known = readJsonStorage(CARD_TYPES_KEY, []);
+    const fresh = [...new Set(cards.map((card) => card && card.type).filter((type) => type && !known.includes(type)))];
+    if (fresh.length) writeJsonStorage(CARD_TYPES_KEY, [...known, ...fresh].slice(-CARD_TYPES_LIMIT));
+  }
+
+  function cardRuleRowHtml(rule = {}) {
+    const number = (key, value, width) =>
+      `<input data-card-rule="${key}" type="number" min="0" value="${value || ''}" placeholder="不限" style="width:${width};flex:none">`;
+    const potentials = ['', ...[...POTENTIAL_ORDER].reverse()]
+      .map((grade) => `<option value="${grade}" ${grade === (rule.minPotential || '') ? 'selected' : ''}>${grade || '不限'}</option>`)
+      .join('');
+    return `<div class="card-rule" style="border:1px solid #3a3a40;border-radius:6px;padding:4px 6px;margin:4px 0">
+      <div class="row"><input data-card-rule="type" list="autoClickerCardTypes" value="${escapeHtml(rule.type || '')}" placeholder="卡片名稱（例如房東阿姨）" style="flex:1;min-width:0">
+        <button data-action="card-rule-remove" title="刪掉這張">✕</button></div>
+      <div class="row">價格 ≤ ${number('maxPrice', rule.maxPrice, '90px')}　潛能 ≥ <select data-card-rule="minPotential" style="${CARD_RULE_SELECT_STYLE}">${potentials}</select></div>
+      <div class="row">等級 ${number('minLevel', rule.minLevel, '50px')} ～ ${number('maxLevel', rule.maxLevel === Infinity ? '' : rule.maxLevel, '50px')}
+        <label style="margin-left:8px"><input data-card-rule="notifyOnly" type="checkbox" ${rule.notifyOnly ? 'checked' : ''} style="width:auto;flex:none"> 只提醒不買</label></div>
+    </div>`;
+  }
+
+  function renderCardRules() {
+    const rules = parseCardBuyRules(panel.querySelector('[data-field="cardBuyRules"]').value);
+    panel.querySelector('[data-role="card-rules"]').innerHTML = rules.map((rule) => cardRuleRowHtml(rule)).join('');
+    const types = [...new Set([...readJsonStorage(CARD_TYPES_KEY, []), ...readJsonStorage(DRAW_LOG_KEY, []).map((draw) => draw.type)])].filter(Boolean);
+    panel.querySelector('#autoClickerCardTypes').innerHTML = types.map((type) => `<option value="${escapeHtml(type)}"></option>`).join('');
+  }
+
+  function cardRuleText(rule) {
+    const parts = [rule.type.replace(/\s+/g, '')];
+    if (rule.maxPrice > 0) parts.push(`價格≤${rule.maxPrice}`);
+    const { minLevel, maxLevel } = rule;
+    if (minLevel && maxLevel && minLevel === maxLevel) parts.push(`等級${minLevel}`);
+    else if (minLevel && maxLevel) parts.push(`等級${Math.min(minLevel, maxLevel)}-${Math.max(minLevel, maxLevel)}`);
+    else if (minLevel) parts.push(`等級≥${minLevel}`);
+    else if (maxLevel) parts.push(`等級≤${maxLevel}`);
+    if (rule.minPotential) parts.push(`潛能≥${rule.minPotential}`);
+    if (rule.notifyOnly) parts.push('提醒');
+    return parts.join(' ');
+  }
+
+  // 還沒填卡片名稱的列先不存（列還留在畫面上讓人繼續填）
+  function updateCardRulesFromRows() {
+    const lines = [...panel.querySelectorAll('[data-role="card-rules"] .card-rule')]
+      .map((row) => {
+        const field = (key) => row.querySelector(`[data-card-rule="${key}"]`);
+        return {
+          type: field('type').value.trim(),
+          maxPrice: Number(field('maxPrice').value) || 0,
+          minLevel: Number(field('minLevel').value) || 0,
+          maxLevel: Number(field('maxLevel').value) || 0,
+          minPotential: field('minPotential').value,
+          notifyOnly: field('notifyOnly').checked,
+        };
+      })
+      .filter((rule) => rule.type)
+      .map(cardRuleText);
+    panel.querySelector('[data-field="cardBuyRules"]').value = lines.join('\n');
+  }
 
   // 等級：「等級1-5」區間、「等級≥20」「等級≤5」、只寫數字「等級1」＝剛好那一級；> < 不含那一級
   function parseLevelRange(text) {
@@ -2544,35 +2630,66 @@
   }
 
   // 人口販子平常沒開；回應格式還沒看過實際的，有 heroes 陣列或本身是陣列才當成清單，而且只提醒不買
-  async function releasedMarketCards() {
-    const data = await requestGameApi(RELEASED_MARKET_API).catch(() => null);
+  function releasedCardsFrom(data) {
     if (!data || data.enabled === false) return [];
     return Array.isArray(data.heroes) ? data.heroes : Array.isArray(data) ? data : [];
   }
 
-  async function checkCardMarket(settings) {
-    if (tabShutDown || !settings.cardBuyEnabled || cardBuy.busy) return;
-    const interval = Math.max(CARD_BUY_MIN_SECONDS, Number(settings.cardBuyIntervalSeconds) || 0) * 1000;
-    if (Date.now() < cardBuy.checkedAt) return;
-    const lock = readJsonStorage(CARD_BUY_LOCK_KEY, null);
-    if (lock && lock.tab !== tabKey && Date.now() - lock.at < interval * 2) return;
-    cardBuy.checkedAt = Date.now() + interval + randomGap(0, 5000);
-    writeJsonStorage(CARD_BUY_LOCK_KEY, { tab: tabKey, at: Date.now() });
-    // 沒開自動購買時每條規則都當成提醒，沒寫價格的也算
-    const rules = parseCardBuyRules(settings.cardBuyRules).map((rule) =>
-      settings.cardAutoBuyEnabled ? rule : { ...rule, notifyOnly: true }
-    );
+  // 沒開自動購買時每條規則都當成提醒，沒寫價格的也算
+  function cardRulesFor(settings) {
+    return parseCardBuyRules(settings.cardBuyRules).map((rule) => (settings.cardAutoBuyEnabled ? rule : { ...rule, notifyOnly: true }));
+  }
+
+  // 主動查的節奏像人刷商店：連刷幾次（間隔多數靠近短的、偶爾拉長），再去做別的事一陣子
+  const CARD_BURST_MIN = 3;
+  const CARD_BURST_MAX = 8;
+  const CARD_BREAK_MIN_MILLISECONDS = 5 * 60000;
+  const CARD_BREAK_MAX_MILLISECONDS = 20 * 60000;
+  // 切到主動查的時間：開太久會忘記關，到時間自動切回被動
+  const CARD_ACTIVE_SINCE_KEY = 'autoClickerV2CardActiveSince';
+  const MARKET_HEROES_PATTERN = /\/api\/trades\?type=heroes(?![^#]*own=true)/;
+  const RELEASED_MARKET_PATTERN = /\/api\/releasedHeroMarket(?:[?#]|$)/;
+
+  function nextActiveCheckDelay(settings) {
+    if (cardBuy.burstLeft <= 0) {
+      cardBuy.burstLeft = Math.round(randomGap(CARD_BURST_MIN, CARD_BURST_MAX));
+      return { delay: randomGap(CARD_BREAK_MIN_MILLISECONDS, CARD_BREAK_MAX_MILLISECONDS), resting: true };
+    }
+    cardBuy.burstLeft--;
+    const low = Math.max(CARD_BUY_MIN_SECONDS, Number(settings.cardBuyIntervalSeconds) || 0);
+    const high = Math.max(low, Number(settings.cardBuyIntervalMaxSeconds) || 0);
+    return { delay: randomSkewedSeconds(low, high) * 1000, resting: false };
+  }
+
+  // 「8-24」「8-12,20-24」「22-2」（跨午夜）；留空＝整天
+  function inCardActiveHours(text, date = new Date()) {
+    const ranges = String(text || '')
+      .split(/[,，、\s]+/)
+      .map((entry) => entry.match(/^(\d{1,2})[-~～](\d{1,2})$/))
+      .filter(Boolean)
+      .map((match) => [Number(match[1]), Number(match[2])]);
+    if (!ranges.length) return true;
+    const hour = date.getHours() + date.getMinutes() / 60;
+    return ranges.some(([from, to]) => (from <= to ? hour >= from && hour < to : hour >= from || hour < to));
+  }
+
+  function waitText(milliseconds) {
+    return milliseconds >= 60000 ? `${Math.round(milliseconds / 60000)} 分鐘` : `${Math.round(milliseconds / 1000)} 秒`;
+  }
+
+  // 被動、主動都走這裡：比對規則、提醒、買。讀不到帳號這類查詢錯誤丟回給呼叫的一方
+  async function handleCardTrades(settings, trades, released) {
+    const rules = cardRulesFor(settings);
     if (!rules.length) {
       cardBuyLog('還沒寫要找的卡');
       return;
     }
-    if (state.captchaWaiting || forgeRunner.captchaWaiting) return;
-    cardBuy.busy = true;
     let buying = null;
+    rememberCardTypes([...trades, ...(released || [])]);
     try {
       const ownId = dashboard.profile ? dashboard.profile.id : (await requestGameApi(PROFILE_API)).id;
       const excluded = cardBuyExcludedSellers(settings, ownId);
-      const matched = ((await requestGameApi('/api/trades?type=heroes')).heroes || [])
+      const matched = trades
         .filter((trade) => !excluded.has(Number(trade.sellerId)) && !TRANSFER_TOKEN_PATTERN.test(String(trade.message || '')))
         .map((trade) => ({
           trade,
@@ -2588,11 +2705,9 @@
         .sort((first, second) => Number(first.trade.price) - Number(second.trade.price));
       const toBuy = matched.filter((entry) => entry.buy).map((entry) => entry.trade);
       const toNotify = matched.filter((entry) => !entry.buy).map((entry) => entry.trade);
-      const released = settings.cardReleasedEnabled
-        ? (await releasedMarketCards()).filter((card) => rules.some((rule) => cardRuleMatches({ ...rule, notifyOnly: true }, card)))
-        : [];
+      const releasedMatched = (released || []).filter((card) => rules.some((rule) => cardRuleMatches({ ...rule, notifyOnly: true }, card)));
       notifyCards(toNotify, '拍賣場');
-      notifyCards(released, '人口販子');
+      notifyCards(releasedMatched, '人口販子');
       const budget = Number(settings.cardBuyBudget) || 0;
       const leftover = [];
       for (const trade of toBuy) {
@@ -2623,12 +2738,69 @@
           ? `已買滿 ${saved.bought}/${settings.cardBuyMaxCount} 張`
           : `預算剩 $${Math.max(0, budget - saved.spent).toLocaleString()} 不夠`;
       notifyCards(leftover, `拍賣場（${reason}，沒買）`);
-      if (!matched.length && !released.length) cardBuyLog(`沒有符合的卡（${new Date().toLocaleTimeString()} 查過）`);
+      if (!matched.length && !releasedMatched.length) {
+        cardBuyLog(`沒有符合的卡（看了${released ? '人口販子' : ` ${trades.length} 張掛單`}）`);
+      }
     } catch (error) {
       if (error.captchaRequired) stopCardBuy('伺服器要求活人驗證，查拍賣已關閉，驗證完要用再重新勾選', 'cardBuyEnabled');
       // 逾時或斷線時可能其實買到了，只是沒算進預算，所以也停下來讓人確認
       else if (buying && error.transient) stopCardBuy(`買 ${cardText(buying)} 時${error.message}，不確定有沒有買到，自動購買已關閉，請到遊戲確認`);
       else if (buying) stopCardBuy(`買不到 ${cardText(buying)}（${error.message}），自動購買已關閉`);
+      else throw error;
+    }
+  }
+
+  // 被動模式：遊戲自己抓拍賣或人口販子清單時順便看，一個請求都不多發
+  function noticeGameMarket(url, data) {
+    const settings = readSettingsFromPanel();
+    if (tabShutDown || !settings.cardBuyEnabled || settings.cardWatchMode === 'active' || cardBuy.busy || !data) return;
+    const isReleased = RELEASED_MARKET_PATTERN.test(url);
+    if (isReleased && !settings.cardReleasedEnabled) return;
+    cardBuy.busy = true;
+    handleCardTrades(settings, isReleased ? [] : data.heroes || [], isReleased ? releasedCardsFrom(data) : null)
+      .catch((error) => cardBuyLog(`比對失敗（${error.message}）`))
+      .finally(() => {
+        cardBuy.busy = false;
+        renderCardBuyStatus();
+      });
+  }
+
+  // 主動模式（搶卡用）：自己去抓清單。force＝按「立即查」，不管模式、時段、間隔
+  async function checkCardMarket(settings, { force = false } = {}) {
+    if (tabShutDown || !settings.cardBuyEnabled || cardBuy.busy) return;
+    if (!force) {
+      if (settings.cardWatchMode !== 'active' || Date.now() < cardBuy.checkedAt) return;
+      const minutes = Number(settings.cardActiveMinutes) || 0;
+      const since = readJsonStorage(CARD_ACTIVE_SINCE_KEY, 0);
+      if (!since) writeJsonStorage(CARD_ACTIVE_SINCE_KEY, Date.now());
+      if (minutes && since && Date.now() - since > minutes * 60000) {
+        setPanelField('cardWatchMode', 'passive');
+        cardBuyLog(`主動查滿 ${minutes} 分鐘，切回被動`);
+        return;
+      }
+      // 別的分頁（同一個帳號）在查，等它那邊的下一次時間過了還沒動才接手
+      const lock = readJsonStorage(CARD_BUY_LOCK_KEY, null);
+      if (lock && lock.tab !== tabKey && Date.now() < (lock.until || lock.at) + 60000) return;
+      if (!inCardActiveHours(settings.cardActiveHours)) {
+        cardBuy.checkedAt = Date.now() + 60000;
+        cardBuyLog('不在設定的時段，主動查先停著（被動照常）');
+        return;
+      }
+    }
+    const { delay, resting } = nextActiveCheckDelay(settings);
+    cardBuy.checkedAt = Date.now() + delay;
+    writeJsonStorage(CARD_BUY_LOCK_KEY, { tab: tabKey, at: Date.now(), until: cardBuy.checkedAt });
+    if (state.captchaWaiting || forgeRunner.captchaWaiting) return;
+    cardBuy.busy = true;
+    try {
+      const trades = (await requestGameApi('/api/trades?type=heroes')).heroes || [];
+      const released = settings.cardReleasedEnabled ? releasedCardsFrom(await requestGameApi(RELEASED_MARKET_API).catch(() => null)) : null;
+      await handleCardTrades(settings, trades, released);
+      if (settings.cardWatchMode === 'active') {
+        panel.querySelector('[data-role="card-buy-next"]').textContent = `下次主動查：${waitText(delay)}後${resting ? '（刷了一陣，休息一下）' : ''}`;
+      }
+    } catch (error) {
+      if (error.captchaRequired) stopCardBuy('伺服器要求活人驗證，查拍賣已關閉，驗證完要用再重新勾選', 'cardBuyEnabled');
       else if (/HTTP 4/.test(error.message)) stopCardBuy(`查詢失敗（${error.message}），查拍賣已關閉`, 'cardBuyEnabled');
       else cardBuyLog(`查詢失敗（${error.message}），下一輪再試`);
     } finally {
@@ -6306,6 +6478,13 @@
       saveSettings(readSettingsFromPanel());
     } else if (event.target.dataset.captureHero) {
       startHeroCapture(event.target.dataset.captureHero);
+    } else if (action === 'card-rule-add') {
+      panel.querySelector('[data-role="card-rules"]').insertAdjacentHTML('beforeend', cardRuleRowHtml());
+      panel.querySelector('[data-role="card-rules"] .card-rule:last-child [data-card-rule="type"]').focus();
+    } else if (action === 'card-rule-remove') {
+      event.target.closest('.card-rule').remove();
+      updateCardRulesFromRows();
+      saveSettings(readSettingsFromPanel());
     } else if (action === 'draw-clear') {
       if (window.confirm('要清除這個帳號的抽卡紀錄嗎？清掉就找不回來')) {
         writeJsonStorage(DRAW_LOG_KEY, []);
@@ -6378,10 +6557,7 @@
       const settings = readSettingsFromPanel();
       if (!settings.cardBuyEnabled) cardBuyLog('先勾「查拍賣場英雄」');
       else {
-        // 鎖也清掉：使用者按了就是要這個分頁查
-        cardBuy.checkedAt = 0;
-        writeJsonStorage(CARD_BUY_LOCK_KEY, null);
-        checkCardMarket(settings);
+        checkCardMarket(settings, { force: true });
       }
     } else if (action === 'transfer-refresh') {
       refreshTransferChoices(readSettingsFromPanel())
@@ -6655,13 +6831,14 @@
       const isEquipmentList = !growthOnly && EQUIPMENT_LIST_PATTERN.test(url);
       const isForgeData = FORGE_START_PATTERN.test(url) || FORGE_COMPLETE_PATTERN.test(url) || ITEM_LIST_PATTERN.test(url);
       const itemUseMatch = !growthOnly && url.match(ITEM_USE_PATTERN);
+      const isCardMarket = !growthOnly && (MARKET_HEROES_PATTERN.test(url) || RELEASED_MARKET_PATTERN.test(url));
       const isOtherSite = /^https?:/i.test(url) && !url.startsWith(location.origin);
       const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
       const isPlace = PLACE_API_PATTERN.test(url) && (method !== 'GET' || HUNT_INFO_PATTERN.test(url));
       const isMoney = !growthOnly && PLACE_API_PATTERN.test(url) && (method !== 'GET' || MONEY_API_PATTERN.test(url));
       const needsResponse = growthOnly
         ? isHunt || growthHeroId || isHeroList || isForgeData || isPlace
-        : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData || itemUseMatch || isPlace || isMoney;
+        : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData || itemUseMatch || isPlace || isMoney || isCardMarket;
       if (!needsResponse || STATIC_ASSET_PATTERN.test(url) || isOtherSite) {
         return originalFetch.apply(this, args);
       }
@@ -6724,6 +6901,7 @@
                 recordMoneyChange(data.money, url, method, isHunt && method === 'POST' ? huntMessageMoney(data.report && data.report.messages) : {});
               }
             }
+            if (response.ok && isCardMarket && method === 'GET') noticeGameMarket(url, parseJsonText(responseText));
             if (response.ok && itemUseMatch) {
               const data = parseJsonText(responseText);
               if (data && data.drawResult) recordDraw(itemUseMatch[1], data);
@@ -10450,6 +10628,23 @@
     return `${value >= 0 ? '+' : ''}${Math.round(value).toLocaleString()}`;
   }
 
+  function rareLootNames(settings = readSettingsFromPanel()) {
+    return String(settings.lootRareNames || '')
+      .split(/[,，、]/)
+      .map((name) => name.trim())
+      .filter(Boolean);
+  }
+
+  // 總覽頁只放得下幾樣：照數量排的話，撿到 1 張英雄券會被一大堆普通掉落擠掉，所以稀有道具一定放前面
+  const TOP_LOOT_COUNT = 8;
+  function topLootItems(items) {
+    const rareNames = rareLootNames();
+    const isRare = ([name]) => rareNames.some((rareName) => name.includes(rareName));
+    const byQuantity = Object.entries(items).sort(([, first], [, second]) => second - first);
+    const rare = byQuantity.filter(isRare);
+    return [...rare, ...byQuantity.filter((entry) => !isRare(entry)).slice(0, Math.max(0, TOP_LOOT_COUNT - rare.length))];
+  }
+
   // 給總覽頁：近 1 小時與今天
   // 總覽頁可以切換期間，所以各期間都給；每次回報都要重算 5 次，30 秒內沿用上次的
   const INCOME_REPORT_FRESH_MILLISECONDS = 30000;
@@ -10468,9 +10663,7 @@
       topIn: Object.entries(summary.moneyIn).sort(([, first], [, second]) => second - first).slice(0, 5),
       topOut: Object.entries(summary.moneyOut).sort(([, first], [, second]) => second - first).slice(0, 5),
       hours: (Date.now() - from) / 3600000,
-      topItems: Object.entries(summary.items)
-        .sort(([, first], [, second]) => second - first)
-        .slice(0, 8),
+      topItems: topLootItems(summary.items),
       used: summary.usedCount,
       topUsed: Object.entries(summary.used)
         .sort(([, first], [, second]) => second - first)
@@ -10634,14 +10827,17 @@
     if (activeTab === 'huntStats') renderHuntStats();
   }
 
-  // 名稱有包含就算（「英雄券」也會對到「高級英雄券」）
+  // 名稱有包含就算（「英雄券」也會對到「高級英雄券」）；只提醒時用右下角小提示，不打斷
   function alertRareLoot(loot, place, settings) {
-    const rareNames = settings.lootRareNames.split(/[,，、]/).map((name) => name.trim()).filter(Boolean);
+    const rareNames = rareLootNames(settings);
     const rare = loot.filter(([name]) => rareNames.some((rareName) => name.includes(rareName)));
     if (!rare.length) return;
     const message = `撿到稀有道具：${rare.map(([name, quantity]) => `${name} ×${quantity}`).join('、')}（${place}）`;
     if (settings.lootRarePause && state.running) pauseWithAlert(message);
-    else alertUser(message);
+    else {
+      setStatus(message);
+      showToast(message);
+    }
   }
 
   // 公式來自社群工具箱（SGO 多功能工具箱），升級經驗已用實際資料驗證（Lv15 → 4517），轉生點數沒驗證過
@@ -10942,8 +11138,17 @@
     if (event.target.dataset.forgeApiHero !== undefined) updateForgeApiHeroesFromChoices();
     if (event.target.dataset.forgePlan) updateForgeApiPlansFromChoices();
     if (event.target.dataset.trainChoice) updateTrainFromChoices();
+    if (event.target.dataset.cardRule) updateCardRulesFromRows();
     if (event.target.dataset.field === 'trainEnabled') renderTrainStatus();
     if (event.target.dataset.field === 'showAccountName') renderAppName();
+    // 剛切到主動：從現在起算自動切回的時間，第一次馬上查
+    if (event.target.dataset.field === 'cardWatchMode' && event.target.value === 'active') {
+      writeJsonStorage(CARD_ACTIVE_SINCE_KEY, Date.now());
+      cardBuy.checkedAt = 0;
+    }
+    if (event.target.dataset.field === 'cardWatchMode' && event.target.value !== 'active') {
+      panel.querySelector('[data-role="card-buy-next"]').textContent = '';
+    }
     // 自己改了名稱＝今天就用這個名稱，自動換名稱等到下一個 00:00
     if (event.isTrusted && (event.target.dataset.field === 'forgeRecipeName' || event.target.dataset.forgePlan === 'name')) {
       writeJsonStorage(FORGE_NAME_DAY_KEY, localDayKey(Date.now()));
