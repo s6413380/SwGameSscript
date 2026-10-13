@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.02
+// @version      3.08
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -947,7 +947,7 @@
 
     <div data-tab="material">
       <div class="hint">鍛造材料在鍛造時自動記（也讀鍛造工具腳本的紀錄）；裝備數值在物品頁看過就會記下來，之後賣掉也還算得到</div>
-      <div class="row"><select data-role="material-mode" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="tendency">材料屬性傾向（全部類型）</option><option value="regression">依材料貢獻（扣除其他材料）</option><option value="single">依單一材料</option><option value="combo">依材料組合</option></select>
+      <div class="row"><select data-role="material-mode" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="tendency">材料屬性傾向（全部類型）</option><option value="regression">依材料貢獻（扣除其他材料）</option><option value="single">依單一材料</option><option value="combo">依材料組合</option><option value="enchant">附魔推測（填材料估附魔）</option></select>
         <select data-role="material-type" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
       <div class="row"><select data-role="material-forger" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
       <div class="row"><select data-role="material-sort" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="count">依件數</option><option value="atk">依攻擊</option><option value="def">依防禦</option><option value="int">依智力</option><option value="lck">依幸運</option><option value="fullDur">依耐久</option><option value="wgt">依重量（輕的先）</option><option value="recyclePrice">依回收價</option></select>
@@ -1279,14 +1279,14 @@
       renderRecipes();
       renderRecipePicker();
       // 第一次開配方頁就順便讀材料庫存
-      if (!mineStock.length) refreshMineStock().then(renderRecipePicker).catch(() => {});
+      if (Date.now() - mineStockAt > MINE_STOCK_FRESH_MILLISECONDS) refreshMineStock().then(renderRecipePicker).catch(() => {});
     }
     if (tabId === 'huntStats') renderHuntStats();
     if (tabId === 'income') renderIncome();
     if (tabId === 'draw') renderDrawStats();
     if (tabId === 'forge') {
       renderForgePlanOverview();
-      if (!mineStock.length) refreshMineStock().then(renderForgePlanOverview).catch(() => {});
+      if (Date.now() - mineStockAt > MINE_STOCK_FRESH_MILLISECONDS) refreshMineStock().then(renderForgePlanOverview).catch(() => {});
     }
     if (tabId === 'transfer') refreshTransferChoices(readSettingsFromPanel()).catch((error) => transferLog(`讀取帳號或角色失敗（${error.message}）`));
     panel.querySelectorAll('[data-tab]').forEach((section) => {
@@ -2143,8 +2143,15 @@
     return `${name} ${info.huntStage}`;
   }
 
-  function dashboardReport(settings) {
+  // API 打怪時位置以 API 為準；畫面上的關卡欄位在別頁或遊戲改版後可能讀到別的字（例如「Lv. 44」），對不上區域就不用
+  function dashboardLocationText(settings) {
+    const apiText = apiLocationText(settings);
+    if (isApiHunt(settings) && apiText) return apiText;
     const location = settings.stageSelector ? readLocation(settings) : null;
+    return location && location.area ? location.text : apiText || (location ? location.text : '');
+  }
+
+  function dashboardReport(settings) {
     return {
       accountId: dashboard.profile.id,
       version: SCRIPT_VERSION,
@@ -2157,7 +2164,7 @@
       forgeRunning: (state.running && state.forgeMode) || forgeRunner.running,
       alert: dashboard.alert,
       status: statusElement.textContent,
-      location: location && location.text ? location.text : apiLocationText(settings),
+      location: dashboardLocationText(settings),
       heroes: dashboard.team.map((hero) => {
         const { id, name, lv, exp, fullExp, hp, fullHp, sp, fullSp, perished } = hero;
         return { id, name, lv, exp, fullExp, hp, fullHp, sp, fullSp, perished, conditions: heroConditions(hero) };
@@ -4056,6 +4063,8 @@
     // 城鎮不管（沒有關卡可以退，紅名在城裡很常見）；還在往目標走（路過的關卡，或剛換目標正在走）也不管，到了目標才看
     if (!settings.playerEscapeEnabled || inTownNow(settings) || !arrivedAtTarget(settings)) return false;
     const place = currentPlace(settings);
+    // 認不出在哪一關（移動途中、按鈕模式讀不到關卡欄位）：拿到的玩家名單多半是上一個地方的，也沒有關可以退，不判斷
+    if (!place || !place.stage) return false;
     const found = isIgnoredPlace(settings, place) ? [] : dangerousPlayers(settings);
     if (!found.length) {
       state.playerAlertKey = '';
@@ -4080,6 +4089,12 @@
       alertUser(`${reason}（已經退到第 1 關，留在原地）`);
     }
     return false;
+  }
+
+  // 換了地方，上一個地方的玩家名單不能再用，到了馬上重讀
+  function forgetZoneUsers() {
+    state.zoneUsers = [];
+    state.zoneUsersAt = 0;
   }
 
   async function refreshZoneUsers() {
@@ -5187,10 +5202,9 @@
     );
     if (forgeMode && state.forgeStarted.length) lines.push(`鍛造：${forgeProgressText(settings)}`);
     if (settings.expSelectors) lines.push(`經驗：${formatPercents(readExpPercents(settings))}`);
-    if (settings.stageEnabled && settings.stageSelector) {
-      const location = readLocation(settings);
-      const reached = planMove(settings) === null;
-      lines.push(`位置：${location ? location.text : '?'} → ${targetLabel(settings)}${reached ? '（已到達）' : ''}`);
+    if (settings.stageEnabled && (settings.stageSelector || isApiHunt(settings))) {
+      const reached = (isApiHunt(settings) ? planApiMove(settings) : planMove(settings)) === null;
+      lines.push(`位置：${dashboardLocationText(settings) || '?'} → ${targetLabel(settings)}${reached ? '（已到達）' : ''}`);
     }
     const durabilities = Array.from({ length: CHARACTER_COUNT }, (_, characterIndex) =>
       settings[equipKey(characterIndex, 'Enabled')] ? readNumber(settings[equipKey(characterIndex, 'Durability')]) ?? '?' : '-'
@@ -5402,6 +5416,7 @@
       refreshGameView(HUNT_QUERY_KEYS);
       rememberApiPlace(data && data.huntZone !== undefined ? data : data && data.huntInfo);
       if (move.path === '/api/move/0') state.apiDirectMoveFailed = false;
+      forgetZoneUsers();
       setStatus(`${move.from}：API ${move.label}`);
       const heroes = huntTeam();
       if (heroes.some((hero) => hero.actionState === 1)) {
@@ -5437,6 +5452,7 @@
       state.apiHuntFailures = 0;
       refreshGameView(HUNT_QUERY_KEYS);
       state.apiMoving = false;
+      forgetZoneUsers();
       rememberApiPlace(data && data.huntZone !== undefined ? data : data && data.huntInfo);
       const places = loadPlaces();
       setStatus(`API 完成移動，到了${state.huntInfo ? places.zones[state.huntInfo.huntZone] || state.huntInfo.zoneName || '' : ''}`);
@@ -5479,7 +5495,7 @@
       const data = await requestGameApi(`/api/hunt${type ? `?type=${type}` : ''}`, { method: 'POST' });
       if (runId !== state.runId) return;
       state.apiHuntFailures = 0;
-      refreshGameView(HUNT_QUERY_KEYS);
+      syncGameHuntView(data);
       clearItemSkips();
       if (!type) state.clickCountA++;
       setStatus(
@@ -5720,8 +5736,10 @@
       return;
     }
 
-    // 休息、移動中也要看：紅名可能趁休息時打過來，先換好目標，休息完就走
-    const inTown = inTownNow(settings);
+    // 休息中也要看：紅名可能趁休息時打過來，先換好目標，休息完就走。
+    // 城鎮和移動途中不看：從城鎮出發時伺服器回的還是城鎮的玩家，會把城裡的紅名當成目的地的
+    const moving = isApiHunt(settings) && (state.apiMoving || huntTeam().some((hero) => hero.actionState === 1));
+    const inTown = inTownNow(settings) || moving;
     if (settings.playerEscapeEnabled && !inTown && Date.now() - state.zoneUsersAt > ZONE_USERS_FRESH_MILLISECONDS) {
       const runId = state.runId;
       state.zoneUsersAt = Date.now();
@@ -6485,6 +6503,9 @@
       event.target.closest('.card-rule').remove();
       updateCardRulesFromRows();
       saveSettings(readSettingsFromPanel());
+    } else if (action === 'enchant-plan-clear') {
+      enchantPlan.clear();
+      renderMaterialSummary();
     } else if (action === 'draw-clear') {
       if (window.confirm('要清除這個帳號的抽卡紀錄嗎？清掉就找不回來')) {
         writeJsonStorage(DRAW_LOG_KEY, []);
@@ -6890,6 +6911,12 @@
               const data = parseJsonText(responseText);
               const completeMatch = method === 'POST' && url.match(FORGE_COMPLETE_PATTERN);
               if (data) rememberItemNames(data);
+              // 遊戲自己讀物品欄（例如打開物品頁、買完東西）就順便更新材料庫存，不用另外打請求
+              if (data && method === 'GET' && Array.isArray(data.mines)) {
+                setMineStock(data);
+                if (activeTab === 'forge') renderForgePlanOverview();
+                if (activeTab === 'recipe') renderRecipePicker();
+              }
               if (method === 'POST' && FORGE_START_PATTERN.test(url)) rememberForgeStart(requestBody, data);
               if (completeMatch) rememberForgeComplete(completeMatch[1], data).catch((error) => console.error('鍛造材料紀錄失敗', error));
             }
@@ -8806,8 +8833,7 @@
     return result;
   }
 
-  function enchantRequirements() {
-    const samples = [...forgedRecords().values()].filter((equipment) => Array.isArray(equipment.materials));
+  function enchantRequirements(samples = [...forgedRecords().values()].filter((equipment) => Array.isArray(equipment.materials))) {
     const hasMaterial = (sample, name) => sample.materials.some(([material]) => material === name);
     const enchantNames = [...new Set(samples.flatMap((sample) => Object.keys(sample.enchantments || {})))];
     return enchantNames
@@ -8883,6 +8909,109 @@
         }${count < 3 ? '<span class="hint">（件數少，參考就好）</span>' : ''}</div>`;
       })
       .join('') + freeHtml;
+  }
+
+  // 附魔推測：自己填一份材料，照過去鍛造紀錄估會出哪些附魔、機率多少、數值大概多少。
+  // 每種附魔先找「來源材料」（出過這個附魔的裝備全都有放），再看同樣放了來源、數量差不多的裝備有幾成出現
+  const enchantPlan = new Map();
+
+  function enchantSamples(type, forger) {
+    return [...forgedRecords().values()].filter(
+      (record) => Array.isArray(record.materials) && (!type || record.type === type) && (!forger || record.forger === forger)
+    );
+  }
+
+  function materialQuantity(materials, names) {
+    return materials.filter(([name]) => names.includes(name)).reduce((sum, [, quantity]) => sum + (Number(quantity) || 0), 0);
+  }
+
+  // 只用一個變數（來源材料數量）的直線；點太少或數量都一樣就不估
+  function fitLine(points) {
+    if (points.length < 3) return null;
+    const meanX = points.reduce((sum, [x]) => sum + x, 0) / points.length;
+    const meanY = points.reduce((sum, [, y]) => sum + y, 0) / points.length;
+    const spread = points.reduce((sum, [x]) => sum + (x - meanX) ** 2, 0);
+    if (!spread) return null;
+    const slope = points.reduce((sum, [x, y]) => sum + (x - meanX) * (y - meanY), 0) / spread;
+    return (x) => meanY + slope * (x - meanX);
+  }
+
+  function predictEnchants(samples, plan) {
+    const planned = [...plan.entries()].filter(([, quantity]) => quantity > 0);
+    const plannedNames = planned.map(([name]) => name);
+    const plannedTotal = (names) => planned.filter(([name]) => names.includes(name)).reduce((sum, [, quantity]) => sum + quantity, 0);
+    return enchantRequirements(samples).map(({ enchant, count, min, max, required }) => {
+      const sources = required.map(({ name }) => name);
+      if (!sources.length) return { enchant, count, min, max, sources, status: 'unknown' };
+      const missing = sources.filter((name) => !plannedNames.includes(name));
+      if (missing.length) return { enchant, count, min, max, sources, status: 'missing', missing };
+      const quantity = plannedTotal(sources);
+      const withSources = samples.filter((sample) => sources.every((name) => sample.materials.some(([material]) => material === name)));
+      // 數量差不多的（一半到兩倍）才拿來算機率；太少就用全部放過來源的
+      const similar = withSources.filter((sample) => {
+        const used = materialQuantity(sample.materials, sources);
+        return used >= quantity / 2 && used <= quantity * 2;
+      });
+      const basis = similar.length >= 3 ? similar : withSources;
+      const appeared = basis.filter((sample) => sample.enchantments && enchant in sample.enchantments);
+      const line = fitLine(
+        samples
+          .filter((sample) => sample.enchantments && enchant in sample.enchantments)
+          .map((sample) => [materialQuantity(sample.materials, sources), Number(sample.enchantments[enchant]) || 0])
+      );
+      const estimate = line ? Math.max(0, Math.round(line(quantity))) : null;
+      return { enchant, count, min, max, sources, status: 'possible', quantity, rate: appeared.length / basis.length, basis: basis.length, similar: basis === similar, estimate };
+    });
+  }
+
+  function enchantPlannerHtml(type, forger) {
+    const samples = enchantSamples(type, forger);
+    if (!samples.length) return '<div class="hint">還沒有鍛造材料紀錄：之後在這個瀏覽器鍛造就會自動記</div>';
+    const usage = new Map();
+    samples.forEach((sample) => sample.materials.forEach(([name]) => usage.set(name, (usage.get(name) || 0) + 1)));
+    const inputs = [...usage.entries()]
+      .sort(([, first], [, second]) => second - first)
+      .map(
+        ([name, used]) => `<label style="display:inline-flex;align-items:center;gap:2px;margin:1px 6px 1px 0" title="放過 ${used} 件">${escapeHtml(name)}
+          <input data-enchant-material="${escapeHtml(name)}" type="number" min="0" value="${enchantPlan.get(name) || ''}" placeholder="0" style="width:42px;flex:none"></label>`
+      )
+      .join('');
+    return `<div class="hint">填這次要放的材料數量（${type || '全部類型'}，${samples.length} 件紀錄），下面會即時估附魔</div>
+      <div style="margin:4px 0">${inputs}</div>
+      <div class="row"><button data-action="enchant-plan-clear">清空材料</button></div>
+      <div data-role="enchant-prediction">${enchantPredictionHtml(samples)}</div>`;
+  }
+
+  function enchantPredictionHtml(samples) {
+    if (![...enchantPlan.values()].some((quantity) => quantity > 0)) return '<div class="hint">還沒填材料</div>';
+    const results = predictEnchants(samples, enchantPlan);
+    if (!results.length) return '<div class="hint">這些紀錄裡還沒有出過附魔的裝備</div>';
+    const possible = results.filter((result) => result.status === 'possible').sort((first, second) => second.rate - first.rate);
+    const rows = possible
+      .map(({ enchant, rate, basis, similar, estimate, min, max, count }) => {
+        const value = estimate === null ? (min === max ? `${min}` : `${min}～${max}`) : `約 ${estimate}`;
+        const unsure = basis < 3 || count < 3;
+        return `<tr style="opacity:${unsure ? 0.6 : 1}"><td style="text-align:left;color:#c4b5fd">${escapeHtml(enchant)}</td><td>${Math.round(rate * 100)}%</td><td>${value}</td>
+          <td style="text-align:left" class="hint">${basis} 件${similar ? '數量相近' : '放過來源'}的裝備${unsure ? '，件數少' : ''}</td></tr>`;
+      })
+      .join('');
+    const missing = results
+      .filter((result) => result.status === 'missing')
+      .map(({ enchant, missing: names }) => `${escapeHtml(enchant)}（要放 ${names.map(escapeHtml).join('、')}）`)
+      .join('、');
+    const unknown = results.filter((result) => result.status === 'unknown').map(({ enchant }) => escapeHtml(enchant)).join('、');
+    return `${rows ? `<table class="combat"><tr><th style="text-align:left">附魔</th><th>機率</th><th>數值</th><th style="text-align:left">依據</th></tr>${rows}</table>` : '<div class="hint">這份材料估不出會出哪種附魔</div>'}
+      ${missing ? `<div class="hint" style="margin-top:4px">不會出（沒放來源材料）：${missing}</div>` : ''}
+      ${unknown ? `<div class="hint" style="color:#f59e0b">來源還看不出來（可能不只一種材料會給）：${unknown}</div>` : ''}
+      <div class="hint">機率＝以前放了同樣來源材料、數量差不多的裝備有幾成出現；數值用來源材料數量畫直線估。附魔本來就看運氣，件數少的淡色顯示，參考就好</div>`;
+  }
+
+  function renderEnchantPrediction() {
+    const box = panel.querySelector('[data-role="enchant-prediction"]');
+    if (!box) return;
+    const type = panel.querySelector('[data-role="material-type"]').value;
+    const forger = panel.querySelector('[data-role="material-forger"]').value;
+    box.innerHTML = enchantPredictionHtml(enchantSamples(type, forger));
   }
 
   // 給配方頁用：照迴歸結果估這個配方換成普通品質的數值；有沒分析過的材料就不估
@@ -9103,6 +9232,12 @@
       }
       box.innerHTML = result.header + result.cards;
       lastMaterialCards = { html: `<div style="grid-column:1/-1">${result.header}</div>${result.cards}`, title: `材料屬性傾向${forgerSelect.value ? `・${forgerSelect.value}` : ''}` };
+      return;
+    }
+    if (mode === 'enchant') {
+      const html = enchantPlannerHtml(typeSelect.value, forgerSelect.value);
+      panel.querySelector('[data-role="material-summary"]').innerHTML = html;
+      lastMaterialCards = { html: `<div style="grid-column:1/-1">${html}</div>`, title: `附魔推測：${typeSelect.value || '全部類型'}` };
       return;
     }
     if (mode === 'regression') {
@@ -9383,15 +9518,23 @@
 
   // 配方用勾的：材料庫存一列一個，勾了就算進配方，跟「配方」文字欄雙向同步；順便看剩多少、夠鍛幾爐
   let mineStock = [];
+  let mineStockAt = 0;
+  // 庫存超過這麼久，切到鍛造、配方頁時重讀一次（中間可能去拍賣買了材料）
+  const MINE_STOCK_FRESH_MILLISECONDS = 60000;
 
-  async function refreshMineStock() {
-    const items = await requestGameApi(ITEMS_API);
-    rememberItemNames(items);
+  function setMineStock(items) {
     mineStock = (items.mines || []).map((mine) => ({
       id: mine.id,
       name: mine.name || itemName(mine.id),
       have: Number(mine.available ?? mine.quantity) || 0,
     }));
+    mineStockAt = Date.now();
+  }
+
+  async function refreshMineStock() {
+    const items = await requestGameApi(ITEMS_API);
+    rememberItemNames(items);
+    setMineStock(items);
     return mineStock;
   }
 
@@ -10062,6 +10205,75 @@
     }
     // 退路：假裝切回這個分頁，遊戲會重抓已過期的資料
     document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
+  }
+
+  // 狩獵頁的戰報是頁面自己的 state：開頁時從 localStorage 的 huntReports（最近 5 場）讀，之後只有在遊戲裡按才會加。
+  // API 打的那場照遊戲的格式寫進 huntReports，再找到頁面上那個 state 換掉，畫面才會跟著變；不在狩獵頁時下次開頁也讀得到
+  const GAME_HUNT_REPORTS_KEY = 'huntReports';
+  const GAME_HUNT_REPORTS_LIMIT = 5;
+
+  function findHuntReportsQueue(previousFirstId) {
+    for (const element of document.querySelectorAll('body > *')) {
+      const containerKey = Object.keys(element).find((key) => key.startsWith('__reactContainer$'));
+      if (!containerKey) continue;
+      const stack = [element[containerKey]];
+      for (let visited = 0; stack.length && visited < 5000; visited++) {
+        const fiber = stack.pop();
+        if (!fiber) continue;
+        // 用第一場戰報的 id 認：只有狩獵頁那個 state 會剛好跟 huntReports 一樣
+        for (let hook = fiber.tag === 0 ? fiber.memoizedState : null; hook; hook = hook.next) {
+          const value = hook.memoizedState;
+          if (hook.queue && typeof hook.queue.dispatch === 'function' && Array.isArray(value) && value[0] && Array.isArray(value[0].messages) && value[0].id === previousFirstId) {
+            return hook.queue;
+          }
+        }
+        stack.push(fiber.sibling, fiber.child);
+      }
+    }
+    return null;
+  }
+
+  function pushHuntReportToView(report) {
+    let reports = [];
+    try {
+      reports = JSON.parse(localStorage.getItem(GAME_HUNT_REPORTS_KEY) || '[]');
+    } catch {
+      // 讀不到就當沒有
+    }
+    const previousFirstId = reports[0] && reports[0].id;
+    const next = [report, ...reports].slice(0, GAME_HUNT_REPORTS_LIMIT);
+    try {
+      localStorage.setItem(GAME_HUNT_REPORTS_KEY, JSON.stringify(next));
+    } catch {
+      // 存不了就只更新畫面
+    }
+    const queue = previousFirstId === undefined ? null : findHuntReportsQueue(previousFirstId);
+    if (queue) queue.dispatch(next);
+  }
+
+  // 照遊戲自己按「原地掛機」後的做法更新畫面：隊伍狀態直接換成回應裡的，不另外重抓，伺服器看到的請求跟手動一樣
+  function syncGameHuntView(data) {
+    try {
+      const client = findGameQueryClient();
+      if (!client || !data) {
+        refreshGameView(HUNT_QUERY_KEYS);
+        return;
+      }
+      if (data.report) pushHuntReportToView(data.report);
+      client.setQueryData(['profile'], (profile) => profile && { ...profile, money: data.money ?? profile.money, huntCount: data.huntCount ?? profile.huntCount });
+      if (data.huntInfo) {
+        const before = client.getQueryData(['heroes', 'hunt']);
+        client.cancelQueries({ queryKey: ['heroes', 'hunt'], exact: true });
+        client.setQueryData(['heroes', 'hunt'], data.huntInfo);
+        if (!before || before.huntZone !== data.huntInfo.huntZone || before.huntStage !== data.huntInfo.huntStage) {
+          client.invalidateQueries({ queryKey: ['zone', 'users'] });
+        }
+      }
+      if (Array.isArray(data.equipmentChanges) && data.equipmentChanges.length) client.invalidateQueries({ queryKey: ['equipments'] });
+    } catch (error) {
+      console.error('更新狩獵畫面失敗', error);
+      refreshGameView(HUNT_QUERY_KEYS);
+    }
   }
 
   function forgeByApiHeroIds(settings) {
@@ -11198,6 +11410,14 @@
   renderTrainStatus();
   // data-role 的欄位不會進設定的 change 處理，篩選道具要自己接
   panel.querySelector('[data-role="draw-item"]').addEventListener('change', renderDrawStats);
+  panel.querySelector('[data-role="material-summary"]').addEventListener('input', (event) => {
+    const name = event.target.dataset.enchantMaterial;
+    if (name === undefined) return;
+    const quantity = Number(event.target.value) || 0;
+    if (quantity > 0) enchantPlan.set(name, quantity);
+    else enchantPlan.delete(name);
+    renderEnchantPrediction();
+  });
   // 一開頁面就讀帳號，面板標題才看得出是哪個帳號（之後回報、記收益時會再更新）
   requestGameApi(PROFILE_API)
     .then(rememberProfile)
