@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.08
+// @version      3.10
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -167,6 +167,9 @@
     playerBlacklist: '',
     playerEscapeArea: '',
     playerEscapeNumber: 1,
+    // 躲開危險玩家後，幾分鐘沒再遇到就走回原本掛機的關卡
+    playerReturnEnabled: false,
+    playerReturnMinutes: 10,
     // 這些關卡的危險玩家不理（前幾層常有小號紅名），例如「1-2」「大草原1-2」「老鼠洞」
     playerIgnoreStages: PLAYER_IGNORE_DEFAULT,
     resourcePausePercent: 20,
@@ -872,8 +875,9 @@
         <label class="row"><input data-field="playerEscapeRed" type="checkbox" style="flex:none;width:auto"> 紅名玩家算危險</label>
         <div class="row">黑名單<input data-field="playerBlacklist" placeholder="玩家暱稱或 ID，逗號分隔"></div>
         <div class="row">不理會的關卡<input data-field="playerIgnoreStages" placeholder="例：大草原1-3、黑暗山洞1-3"></div>
+        <div class="row"><label style="flex:none"><input data-field="playerReturnEnabled" type="checkbox" style="width:auto"> 躲開後</label> ${numberInput('playerReturnMinutes', 'min="1"')} 分鐘沒再遇到危險玩家，就走回原本掛機的關卡</div>
         <div class="hint">不理會的關卡寫法：「大草原1-3」＝大草原第 1～3 關；「1-2」＝每個區域的第 1、2 關；「老鼠洞」＝整個老鼠洞；多個用逗號或頓號分開</div>
-        <div class="hint">觸發時把「移動」頁的目標改成這裡並打開自動移動，走過去後照常掛機，不會自己改回來。血量：到了避難關卡血量還是低才暫停（死亡照樣馬上暫停）。玩家：每 15 秒看一次同地圖的玩家（城鎮不看）；移動途中路過的關卡不管，到了目標關卡才看；分支退到入口之前會回到母區域；退到第 1 關還有就只提醒</div>
+        <div class="hint">觸發時把「移動」頁的目標改成這裡並打開自動移動，走過去後照常掛機。血量：到了避難關卡血量還是低才暫停（死亡照樣馬上暫停）。玩家：每 15 秒看一次同地圖的玩家（城鎮不看）；移動途中路過的關卡不管，到了目標關卡才看；分支退到入口之前會回到母區域；退到第 1 關還有就只提醒</div>
       </fieldset>
       <label class="row"><input data-field="verifyEnabled" type="checkbox" style="flex:none;width:auto"> 畫面出現驗證框就暫停</label>
       <div class="row">關鍵字<input data-field="verifyKeyword" placeholder="驗證框上的文字"></div>
@@ -4058,6 +4062,47 @@
     return Boolean(town && location && location.text.includes(town));
   }
 
+  // 躲危險玩家前的掛機關卡和最後一次看到危險玩家的時間；存起來，重新整理後也走得回去
+  const PLAYER_RETURN_KEY = 'autoClickerV2PlayerReturn';
+
+  function notePlayerDanger(settings) {
+    const saved = readJsonStorage(PLAYER_RETURN_KEY, null);
+    writeJsonStorage(
+      PLAYER_RETURN_KEY,
+      saved && saved.area
+        ? { ...saved, dangerAt: Date.now() }
+        : { area: settings.stageTargetArea, number: settings.stageTargetNumber, dangerAt: Date.now() }
+    );
+  }
+
+  function noteEscapedTarget(label) {
+    const saved = readJsonStorage(PLAYER_RETURN_KEY, null);
+    if (saved) writeJsonStorage(PLAYER_RETURN_KEY, { ...saved, escapedTo: label });
+  }
+
+  // 一段時間沒再看到危險玩家就走回原本的關卡；中間自己改過目標就當作不用回去
+  function returnAfterPlayerEscape(settings) {
+    const saved = readJsonStorage(PLAYER_RETURN_KEY, null);
+    if (!saved || !saved.area || !settings.playerEscapeEnabled || !settings.playerReturnEnabled) return false;
+    const here = targetLabel(settings);
+    const original = targetLabel({ stageTargetArea: saved.area, stageTargetNumber: saved.number });
+    if ((saved.escapedTo && saved.escapedTo !== here) || original === here) {
+      writeJsonStorage(PLAYER_RETURN_KEY, null);
+      return false;
+    }
+    const minutes = Math.max(1, Number(settings.playerReturnMinutes) || 0);
+    if (Date.now() - saved.dangerAt < minutes * 60000) return false;
+    writeJsonStorage(PLAYER_RETURN_KEY, null);
+    state.playerEscapeTarget = '';
+    setPanelField('stageEnabled', true);
+    setPanelField('stageTargetArea', saved.area);
+    setPanelField('stageTargetNumber', saved.number);
+    const message = `${minutes} 分鐘沒再遇到危險玩家，走回原本的 ${original}`;
+    setStatus(message);
+    showToast(message);
+    return true;
+  }
+
   // 回傳 true＝換了目標，這一步先不做別的
   function escapeFromPlayers(settings) {
     // 城鎮不管（沒有關卡可以退，紅名在城裡很常見）；還在往目標走（路過的關卡，或剛換目標正在走）也不管，到了目標才看
@@ -4070,6 +4115,7 @@
       state.playerAlertKey = '';
       return false;
     }
+    notePlayerDanger(settings);
     const names = found.map((user) => `${user.nickname || user.id}${user.nameColor === RED_NAME_COLOR ? '（紅名）' : ''}`).join('、');
     const reason = `同地圖有危險玩家：${names}`;
     // 目標是自己剛換的（已經避難或退過）就不再回避難關卡，免得在兩個有人的地方來回跑
@@ -4077,11 +4123,13 @@
     if (!escaped && settings.playerEscapeMode === 'escape' && settings.playerEscapeArea) {
       escapeTo(settings, 'playerEscape', reason);
       state.playerEscapeTarget = targetLabel(readSettingsFromPanel());
+      noteEscapedTarget(state.playerEscapeTarget);
       return true;
     }
     const back = previousStage(settings, place);
     if (back) {
       state.playerEscapeTarget = moveTargetTo(back.area, back.stage, `${reason}，往回退一關`);
+      noteEscapedTarget(state.playerEscapeTarget);
       return true;
     }
     if (state.playerAlertKey !== names) {
@@ -4152,6 +4200,7 @@
       if (elements.length && elements.every((element) => dismissedVerifyElements.has(element))) return false;
       dismissedVerifyElements = new Set();
     }
+    holdForgeForCaptcha();
     const resumeMode = state.forgeMode;
     const afterVerify = settings.verifyAutoResume ? '，完成後會自動繼續' : '後按開始';
     pauseWithAlert(`偵測到「${settings.verifyKeyword}」，請手動完成驗證${afterVerify}`);
@@ -4215,7 +4264,16 @@
 
   // API 被要求驗證時畫面不一定有驗證框，改問伺服器 /api/captcha：沒有待完成的驗證（pendingCaptchaId 空的）就算完成
   const CAPTCHA_POLL_MILLISECONDS = 8000;
+  // 同一個分頁的掛機和 API 鍛造：任一邊遇到活人驗證就兩邊都先停，驗證完各自接著做（鍛造會自己問 /api/captcha）
+  function holdForgeForCaptcha() {
+    if (!forgeRunner.running || forgeRunner.captchaWaiting) return;
+    forgeRunner.captchaWaiting = true;
+    forgeRunner.captchaCheckedAt = 0;
+    forgeLog('掛機遇到活人驗證，鍛造也先停，完成後會自動繼續');
+  }
+
   function pauseForCaptcha(settings) {
+    holdForgeForCaptcha();
     const resumeMode = state.forgeMode;
     const afterVerify = settings.verifyAutoResume ? '，完成後會自動繼續' : '後按開始';
     pauseWithAlert(`伺服器要求活人驗證，請完成驗證${afterVerify}`);
@@ -5751,6 +5809,10 @@
       return;
     }
     if (!inTown && escapeFromPlayers(settings)) {
+      state.timerId = backgroundTimer.setTimeout(() => tick(settings), 0);
+      return;
+    }
+    if (!moving && returnAfterPlayerEscape(settings)) {
       state.timerId = backgroundTimer.setTimeout(() => tick(settings), 0);
       return;
     }
@@ -10614,7 +10676,11 @@
         const plan = forgeApiPlan(settings, idle.id);
         if (!plan.recipe) throw new Error(`${idle.name} 還沒設定配方`);
         const { body, summary, forgesLeft } = await buildForgeRequest(plan, idle.id, freeShop).catch((error) => {
-          throw new Error(`${idle.name}：${error.message}`);
+          throw Object.assign(new Error(`${idle.name}：${error.message}`), {
+            captchaRequired: error.captchaRequired,
+            transient: error.transient,
+            status: error.status,
+          });
         });
         if (cancelled()) return;
         await sendForge(body);
@@ -10636,8 +10702,9 @@
         forgeRunner.captchaWaiting = true;
         forgeRunner.captchaCheckedAt = 0;
         dashboard.alert = '鍛造：伺服器要求活人驗證';
-        alertUser('鍛造：伺服器要求活人驗證，完成後會自動繼續', { paused: true });
         forgeLog('伺服器要求活人驗證，完成後會自動繼續');
+        if (state.running && !state.forgeMode) pauseForCaptcha(readSettingsFromPanel());
+        else alertUser('鍛造：伺服器要求活人驗證，完成後會自動繼續', { paused: true });
         return;
       }
       if ((error.transient || error.status) && forgeRunner.failures < FORGE_RETRY_LIMIT) {
