@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.17
+// @version      3.18
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -752,6 +752,13 @@
       <button data-action="close" title="關閉：這個分頁的腳本全部停止（重新整理頁面才會恢復）">×</button>
     </div>
     <div data-role="body">
+    <div class="row">
+      <button data-action="start">開始</button>
+      <button data-action="stop">停止</button>
+    </div>
+    <div data-role="status" style="margin-top:6px">待命中</div>
+    <div data-role="monitor" class="monitor"></div>
+    <hr class="divider">
     <div class="tab-groups">${TAB_GROUPS.map(([id, name]) => `<button data-tab-group="${id}">${name}</button>`).join('')}</div>
     <div class="tabs">${TABS.map(([id, name]) => `<button data-tab-button="${id}" data-group="${tabGroupOf(id)}">${name}</button>`).join('')}</div>
 
@@ -804,30 +811,38 @@
 
     <div data-tab="forge">
       <div class="row"><button data-action="forge-start" style="font-weight:bold">開始鍛造</button><button data-action="forge-stop">停止鍛造</button></div>
-      <div class="hint">勾「用 API 鍛造」：鍛造自己跑，可以跟下方「開始」的掛機同時進行，人也不用待在鍛造頁。沒勾（按鈕鍛造）：要待在鍛造頁，跟掛機只能二選一，按其中一個開始會停掉另一個。下方「開始」只管掛機</div>
+      <div class="hint">勾「用 API 鍛造」：鍛造自己跑，可以跟上方「開始」的掛機同時進行，人也不用待在鍛造頁。沒勾（按鈕鍛造）：要待在鍛造頁，跟掛機只能二選一，按其中一個開始會停掉另一個。上方「開始」只管掛機</div>
       <fieldset class="group">
         <legend>API 鍛造（用「配方」頁的配方）</legend>
         <label class="row"><input data-field="forgeByApiEnabled" type="checkbox" style="flex:none;width:auto"> <b>用 API 鍛造</b>（不用設下面的按鈕與鍛造坊）</label>
         <div class="row">開 ${numberInput('forgeByApiCount', 'min="0"')} 爐（0＝不限）<button data-action="forge-api-heroes">讀取角色</button></div>
-        <label class="row"><input data-field="forgeAutoNameEnabled" type="checkbox" style="flex:none;width:auto"> <b>每天自動換名稱</b>：過 00:00 先暫停開爐，等測名表有好名稱再換上繼續</label>
-        <div class="row">每 ${numberInput('forgeAutoNameMinutes', 'min="1"')} 分鐘抓一次測名表，六圍平均 ≥ ${numberInput('forgeAutoNamePercent', 'min="0" max="100" step="0.5"')} % 就用（0＝有資料就用最高的）</div>
-        <div class="hint">換名稱時勾選角色的名稱、配方頁的名稱都會換成今天六圍平均最高的（同名稱測過好幾次取平均）。暫停期間做好的爐照樣收。手動開始、重整頁面也一樣：今天的名稱還沒定就先等。當天自己改過名稱就用自己的，下一個 00:00 才換</div>
-        <div class="subhead">鍛造計畫（勾選的角色接下來會鍛造什麼）</div>
-        <div data-role="forge-plan-overview" style="font-size:12px"></div>
-        <label class="row"><input data-field="forgeFillGameForm" type="checkbox" style="flex:none;width:auto"> 送出前把類型、名稱、材料也填到遊戲的鍛造頁（停在鍛造頁、而且下面按鈕區設過該鍛造坊的「切換」按鈕才會切過去填）</label>
+        <fieldset class="group">
+          <legend>每天自動換名稱</legend>
+          <label class="row"><input data-field="forgeAutoNameEnabled" type="checkbox" style="flex:none;width:auto"> <b>每天自動換名稱</b>：過 00:00 先暫停開爐，等測名表有好名稱再換上繼續</label>
+          <div class="row">每 ${numberInput('forgeAutoNameMinutes', 'min="1"')} 分鐘抓一次測名表，六圍平均 ≥ ${numberInput('forgeAutoNamePercent', 'min="0" max="100" step="0.5"')} % 就用（0＝有資料就用最高的）</div>
+          <div class="hint">換名稱時勾選角色的名稱、配方頁的名稱都會換成今天六圍平均最高的（同名稱測過好幾次取平均）。暫停期間做好的爐照樣收。手動開始、重整頁面也一樣：今天的名稱還沒定就先等。當天自己改過名稱就用自己的，下一個 00:00 才換</div>
+        </fieldset>
+        <fieldset class="group">
+          <legend>鍛造計畫（勾選的角色接下來會鍛造什麼）</legend>
+          <div data-role="forge-plan-overview" style="font-size:12px"></div>
+        </fieldset>
+        <label class="row"><input data-field="forgeFillGameForm" type="checkbox" style="flex:none;width:auto"> 送出前把類型、名稱、材料也填到遊戲的鍛造頁（停在鍛造頁、而且「按鈕鍛造」區設過該鍛造坊的「切換」按鈕才會切過去填）</label>
         <input data-field="forgeByApiHeroIds" type="hidden"><input data-field="forgeByApiPlans" type="hidden">
         <div data-role="forge-api-heroes" style="font-size:12px;max-height:150px;overflow:auto"></div>
         <div class="hint">勾選的角色好了就收、閒著就用自己的類型與配方開下一爐；名稱沒填就用「配方」頁的名稱。鍛造坊自動找空的；材料不夠會暫停提醒，鍛造體力照下面的設定補。<br>配方在「配方」頁勾好後按「存成這個角色的自動鍛造配方」，或在這裡按「帶入」</div>
       </fieldset>
-      <label>巡視間隔 ${numberInput('forgeIntervalMinSeconds', 'min="1" step="0.1"')} ～ ${numberInput('forgeIntervalMaxSeconds', 'min="1" step="0.1"')} 秒隨機</label>
-      <div class="row">共用按鈕 ${pickButtonHtml('forgeStart', '開始鍛造', { text: true })} ${pickButtonHtml('forgeFinish', '完成鍛造', { text: true })}</div>
-      <div>鍛造坊（切換按鈕與次數，次數 0 或沒選切換按鈕就不做）</div>
-      ${Array.from({ length: FORGE_SHOP_COUNT }, (_, index) => {
-        const key = (name) => forgeKey(index, name);
-        return `<div class="row">${index + 1}. ${pickButtonHtml(key('Switch'), '切換', { text: true })}
-          次數 ${numberInput(key('Count'), 'min="0"')}
-          ${clearButtonHtml([key('Switch'), `${key('Switch')}Text`])}</div>`;
-      }).join('')}
+      <fieldset class="group" data-fold="closed">
+        <legend>按鈕鍛造（沒勾「用 API 鍛造」才用）</legend>
+        <label>巡視間隔 ${numberInput('forgeIntervalMinSeconds', 'min="1" step="0.1"')} ～ ${numberInput('forgeIntervalMaxSeconds', 'min="1" step="0.1"')} 秒隨機</label>
+        <div class="row">共用按鈕 ${pickButtonHtml('forgeStart', '開始鍛造', { text: true })} ${pickButtonHtml('forgeFinish', '完成鍛造', { text: true })}</div>
+        <div>鍛造坊（切換按鈕與次數，次數 0 或沒選切換按鈕就不做）</div>
+        ${Array.from({ length: FORGE_SHOP_COUNT }, (_, index) => {
+          const key = (name) => forgeKey(index, name);
+          return `<div class="row">${index + 1}. ${pickButtonHtml(key('Switch'), '切換', { text: true })}
+            次數 ${numberInput(key('Count'), 'min="0"')}
+            ${clearButtonHtml([key('Switch'), `${key('Switch')}Text`])}</div>`;
+        }).join('')}
+      </fieldset>
       ${supplyGroupHtml(SUPPLY_GROUPS.find((group) => group.id === 'forge'))}
     </div>
 
@@ -1126,14 +1141,6 @@
       <div class="row"><button data-action="api-record">開始錄製</button><button data-action="api-copy">複製</button><button data-action="api-clear">清除</button></div>
       <textarea data-role="api-log" readonly rows="12" style="width:100%;box-sizing:border-box;font:11px monospace"></textarea>
     </div>
-
-    <hr class="divider">
-    <div class="row">
-      <button data-action="start">開始</button>
-      <button data-action="stop">停止</button>
-    </div>
-    <div data-role="status" style="margin-top:6px">待命中</div>
-    <div data-role="monitor" class="monitor"></div>
     </div>
   `;
   Object.assign(panel.style, {
@@ -1166,7 +1173,12 @@
     [data-auto-clicker] .tabs button:hover { background:#3a3a42; }
     [data-auto-clicker] .tabs button[data-active] { background:#fff; color:#111; border-color:#fff; font-weight:bold; }
     [data-auto-clicker] fieldset.group { border:1px solid #3a3a40; border-radius:8px; margin:8px 0; padding:4px 8px 8px; }
-    [data-auto-clicker] fieldset.group legend { font-weight:bold; padding:0 4px; }
+    [data-auto-clicker] fieldset.group legend { font-weight:bold; padding:0 4px; cursor:pointer; user-select:none; }
+    [data-auto-clicker] fieldset.group > legend::before { content:'▾ '; color:#7a7a84; }
+    [data-auto-clicker] fieldset.group.folded > legend::before { content:'▸ '; }
+    [data-auto-clicker] fieldset.group.folded { padding-bottom:0; }
+    [data-auto-clicker] fieldset.group fieldset.group { margin:6px 0; padding:2px 6px 6px; }
+    [data-auto-clicker] fieldset.group.folded > :not(legend) { display:none !important; }
     [data-auto-clicker] .hint { font-size:12px; color:#a0a0aa; margin:3px 0; }
     [data-auto-clicker] .hint.fold { cursor:pointer; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:1; overflow:hidden; }
     [data-auto-clicker] .hint.fold::before { content:'▸ '; color:#7a7a84; }
@@ -1196,6 +1208,25 @@
     if (hint.closest('.choices') || hint.textContent.trim().length < HINT_FOLD_MIN_LENGTH) return;
     hint.classList.add('fold');
     hint.title = '點一下展開／收起';
+  });
+  // 區塊點標題收起／展開；每個區塊的開關記在這台瀏覽器，重整後照舊
+  const FOLDED_GROUPS_KEY = 'autoClickerV2FoldedGroups';
+  const foldedGroups = readJsonStorage(FOLDED_GROUPS_KEY, {});
+  panel.querySelectorAll('fieldset.group').forEach((group) => {
+    const legend = group.querySelector(':scope > legend');
+    if (!legend) return;
+    const key = legend.textContent.trim();
+    const folded = key in foldedGroups ? foldedGroups[key] : group.dataset.fold === 'closed';
+    group.classList.toggle('folded', folded);
+    legend.title = '點一下收起／展開';
+    legend.addEventListener('click', () => {
+      foldedGroups[key] = group.classList.toggle('folded');
+      try {
+        localStorage.setItem(FOLDED_GROUPS_KEY, JSON.stringify(foldedGroups));
+      } catch {
+        // 記不住就只影響這次
+      }
+    });
   });
   panel.addEventListener('click', (event) => {
     const hint = event.target.closest('.hint.fold');
