@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.20
+// @version      3.21
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -939,7 +939,7 @@
       <div class="row">音量<input data-field="alertVolume" type="range" min="0" max="100"><button data-action="test-sound">試聽</button></div>
       <label class="row"><input data-field="alertPopupEnabled" type="checkbox" style="flex:none;width:auto"> 彈出提示視窗</label>
       <label class="row"><input data-field="alertNotifyEnabled" type="checkbox" style="flex:none;width:auto"> 系統通知＋分頁標題閃爍</label>
-      <label class="row"><input data-field="showAccountName" type="checkbox" style="flex:none;width:auto"> 面板標題、分頁標題和提醒顯示帳號名稱（例如「愛吉吉的小明」）；總覽頁點帳號名稱切到這個視窗要靠它</label>
+      <label class="row"><input data-field="showAccountName" type="checkbox" style="flex:none;width:auto"> 面板標題、分頁標題和提醒顯示帳號名稱（例如「愛吉吉的小明」）</label>
       <fieldset class="group">
         <legend>多帳號總覽</legend>
         <label class="row"><input data-field="dashboardEnabled" type="checkbox" style="flex:none;width:auto"> 回報到總覽頁（每 5 秒）</label>
@@ -5014,9 +5014,17 @@
 
   window.addEventListener('focus', stopTitleFlash);
 
-  // 分頁標題前面加「帳號名稱｜」：分頁上一眼看出是哪個帳號，總覽頁點帳號名稱時中繼站也靠它找到這個瀏覽器視窗
+  // 分頁標題前面加「帳號名稱｜」（有勾顯示帳號名稱時），分頁上一眼看出是哪個帳號；
+  // 結尾再加一段看不見的帳號 id 標記，總覽頁點帳號名稱時中繼站靠它找到這個瀏覽器視窗（不管有沒有顯示名稱）
   const TITLE_MARK = '｜';
+  const TITLE_ID_PATTERN = /\u2063[\u200b\u200c]*\u2063$/;
   let appliedTitlePrefix = '';
+
+  function titleIdMarker() {
+    const id = dashboard.profile && Number(dashboard.profile.id);
+    if (!id) return '';
+    return `\u2063${id.toString(2).replace(/0/g, '\u200b').replace(/1/g, '\u200c')}\u2063`;
+  }
 
   function applyTitlePrefix() {
     // 標題閃爍提醒時不要搶著改，停下來時會還原成帶前綴的標題
@@ -5024,14 +5032,20 @@
     const nickname = dashboard.profile && dashboard.profile.nickname;
     const prefix = nickname && readSettingsFromPanel().showAccountName ? `${nickname}${TITLE_MARK}` : '';
     const current = document.title;
-    const base = appliedTitlePrefix && current.startsWith(appliedTitlePrefix) ? current.slice(appliedTitlePrefix.length) : current;
+    let base = current.replace(TITLE_ID_PATTERN, '');
+    if (appliedTitlePrefix && base.startsWith(appliedTitlePrefix)) base = base.slice(appliedTitlePrefix.length);
     appliedTitlePrefix = prefix;
-    if (current !== prefix + base) document.title = prefix + base;
+    const wanted = prefix + base + titleIdMarker();
+    if (current !== wanted) document.title = wanted;
   }
 
-  // 遊戲自己換標題（切頁面）時再補上前綴
+  function titleNeedsMarks() {
+    return (appliedTitlePrefix && !document.title.startsWith(appliedTitlePrefix)) || !document.title.endsWith(titleIdMarker());
+  }
+
+  // 遊戲自己換標題（切頁面）時再補上；監控每秒也檢查一次，萬一漏掉
   new MutationObserver(() => {
-    if (appliedTitlePrefix && !document.title.startsWith(appliedTitlePrefix)) applyTitlePrefix();
+    if (dashboard.profile && titleNeedsMarks()) applyTitlePrefix();
   }).observe(document.head, { subtree: true, childList: true, characterData: true });
 
   // 看血條的「目前值」是不是 0，不看百分比門檻；門檻設 0 或補血流程先動時也擋得住
@@ -6001,6 +6015,7 @@
     if (dashboardLine) lines.push(dashboardLine);
     const turnLine = turnMonitorText(settings);
     if (turnLine) lines.push(turnLine);
+    if (dashboard.profile && titleNeedsMarks()) applyTitlePrefix();
     const globalLine = globalMonitorText();
     if (globalLine) lines.push(globalLine);
     const queueLine = queueMonitorText(settings);

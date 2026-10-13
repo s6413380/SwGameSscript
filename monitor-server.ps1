@@ -49,7 +49,7 @@ $turnLeaseMs = 40000
 # is bought quickly; mode 'human' still waits a little between the two windows, 'fast' does not
 $transfer = @{ ids = @{}; mode = 'human'; until = 0 }
 
-# Dashboard 'go to this account': each game tab puts '<nickname>|' (full-width bar) in front of its title,
+# Dashboard 'go to this account': each game tab ends its title with an invisible account id marker,
 # so the relay can find that browser window and bring it to the front
 Add-Type -TypeDefinition @'
 using System;
@@ -300,17 +300,14 @@ function Handle-Request($context) {
     return
   }
   if ($request.HttpMethod -eq 'POST' -and $path -eq '/focus') {
-    # Decode the raw query as UTF-8 ourselves; account names are Chinese
-    $name = ''
-    foreach ($pair in $request.Url.Query.TrimStart('?').Split('&')) {
-      $parts = $pair.Split('=', 2)
-      if ($parts[0] -eq 'name' -and $parts.Count -eq 2) { $name = [Uri]::UnescapeDataString($parts[1].Replace('+', ' ')) }
-    }
-    if (-not $name -or $name.Length -gt 40) {
+    # The tab ends its title with an invisible marker: the account id in binary as zero-width characters
+    $id = $request.QueryString['id']
+    if ($id -notmatch '^\d{1,15}$') {
       Send-Response $response 400 'text/plain' 'bad request'
       return
     }
-    $result = [WindowFocus]::Focus($name + [char]0xFF5C)
+    $bits = [Convert]::ToString([long]$id, 2).Replace('0', [string][char]0x200B).Replace('1', [string][char]0x200C)
+    $result = [WindowFocus]::Focus([string][char]0x2063 + $bits + [string][char]0x2063)
     Send-Response $response 200 'application/json; charset=utf-8' ('{"result":"' + $result + '"}')
     return
   }

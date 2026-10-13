@@ -363,7 +363,7 @@
         ${forgeData.heroes.map(forgeHeroHtml).join('') || '<div class="muted">沒有正在鍛造的角色</div>'}`
       : data.heroes.map(heroHtml).join('') || '<div class="muted">還沒讀到隊伍</div>';
     return `
-      <div class="top"><span class="name"><span class="focus-name" data-focus="${escapeHtml(data.nickname)}" title="切到這個帳號的瀏覽器視窗">${escapeHtml(data.nickname)}</span>
+      <div class="top"><span class="name"><span class="focus-name" data-focus="${escapeHtml(data.nickname)}" data-focus-id="${Number(data.accountId) || ''}" title="切到這個帳號的瀏覽器視窗">${escapeHtml(data.nickname)}</span>
         <span class="badge ${forge ? 'forge' : 'hunt'}">${forge ? '鍛造分頁' : '狩獵分頁'}</span>
         ${versionHtml(data.version)}</span>
         <span><span class="money">💰 ${Number(data.money || 0).toLocaleString()}</span>
@@ -574,11 +574,11 @@
     const target = event.target.closest('[data-focus]');
     if (!target) return;
     const updated = document.getElementById('updated');
-    const response = await fetch(`/focus?name=${encodeURIComponent(target.dataset.focus)}`, { method: 'POST' }).catch(() => null);
+    const response = await fetch(`/focus?id=${encodeURIComponent(target.dataset.focusId)}`, { method: 'POST' }).catch(() => null);
     const result = response && response.ok ? (await response.json()).result : response ? `HTTP ${response.status}（中繼站要重開）` : '連不上中繼站';
     updated.textContent = {
       ok: `已切到「${target.dataset.focus}」`,
-      notfound: `找不到「${target.dataset.focus}」的視窗：遊戲分頁要是那個視窗正在顯示的分頁，而且「提醒」頁有勾顯示帳號名稱`,
+      notfound: `找不到「${target.dataset.focus}」的視窗：遊戲分頁要是那個視窗正在顯示的分頁（腳本要 3.21 以上）`,
       blocked: `Windows 擋住了切換，「${target.dataset.focus}」的視窗在工作列上閃，點一下就好`,
     }[result] || `切換失敗：${result}`;
   });
