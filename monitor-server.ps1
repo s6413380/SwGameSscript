@@ -1,7 +1,7 @@
 # Multi-account monitor relay for auto-clicker-v2.user.js
 # Each game tab POSTs its status to /status?id=<accountId>; open http://localhost:8787/ to see all accounts.
 # Usage: powershell -ExecutionPolicy Bypass -File .\monitor-server.ps1
-param([int]$Port = 8787, [int]$StaleMinutes = 10, [int]$TurnSwitchMinMs = 500, [int]$TurnSwitchMaxMs = 1500, [int]$TransferSwitchMinMs = 600, [int]$TransferSwitchMaxMs = 1500)
+param([int]$Port = 8787, [int]$StaleMinutes = 10, [int]$TurnSwitchMinMs = 500, [int]$TurnSwitchMaxMs = 1500, [int]$TransferSwitchMinMs = 600, [int]$TransferSwitchMaxMs = 1500, [int]$TurnPlanSpacingMs = 1500, [int]$TurnPlanMaxShiftMs = 3000)
 
 $ErrorActionPreference = 'Stop'
 $dashboardPath = Join-Path $PSScriptRoot 'monitor-dashboard.html'
@@ -24,6 +24,9 @@ $turnWaiters = @{}
 # How many times each tab was passed over in a row, and recent grants (last 10 minutes) for fair shares
 $turnSkips = @{}
 $turnGrants = New-Object System.Collections.ArrayList
+# Booked hunt times (tab id -> ms). Each tab books its next hunt when its cooldown starts; bookings are spread
+# apart so the accounts do not all come off cooldown at once, and a booked slot is kept free for its tab
+$turnPlans = @{}
 # Settings that must match on every account (low profile, turn taking); the newest copy wins
 $sharedSettings = '{}'
 # Pause for every account at once (buttons on each panel and the dashboard): run, temp (until a time) or stop.
@@ -115,6 +118,7 @@ function Release-Turn([long]$now) {
 
 function Grant-Turn([string]$id, [long]$now) {
   $turnWaiters.Remove($id)
+  if (Plan-Due $id $now) { $turnPlans.Remove($id) }
   $turn.holder = $id
   $turn.until = $now + $turnLeaseMs
 }
@@ -148,6 +152,37 @@ function Pick-Waiter([long]$now) {
   return $waiters[-1]
 }
 
+function Plan-Turn([string]$id, [long]$at) {
+  $now = Now-Milliseconds
+  foreach ($key in @($turnPlans.Keys)) {
+    if ($key -eq $id -or $turnPlans[$key] -lt $now - 5000) { $turnPlans.Remove($key) }
+  }
+  $slot = $at
+  foreach ($other in @($turnPlans.Values | Sort-Object)) {
+    # A person switching windows is never exactly on time, so the gap after another booking varies a little
+    if ([Math]::Abs($slot - $other) -lt $TurnPlanSpacingMs) { $slot = $other + $TurnPlanSpacingMs + (Get-Random -Minimum 0 -Maximum 500) }
+  }
+  if ($slot - $at -gt $TurnPlanMaxShiftMs) { $slot = $at }
+  $turnPlans[$id] = $slot
+  return $slot
+}
+
+# A booking counts from a little before its time until 1.5 s after (a tab that never shows up stops blocking)
+function Plan-Due([string]$id, [long]$now) {
+  if (-not $turnPlans.ContainsKey($id)) { return $false }
+  $at = $turnPlans[$id]
+  return $at -le $now + 800 -and $at -ge $now - 1500
+}
+
+# Another tab whose booking is due (and earlier than this tab's own) keeps the free seat for itself
+function Slot-Taken([string]$id, [long]$now) {
+  $mine = if (Plan-Due $id $now) { $turnPlans[$id] } else { [long]::MaxValue }
+  foreach ($key in @($turnPlans.Keys)) {
+    if ($key -ne $id -and (Plan-Due $key $now) -and $turnPlans[$key] -lt $mine) { return $true }
+  }
+  return $false
+}
+
 function Request-Turn([string]$id, [bool]$isTransfer) {
   $now = Now-Milliseconds
   if ($turn.holder -and $turn.until -lt $now) { Release-Turn $now }
@@ -173,7 +208,9 @@ function Request-Turn([string]$id, [bool]$isTransfer) {
     Grant-Turn $id $now
     return 0
   }
-  if ($turn.holder) { return 300 }
+  if ($turn.holder) { return $(if (Plan-Due $id $now) { 100 } else { 300 }) }
+  if (Slot-Taken $id $now) { return 100 }
+  if (Plan-Due $id $now) { $turn.pick = $id }
   # A person finishes a quick burst on one window before switching; cap it so other accounts still get a go
   if ($id -eq $turn.lastHolder -and $now -lt $turn.freeAt + 1500 -and $turn.streak -lt 6) {
     Grant-Turn $id $now
@@ -288,8 +325,20 @@ function Handle-Request($context) {
     }
     $retry = Request-Turn $id ($request.QueryString['transfer'] -eq '1')
     $transferFlag = if (Transfer-Active (Now-Milliseconds)) { 'true' } else { 'false' }
-    $body = if ($retry -eq 0) { '{"granted":true}' } else { '{"granted":false,"retry":' + $retry + ',"transfer":' + $transferFlag + '}' }
+    $soon = @($turnPlans.Keys | Where-Object { $_ -ne $id -and $turnPlans[$_] -le (Now-Milliseconds) + 3000 -and $turnPlans[$_] -ge (Now-Milliseconds) - 1500 }).Count -gt 0
+    $body = if ($retry -eq 0) { '{"granted":true,"linger":' + $(if ($soon) { 'false' } else { 'true' }) + '}' } else { '{"granted":false,"retry":' + $retry + ',"transfer":' + $transferFlag + '}' }
     Send-Response $response 200 'application/json; charset=utf-8' $body
+    return
+  }
+  if ($request.HttpMethod -eq 'POST' -and $path -eq '/turn/plan') {
+    $id = $request.QueryString['id']
+    $at = 0L
+    if ($id -notmatch '^[\w-]{1,40}$' -or -not [long]::TryParse([string]$request.QueryString['at'], [ref]$at)) {
+      Send-Response $response 400 'text/plain' 'bad request'
+      return
+    }
+    $slot = Plan-Turn $id $at
+    Send-Response $response 200 'application/json; charset=utf-8' ('{"at":' + $slot + '}')
     return
   }
   if ($request.HttpMethod -eq 'POST' -and $path -eq '/turn/release') {

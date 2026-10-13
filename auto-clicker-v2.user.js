@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.22
+// @version      3.24
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -149,6 +149,9 @@
     // 移動時間到了之後，隨機再等幾秒才按完成移動，不要每次都剛好準點
     finishMoveMinSeconds: 1,
     finishMoveMaxSeconds: 5,
+    // API 打怪冷卻結束後隨機再等幾秒才打，像人看到冷卻結束才按
+    huntReactMinSeconds: 1,
+    huntReactMaxSeconds: 3,
     stageFinishMoveText: '',
     intervalMinSeconds: 8,
     intervalMaxSeconds: 20,
@@ -774,6 +777,8 @@
     <div data-tab="main">
       <label class="row"><input data-field="huntByApiEnabled" type="checkbox" style="flex:none;width:auto"> <b>用 API 打怪</b>（不用停在狩獵頁，可以同一個分頁 API 鍛造）</label>
       <div class="hint">開了之後原地掛機、前進後退、全隊休息都直接打 API；補給、換裝請用 API 版。目標關卡只會在同一張地圖裡前進後退</div>
+      <label>冷卻結束後再等 ${numberInput('huntReactMinSeconds', 'min="0" step="0.5"')} ～ ${numberInput('huntReactMaxSeconds', 'min="0" step="0.5"')} 秒（隨機）才打</label>
+      <div class="hint">像人看到冷卻結束才按。這是打怪頻率最大的變數：1～3 秒一輪約 13 秒，0.5～1.5 秒約快 8%，但越短越不像人。三個帳號自動同步</div>
       <label class="row"><input data-field="lowProfileEnabled" type="checkbox" style="flex:none;width:auto"> <b>低調模式</b>（模擬人類操作的延遲）</label>
       <div class="row">玩 ${numberInput('lowProfilePlayMinMinutes', 'min="5"')}～${numberInput('lowProfilePlayMaxMinutes', 'min="5"')} 分鐘，休息 ${numberInput('lowProfileBreakMinMinutes', 'min="1"')}～${numberInput('lowProfileBreakMaxMinutes', 'min="1"')} 分鐘</div>
       <div class="row">每天 <input data-field="lowProfileSleepHours" placeholder="留空＝不睡" style="width:70px;flex:none"> 點睡覺（例：2-9；每天前後飄 1 小時，偶爾多睡）</div>
@@ -3371,6 +3376,8 @@
     'lowProfileSleepHours',
     'turnTakingEnabled',
     'transferTurnMode',
+    'huntReactMinSeconds',
+    'huntReactMaxSeconds',
   ];
   const SHARED_SETTINGS_AT_KEY = 'autoClickerV2SharedSettingsAt';
   const SHARED_SETTINGS_POLL_MILLISECONDS = 10000;
@@ -3476,7 +3483,7 @@
   const TURN_ID = `${tabKey}-${Math.random().toString(36).slice(2, 6)}`;
   const TURN_RELAY_TIMEOUT_MILLISECONDS = 2000;
   const TURN_GIVE_UP_MILLISECONDS = 180000;
-  const turnTaking = { chain: Promise.resolve(), downUntil: 0, error: '', waitingSince: 0, background: [], transferWaiting: false, held: false, lingerTimer: null };
+  const turnTaking = { chain: Promise.resolve(), downUntil: 0, error: '', waitingSince: 0, background: [], transferWaiting: false, held: false, lingerTimer: null, linger: true };
   // 轉移的請求用另一個 id、另一條隊伍：自己分頁的掛機請求正卡在等轉移結束時，轉移不能排在它後面
   const TRANSFER_TURN_ID = `${TURN_ID}-t`;
   let transferTurnChain = Promise.resolve();
@@ -3509,6 +3516,8 @@
       while (Date.now() - startedAt < TURN_GIVE_UP_MILLISECONDS) {
         const reply = await askTurnRelay(settings, 'turn', 'GET', { id, query: transfer ? '&transfer=1' : '' });
         if (reply.granted) {
+          // 別的帳號預約的打怪時間快到了，讀完就交出去，不要佔著
+          if (id === TURN_ID) turnTaking.linger = reply.linger !== false;
           turnTaking.error = '';
           turnTaking.waitingSince = 0;
           turnTaking.transferWaiting = false;
@@ -3715,11 +3724,11 @@
     return sendGameRequestUnpaused(path, options);
   }
 
-  function sendGameRequestUnpaused(path, { background = false, ...options } = {}) {
+  function sendGameRequestUnpaused(path, { background = false, noLinger = false, ...options } = {}) {
     const settings = readSettingsFromPanel();
     if (!settings.turnTakingEnabled) return sendGameRequestNow(path, options);
     if (background) return deferBackgroundRequest(settings, path, options);
-    return sendInTurn(settings, path, options);
+    return sendInTurn(settings, path, options, { noLinger });
   }
 
   // 讀完（GET）先別交出去：同一輪接著要打怪、吃藥，像人看完畫面就按，不用再排一次隊、多等一次換帳號。
@@ -3731,7 +3740,7 @@
     return askTurnRelay(settings, 'turn/release', 'POST').catch(() => {});
   }
 
-  function sendInTurn(settings, path, options) {
+  function sendInTurn(settings, path, options, { noLinger = false } = {}) {
     // 同一個分頁也一次一個：掛機和鍛造的 GET 不排隊，不串起來就會疊在一起送
     const next = turnTaking.chain.then(async () => {
       backgroundTimer.clearTimeout(turnTaking.lingerTimer);
@@ -3741,7 +3750,7 @@
         return await sendGameRequestNow(path, options);
       } finally {
         await runBackgroundRequests();
-        if (turnTaking.held && !isRead) await releaseTurn(settings);
+        if (turnTaking.held && (!isRead || noLinger || !turnTaking.linger)) await releaseTurn(settings);
         else if (turnTaking.held) {
           // 交出去也排進同一條隊伍，才不會在下一個請求送到一半時放掉
           turnTaking.lingerTimer = backgroundTimer.setTimeout(() => {
@@ -3865,8 +3874,8 @@
   const HERO_STATS_FRESH_MILLISECONDS = 5000;
 
   // 狩獵看 /api/huntInfo（只有隊伍 4 人）；鍛造的角色不在隊伍裡，改看 /api/heroes（全部角色）
-  async function refreshHeroStats({ forge = false } = {}) {
-    const data = await requestGameApi(forge ? HEROES_API : HUNT_INFO_API);
+  async function refreshHeroStats({ forge = false, noLinger = false } = {}) {
+    const data = await requestGameApi(forge ? HEROES_API : HUNT_INFO_API, { noLinger });
     const heroes = data.heroes || [];
     if (!forge) state.huntInfo = data;
     state.heroStats = new Map(heroes.map((hero) => [hero.id, hero]));
@@ -6286,14 +6295,74 @@
   function scheduleApiHunt(settings, huntInfo) {
     if (reloadForUpdateIfIdle()) return;
     const availableAt = huntInfo && huntInfo.huntAvailableAt ? Date.parse(huntInfo.huntAvailableAt) : 0;
-    const delay = lowProfileDelay(settings, Math.max(0, (availableAt || 0) - Date.now()) + randomGap(1000, 3000));
+    const delay = lowProfileDelay(settings, Math.max(0, (availableAt || 0) - Date.now()) + huntReactGap(settings));
     state.timerId = planTick(() => tick(settings), delay);
     statusElement.textContent += `（${(delay / 1000).toFixed(1)} 秒後下一步）`;
+    bookHuntSlot(settings, Date.now() + delay);
+  }
+
+  function huntReactGap(settings) {
+    const minimum = Math.max(0, Number(settings.huntReactMinSeconds) || 0);
+    const maximum = Math.max(minimum, Number(settings.huntReactMaxSeconds) || 0);
+    return randomGap(minimum * 1000, maximum * 1000);
+  }
+
+  // 多開輪流時，三個帳號的打怪時間先跟中繼站登記：撞在一起的往後挪一點，登記的時間到了操作權留給它，
+  // 不用等別人讀完畫面、也不用跟別人搶
+  function bookHuntSlot(settings, at) {
+    if (!settings.turnTakingEnabled || Date.now() < turnTaking.downUntil) return;
+    const runId = state.runId;
+    const timerId = state.timerId;
+    askTurnRelay(settings, 'turn/plan', 'POST', { query: `&at=${Math.round(at)}` })
+      .then((reply) => Number(reply.at) || at)
+      .catch(() => at)
+      .then((slot) => {
+        if (runId !== state.runId || state.timerId !== timerId || Date.now() > at - 200) return;
+        if (slot > at + 50) {
+          backgroundTimer.clearTimeout(state.timerId);
+          state.timerId = planTick(() => tick(settings), slot - Date.now());
+        }
+        prefetchBeforeHunt(settings, slot, state.timerId);
+      });
+  }
+
+  // 冷卻中先把畫面讀好（隊伍數值、同地圖玩家），時間到只剩「打」一下，不會輪到了才開始讀
+  const PREFETCH_LEAD_MIN_MILLISECONDS = 1500;
+  const PREFETCH_LEAD_MAX_MILLISECONDS = 2500;
+
+  function prefetchBeforeHunt(settings, slot, timerId) {
+    const fireAt = slot - randomGap(PREFETCH_LEAD_MIN_MILLISECONDS, PREFETCH_LEAD_MAX_MILLISECONDS);
+    if (fireAt - Date.now() < 300) return;
+    const runId = state.runId;
+    backgroundTimer.setTimeout(async () => {
+      if (!state.running || runId !== state.runId || state.timerId !== timerId) return;
+      const current = readSettingsFromPanel();
+      try {
+        const moving = state.apiMoving || huntTeam().some((hero) => hero.actionState === 1);
+        if (current.playerEscapeEnabled && !moving && !inTownNow(current) && slot - state.zoneUsersAt > ZONE_USERS_FRESH_MILLISECONDS) {
+          state.zoneUsersAt = Date.now();
+          await refreshZoneUsers();
+        }
+        if (needsHuntTeam(current) && slot - state.heroStatsAt > HERO_STATS_FRESH_MILLISECONDS) {
+          await refreshHeroStats({ noLinger: true });
+          state.heroStatsAt = Date.now();
+        }
+      } catch {
+        // 讀不到就照舊，時間到了 tick 自己會再讀
+      }
+    }, fireAt - Date.now());
   }
 
   function handleApiHuntError(settings, error) {
     if (error.captchaRequired) {
       pauseForCaptcha(settings);
+      return;
+    }
+    // 狀態錯誤多半是隊伍裡有人剛被拿去做別的事：重讀隊伍，下一輪由 waitForBusyHuntTeam 等它，不算失敗
+    if (isHeroStateError(error) && (state.apiHeroStateErrors = (state.apiHeroStateErrors || 0) + 1) < 10) {
+      state.heroStatsAt = 0;
+      setStatus(`API 打怪：伺服器說英雄狀態不對（第 ${state.apiHeroStateErrors} 次），重讀隊伍後再試`);
+      state.timerId = planTick(() => tick(settings), randomGap(10000, 20000));
       return;
     }
     state.apiHuntFailures = (state.apiHuntFailures || 0) + 1;
@@ -6303,6 +6372,23 @@
     }
     setStatus(`API 打怪失敗（${error.message}），稍後重試`);
     state.timerId = planTick(() => tick(settings), randomGap(5000, 10000));
+  }
+
+  const HERO_ACTION_NAMES = { 3: '復活', 4: '採礦', 5: '鍛造', 6: '販售', 7: '訓練' };
+
+  // 隊伍裡有人在做別的事（鍛造、採礦、復活…）時打怪，伺服器一定回「英雄狀態錯誤」：等它做完再打
+  function waitForBusyHuntTeam(settings) {
+    const busy = huntTeam().filter((hero) => HERO_ACTION_NAMES[hero.actionState]);
+    if (!busy.length) return false;
+    const text = busy.map((hero) => `${hero.name}${HERO_ACTION_NAMES[hero.actionState]}中`).join('、');
+    setStatus(`狩獵隊伍 ${text}，做完才能打怪（鍛造的話，到「自動鍛造」取消勾選這個角色，或把它移出隊伍）`);
+    state.heroStatsAt = 0;
+    state.timerId = planTick(() => tick(settings), randomGap(20000, 40000));
+    return true;
+  }
+
+  function isHeroStateError(error) {
+    return /英雄狀態錯誤/.test(String(error && error.message));
   }
 
   // 重複按開始時上一次打怪可能還在路上；不跟著 runId 重設，才擋得住緊接著再打一次
@@ -6342,6 +6428,7 @@
       if (data && data.huntInfo) state.huntInfo = data.huntInfo;
       if (runId !== state.runId) return;
       state.apiHuntFailures = 0;
+      state.apiHeroStateErrors = 0;
       syncGameHuntView(data);
       clearItemSkips();
       if (!type) state.clickCountA++;
@@ -6687,6 +6774,8 @@
         if (move && move.problem) {
           setStatus(`移動：${move.problem}`);
           state.timerId = planTick(() => tick(settings), randomGap(10000, 20000));
+        } else if (waitForBusyHuntTeam(settings)) {
+          return;
         } else if (!waitForHuntCooldown(settings, move)) {
           if (move) performApiMove(settings, move);
           else huntByApi(settings, '');
@@ -11182,6 +11271,15 @@
   // 最近一次讀到的角色（遊戲回傳的順序就是自動鍛造挑閒置角色的順序）
   let forgeHeroes = [];
 
+  // 狩獵隊伍的角色在兩次打怪之間也是「閒置」，拿去開爐的話打怪會一直回「英雄狀態錯誤」
+  function inHuntTeam(hero) {
+    return Boolean(hero.selected) || (state.huntTeamIds || []).includes(hero.id);
+  }
+
+  function canStartForge(hero) {
+    return !hero.actionState && !inHuntTeam(hero);
+  }
+
   function forgeHeroStatus(hero, isNext) {
     if (!hero) return ['#a0a0aa', '狀態未知（按「讀取角色」）'];
     if (hero.actionState === 5) {
@@ -11191,6 +11289,7 @@
       return ['#60a5fa', `鍛造坊 ${hero.actionTarget}・${clock} 完成`];
     }
     if (hero.actionState) return ['#a0a0aa', '忙別的事（打怪、移動…），閒下來才鍛造'];
+    if (inHuntTeam(hero)) return ['#f87171', '在狩獵隊伍裡，不會拿去鍛造（要鍛造先移出隊伍）'];
     return ['#4ade80', isNext ? '閒置・下一爐就是它' : '閒置・等鍛造坊空出來'];
   }
 
@@ -11205,7 +11304,7 @@
     }
     const heroById = new Map(forgeHeroes.map((hero) => [hero.id, hero]));
     const order = [...forgeHeroes.filter((hero) => heroIds.includes(hero.id)).map((hero) => hero.id), ...heroIds.filter((id) => !heroById.has(id))];
-    const nextId = order.find((id) => heroById.has(id) && !heroById.get(id).actionState);
+    const nextId = order.find((id) => heroById.has(id) && canStartForge(heroById.get(id)));
     const stock = new Map(mineStock.map((mine) => [mine.name, mine.have]));
     const plans = forgeByApiPlans(settings);
     box.innerHTML = order
@@ -11400,7 +11499,7 @@
   // 還能再開爐就幾秒後再來；否則等最早完成的那爐（鍛造坊滿了就等任何一爐），到點再隨機晚幾秒，像人回來看
   function nextForgeDelay(heroes, heroIds, canStartMore) {
     if (canStartMore) return randomGap(3000, 8000);
-    const waitingForShop = heroes.some((hero) => heroIds.includes(hero.id) && !hero.actionState);
+    const waitingForShop = heroes.some((hero) => heroIds.includes(hero.id) && canStartForge(hero));
     const times = heroes
       .filter((hero) => hero.actionState === 5 && (waitingForShop || heroIds.includes(hero.id)))
       .map((hero) => Date.parse(hero.actionCompleteTime))
@@ -11457,7 +11556,7 @@
         settings = readSettingsFromPanel();
       }
       forgeRunner.nameWaiting = '';
-      const idle = heroes.find((hero) => heroIds.includes(hero.id) && !hero.actionState);
+      const idle = heroes.find((hero) => heroIds.includes(hero.id) && canStartForge(hero));
       const busyShops = new Set(forging.map((hero) => Number(hero.actionTarget)));
       const shopCount = await forgeShopCount();
       if (cancelled()) return;
