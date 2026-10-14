@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.53
+// @version      3.54
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -2960,6 +2960,7 @@
   // 切到主動查的時間：開太久會忘記關，到時間自動切回被動
   const CARD_ACTIVE_SINCE_KEY = 'autoClickerV2CardActiveSince';
   const MARKET_HEROES_PATTERN = /\/api\/trades\?type=heroes(?![^#]*own=true)/;
+  const MARKET_GOODS_PATTERN = /\/api\/trades\?type=(items|mines)(?![^#]*own=true)/;
   const RELEASED_MARKET_PATTERN = /\/api\/releasedHeroMarket(?:[?#]|$)/;
 
   function nextActiveCheckDelay(settings) {
@@ -3061,6 +3062,112 @@
       else throw error;
     }
   }
+
+  // 賣東西比價：遊戲的「販賣」視窗（物品頁、礦物頁）一打開，就在視窗裡列出市場上同名商品最低、第二低的單價
+  const SELL_PRICE_FRESH_MILLISECONDS = 30000;
+  const sellPrice = { trades: {}, loading: {} };
+
+  // 遊戲自己開市場頁抓到的清單也收著，剛看過市場就不用再查
+  function noticeMarketGoods(kind, data) {
+    if (data && Array.isArray(data[kind])) sellPrice.trades[kind] = { at: Date.now(), list: data[kind] };
+  }
+
+  async function marketGoods(kind, force) {
+    const cached = sellPrice.trades[kind];
+    if (!force && cached && Date.now() - cached.at < SELL_PRICE_FRESH_MILLISECONDS) return cached.list;
+    // 玩家開著視窗在等，不排輪流的隊；同一種同時只查一次
+    if (!sellPrice.loading[kind]) {
+      sellPrice.loading[kind] = sendGameRequestNow(`/api/trades?type=${kind}`)
+        .then((data) => {
+          noticeMarketGoods(kind, data);
+          return sellPrice.trades[kind].list;
+        })
+        .finally(() => {
+          delete sellPrice.loading[kind];
+        });
+    }
+    return sellPrice.loading[kind];
+  }
+
+  function unitPriceText(price) {
+    return `$${(Number.isInteger(price) ? price : Number(price.toFixed(2))).toLocaleString()}`;
+  }
+
+  function sellDialogParts() {
+    const priceInput = document.getElementById('itemSellPrice');
+    const dialog = priceInput && priceInput.closest('[role="dialog"]');
+    if (!dialog) return null;
+    const title = (dialog.querySelector('h2') || {}).textContent || '';
+    return {
+      dialog,
+      priceInput,
+      quantityInput: document.getElementById('itemSellQuantity'),
+      // 標題「販賣 名稱」，說明「將此礦物／物品掛單於市場出售」
+      name: title.replace(/^\s*販賣\s*/, '').trim(),
+      kind: dialog.textContent.includes('將此礦物') ? 'mines' : 'items',
+    };
+  }
+
+  async function showSellPrices(force = false) {
+    const parts = sellDialogParts();
+    if (!parts || !parts.name) return;
+    let box = parts.dialog.querySelector('[data-role="sell-price"]');
+    if (!box) {
+      box = document.createElement('div');
+      box.dataset.role = 'sell-price';
+      box.style.cssText = 'margin:6px 0;padding:6px 8px;border:1px solid #57534e;border-radius:4px;background:#1c1917;font-size:13px;line-height:1.6;color:#d6d3d1';
+      parts.priceInput.closest('.grid').insertAdjacentElement('afterend', box);
+      parts.dialog.addEventListener('input', () => renderSellPrices());
+    }
+    box.dataset.name = parts.name;
+    box.innerHTML = '<span style="color:#a8a29e">市場價格查詢中…</span>';
+    try {
+      const trades = await marketGoods(parts.kind, force);
+      box.trades = trades.filter((trade) => trade.name === parts.name && Number(trade.quantity) > 0);
+      renderSellPrices();
+    } catch (error) {
+      box.innerHTML = `<span style="color:#fca5a5">查不到市場價格（${escapeHtml(error.message)}）</span> <button type="button" data-sell-refresh style="text-decoration:underline">再查一次</button>`;
+    }
+  }
+
+  function renderSellPrices() {
+    const parts = sellDialogParts();
+    const box = parts && parts.dialog.querySelector('[data-role="sell-price"]');
+    if (!box || !box.trades) return;
+    const ownId = dashboard.profile && Number(dashboard.profile.id);
+    const sorted = box.trades
+      .map((trade) => ({ ...trade, unit: trade.price / trade.quantity }))
+      .sort((first, second) => first.unit - second.unit);
+    const line = (label, trade) =>
+      trade
+        ? `<div>${label}：<b style="color:#fcd34d">${unitPriceText(trade.unit)}</b> / 個（${Number(trade.quantity).toLocaleString()} 個，總價 $${trade.price.toLocaleString()}${Number(trade.sellerId) === ownId ? '，<span style="color:#93c5fd">你自己的</span>' : ''}）</div>`
+        : `<div>${label}：<span style="color:#a8a29e">沒有</span></div>`;
+    const quantity = Number(parts.quantityInput && parts.quantityInput.value) || 0;
+    const price = Number(parts.priceInput.value) || 0;
+    let compare = '';
+    if (quantity > 0 && price > 0 && sorted.length) {
+      const mine = price / quantity;
+      const cheaper = sorted.filter((trade) => trade.unit < mine).length;
+      compare = `<div style="color:#a8a29e">你現在填 ${unitPriceText(mine)} / 個：${cheaper ? `前面還有 ${cheaper} 筆比你便宜` : '<span style="color:#86efac">市場最便宜</span>'}</div>`;
+    }
+    box.innerHTML = `
+      <div style="display:flex;justify-content:space-between;gap:6px"><b>市場上的「${escapeHtml(box.dataset.name)}」</b><button type="button" data-sell-refresh style="color:#a8a29e;text-decoration:underline">重新查</button></div>
+      ${sorted.length ? `${line('最低', sorted[0])}${line('第二低', sorted[1])}<div style="color:#a8a29e">共 ${sorted.length} 筆在賣</div>` : '<div style="color:#86efac">市場上目前沒人在賣</div>'}
+      ${compare}`;
+  }
+
+  document.addEventListener('click', (event) => {
+    if (event.target.closest && event.target.closest('[data-sell-refresh]')) showSellPrices(true);
+  });
+
+  // 遊戲的視窗是 React 動態掛上去的，有出現就補上比價
+  new MutationObserver(() => {
+    if (tabShutDown) return;
+    const parts = sellDialogParts();
+    if (!parts || !parts.name) return;
+    const box = parts.dialog.querySelector('[data-role="sell-price"]');
+    if (!box || box.dataset.name !== parts.name) showSellPrices();
+  }).observe(document.documentElement, { subtree: true, childList: true });
 
   // 被動模式：遊戲自己抓拍賣或人口販子清單時順便看，一個請求都不多發
   function noticeGameMarket(url, data) {
@@ -8313,6 +8420,7 @@
       const isForgeData = FORGE_START_PATTERN.test(url) || FORGE_COMPLETE_PATTERN.test(url) || ITEM_LIST_PATTERN.test(url);
       const itemUseMatch = !growthOnly && url.match(ITEM_USE_PATTERN);
       const isScratchCard = !growthOnly && SCRATCH_CARD_PATTERN.test(url);
+      const marketGoodsMatch = !growthOnly && url.match(MARKET_GOODS_PATTERN);
       const isCardMarket = !growthOnly && (MARKET_HEROES_PATTERN.test(url) || RELEASED_MARKET_PATTERN.test(url));
       const isOtherSite = /^https?:/i.test(url) && !url.startsWith(location.origin);
       const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
@@ -8322,7 +8430,7 @@
       const manualMiningMatch = !growthOnly && !fromScript && method === 'POST' ? url.match(MINING_ACTION_PATTERN) : null;
       const needsResponse = growthOnly
         ? isHunt || growthHeroId || isHeroList || isForgeData || isPlace
-        : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData || itemUseMatch || isPlace || isMoney || isCardMarket || manualMiningMatch || isScratchCard;
+        : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData || itemUseMatch || isPlace || isMoney || isCardMarket || manualMiningMatch || isScratchCard || marketGoodsMatch;
       if (!needsResponse || STATIC_ASSET_PATTERN.test(url) || isOtherSite) {
         return originalFetch.apply(this, args);
       }
@@ -8402,6 +8510,7 @@
             if (response.ok && isCardMarket && method === 'GET') noticeGameMarket(url, parseJsonText(responseText));
             // 角色列表不管是遊戲自己讀（每 16 秒、抽到新卡、買賣角色後）還是腳本讀的，挖礦頁都跟著換，新卡馬上看得到
             if (response.ok && method === 'GET' && isHeroList) noticeHeroList(parseJsonText(responseText));
+            if (response.ok && marketGoodsMatch && method === 'GET') noticeMarketGoods(marketGoodsMatch[1], parseJsonText(responseText));
             if (response.ok && isScratchCard && method === 'POST') {
               const data = parseJsonText(responseText);
               if (data && Array.isArray(data.prizes)) recordScratch(requestBody, data);
