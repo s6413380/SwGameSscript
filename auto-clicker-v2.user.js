@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.39
+// @version      3.40
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -8250,9 +8250,14 @@
               }
             }
             if (response.ok && isCardMarket && method === 'GET') noticeGameMarket(url, parseJsonText(responseText));
+            // 角色列表不管是遊戲自己讀（每 16 秒、抽到新卡、買賣角色後）還是腳本讀的，挖礦頁都跟著換，新卡馬上看得到
+            if (response.ok && method === 'GET' && isHeroList) noticeHeroList(parseJsonText(responseText));
             if (response.ok && itemUseMatch) {
               const data = parseJsonText(responseText);
-              if (data && data.drawResult) recordDraw(itemUseMatch[1], data);
+              if (data && data.drawResult) {
+                recordDraw(itemUseMatch[1], data);
+                markMiningHeroesStale();
+              }
             }
             if (response.ok && itemUseMatch && readSettingsFromPanel().incomeEnabled) {
               const data = parseJsonText(responseText);
@@ -12324,6 +12329,25 @@
     saveMining(data);
     if (activeTab === 'mining') renderMiningHeroes();
     return heroes;
+  }
+
+
+  function noticeHeroList(reply) {
+    if (!reply || !Array.isArray(reply.heroes)) return;
+    const data = loadMining();
+    const previous = new Map(data.heroes.map((hero) => [hero.id, hero.statuses]));
+    data.heroes = reply.heroes.map((hero) => compactMiningHero({ ...hero, statuses: Array.isArray(hero.statuses) ? hero.statuses : previous.get(hero.id) }));
+    data.heroesAt = Date.now();
+    saveMining(data);
+    if (activeTab === 'mining') renderMiningHeroes();
+  }
+
+  // 抽到新卡：下次打開挖礦頁或定時讀取時重讀角色
+  function markMiningHeroesStale() {
+    const data = loadMining();
+    data.heroesAt = 0;
+    saveMining(data);
+    if (activeTab === 'mining') readMiningHeroes(readSettingsFromPanel()).catch(() => {});
   }
 
   function compactMiningHero(hero) {
