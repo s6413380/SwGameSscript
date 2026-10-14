@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.35
+// @version      3.36
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -284,6 +284,12 @@
     miningRestHpPercent: 50,
     miningRestMaxMinutes: 60,
     miningConditionRest: true,
+    // 每幾小時收一次（每次前後飄幾 %）；0＝照體力估。出發前先喝體力藥水補到幾 %（可用道具名稱，空白＝任何體力道具）
+    miningIntervalHours: 6,
+    miningIntervalJitterPercent: 15,
+    miningPotionEnabled: true,
+    miningPotionTargetPercent: 90,
+    miningPotionNames: '',
     // 這個帳號有幾個鍛造欄位；0＝從遊戲讀（基本 2 格＋擴建次數）
     forgeShopSlots: 0,
     // 名稱效果每天 00:00 換：過了 00:00 先不開新爐，每隔幾分鐘抓測名表，有六圍平均 ≥ 這個 % 的名稱就換上繼續
@@ -1065,9 +1071,13 @@
     <div data-tab="mining">
       <div class="row"><button data-action="mining-start" style="font-weight:bold">開始挖礦</button><button data-action="mining-stop">停止挖礦</button><button data-action="mining-refresh">重新讀取</button></div>
       <div class="hint">選了地點的角色在城裡閒著就去挖（狩獵隊伍、鍛造佇列裡的角色不會被拿去）。挖礦一直耗體力：照這個角色上次挖的耗體力速度估，快用完就收（第一次不知道速度，挖滿上限才收）；遊戲規定至少挖 3 分鐘。可以跟掛機、鍛造同時跑</div>
-      <div class="row">體力估計剩 ${numberInput('miningStopSpPercent', 'min="0" max="100"')} % 就收，最多挖 ${numberInput('miningMaxMinutes', 'min="3"')} 分鐘</div>
-      <div class="row">收完體力低於 ${numberInput('miningRestSpPercent', 'min="0" max="100"')} % 或 HP 低於 ${numberInput('miningRestHpPercent', 'min="0" max="100"')} % 先休息（最多 ${numberInput('miningRestMaxMinutes', 'min="1"')} 分鐘）再挖</div>
-      <label class="row"><input data-field="miningConditionRest" type="checkbox" style="flex:none;width:auto"> 有異常狀態（中毒…）就提早收、先休息，並跳出提醒</label>
+      <div class="row">每 ${numberInput('miningIntervalHours', 'min="0" step="0.5"')} 小時收一次再挖（每次前後飄 ${numberInput('miningIntervalJitterPercent', 'min="0" max="50"')} %；0＝照體力估）</div>
+      <div class="row">照體力估時：體力估計剩 ${numberInput('miningStopSpPercent', 'min="0" max="100"')} % 就收，最多挖 ${numberInput('miningMaxMinutes', 'min="3"')} 分鐘</div>
+      <label class="row"><input data-field="miningPotionEnabled" type="checkbox" style="flex:none;width:auto"> 出發前喝體力藥水補到 ${numberInput('miningPotionTargetPercent', 'min="1" max="100"')} %</label>
+      <div class="row">藥水 <input data-field="miningPotionNames" placeholder="空白＝任何體力道具；可寫多個，用逗號分開" style="flex:1;min-width:0"></div>
+      <div class="row">藥水不夠時：體力低於 ${numberInput('miningRestSpPercent', 'min="0" max="100"')} % 或 HP 低於 ${numberInput('miningRestHpPercent', 'min="0" max="100"')} % 先休息（最多 ${numberInput('miningRestMaxMinutes', 'min="1"')} 分鐘）再挖</div>
+      <label class="row"><input data-field="miningConditionRest" type="checkbox" style="flex:none;width:auto"> 有異常狀態（中毒…）就不出發、正在挖的提早收，並跳出提醒</label>
+      <div class="hint">異常狀態下挖礦可能會死。有異常的角色留在城裡不動，好了才再出發</div>
       <input data-field="miningPlans" type="hidden">
       <div class="subhead">角色（選地點＝要挖；沒在跑「開始挖礦」時每 5 分鐘讀一次）</div>
       <div data-role="mining-heroes" style="font-size:12px"></div>
@@ -12154,19 +12164,26 @@
 
   // 挖礦中角色的體力是開挖時的值；知道耗體力速度就估現在剩多少
   function estimatedMiningSp(hero, data, now) {
-    const rate = (data.rates[hero.id] || {}).mineSp;
+    const rates = data.rates[hero.id] || {};
+    const rate = rates.mineSp;
     const record = data.active[hero.id];
     const startSp = record && record.kind === 'mine' ? record.sp : hero.sp;
-    if (!(rate > 0)) return null;
+    // 只量過「用光了」的話速度是猜的，不顯示估計
+    if (!(rate > 0) || !rates.mineSpExact) return null;
     return Math.max(0, startSp - rate * actionMinutes(hero, now));
   }
 
   function miningCollectAt(settings, hero, data, now) {
     const start = Date.parse(hero.actionStart) || now;
     const earliest = Date.parse(hero.actionCompleteTime) || start + MINING_MIN_MINUTES * 60000;
+    const record = data.active[hero.id];
+    const hours = Number(settings.miningIntervalHours) || 0;
     let at = start + Math.max(MINING_MIN_MINUTES, Number(settings.miningMaxMinutes) || 60) * 60000;
     const rate = (data.rates[hero.id] || {}).mineSp;
-    if (rate > 0 && Number(hero.fullSp) > 0) {
+    if (hours > 0) {
+      // 每輪開挖時抽好這輪挖多久，之後每次巡都用同一個
+      at = start + (record && record.kind === 'mine' && record.hours ? record.hours : hours) * 3600000;
+    } else if (rate > 0 && Number(hero.fullSp) > 0) {
       const record = data.active[hero.id];
       const startSp = record && record.kind === 'mine' ? record.sp : hero.sp;
       const usable = startSp - (hero.fullSp * (Number(settings.miningStopSpPercent) || 0)) / 100;
@@ -12181,8 +12198,7 @@
     return (
       hero.sp <= 0 ||
       percent(hero.sp, hero.fullSp) < (Number(settings.miningRestSpPercent) || 0) ||
-      percent(hero.hp, hero.fullHp) < (Number(settings.miningRestHpPercent) || 0) ||
-      (settings.miningConditionRest && heroConditions(hero).length > 0)
+      percent(hero.hp, hero.fullHp) < (Number(settings.miningRestHpPercent) || 0)
     );
   }
 
@@ -12202,15 +12218,24 @@
     const minutes = (Date.now() - record.at) / 60000;
     if (minutes < 1) return;
     const rates = data.rates[heroId] || (data.rates[heroId] = {});
-    const blend = (old, sample, capped) => (capped ? Math.max(old || 0, sample) * 1.15 : old ? old * 0.5 + sample * 0.5 : sample);
+    // 量到過真正速度（沒用光、沒補滿）之後，用光／補滿的那幾次不再算；固定每幾小時收的話體力幾乎都會用光
+    const learn = (key, sample, capped) => {
+      const exact = `${key}Exact`;
+      if (!capped) {
+        rates[key] = rates[exact] && rates[key] ? rates[key] * 0.5 + sample * 0.5 : sample;
+        rates[exact] = true;
+      } else if (!rates[exact]) {
+        rates[key] = Math.max(rates[key] || 0, sample * 1.15);
+      }
+    };
     if (record.kind === 'mine') {
       const used = record.sp - after.sp;
-      if (used > 0) rates.mineSp = blend(rates.mineSp, used / minutes, after.sp <= 0);
+      if (used > 0) learn('mineSp', used / minutes, after.sp <= 0);
     } else {
       const spGain = after.sp - record.sp;
       const hpGain = after.hp - record.hp;
-      if (spGain > 0) rates.restSp = blend(rates.restSp, spGain / minutes, after.sp >= after.fullSp);
-      if (hpGain > 0) rates.restHp = blend(rates.restHp, hpGain / minutes, after.hp >= after.fullHp);
+      if (spGain > 0) learn('restSp', spGain / minutes, after.sp >= after.fullSp);
+      if (hpGain > 0) learn('restHp', hpGain / minutes, after.hp >= after.fullHp);
     }
   }
 
@@ -12256,14 +12281,54 @@
     return after;
   }
 
+  // 同一個角色同一種異常只通知一次；好了之後再中才會再通知
   function notifyMiningConditions(settings, hero) {
     if (!settings.miningConditionRest) return;
-    heroConditions(hero).forEach((condition) => {
+    const conditions = heroConditions(hero);
+    const current = new Set(conditions.map((condition) => `${hero.id}:${condition.name}:${condition.level}`));
+    [...miningNotified].filter((key) => key.startsWith(`${hero.id}:`) && !key.endsWith(':potion') && !current.has(key)).forEach((key) => miningNotified.delete(key));
+    conditions.forEach((condition) => {
       const key = `${hero.id}:${condition.name}:${condition.level}`;
       if (miningNotified.has(key)) return;
       miningNotified.add(key);
-      showToast(`挖礦：${hero.name} ${condition.name}${condition.level}，先休息`);
+      alertUser(`挖礦：${hero.name} ${condition.name}${condition.level}，${hero.actionState === 4 ? '提早收礦，' : ''}好了之前不出發挖礦`);
     });
+  }
+
+  const MINING_POTION_MAX_USES = 10;
+
+  // 一次喝一瓶，喝到目標；差不到半瓶就不喝，免得補過頭浪費
+  async function drinkMiningPotions(settings, hero) {
+    const group = SUPPLY_GROUPS.find((candidate) => candidate.id === 'resource');
+    const names = String(settings.miningPotionNames || '')
+      .split(/[,，、]/)
+      .map((name) => name.trim())
+      .filter(Boolean);
+    const target = (hero.fullSp * (Number(settings.miningPotionTargetPercent) || 0)) / 100;
+    if (!(target - hero.sp > 0)) return { hero, used: [], empty: false };
+    const items = (await requestGameApi(ITEMS_API)).items || [];
+    let current = hero;
+    const used = [];
+    let empty = false;
+    for (let count = 0; count < MINING_POTION_MAX_USES && current.sp < target; count++) {
+      const item = pickHealingItem(items, group, names);
+      if (!item) {
+        empty = true;
+        break;
+      }
+      if (target - current.sp < item.healSp / 2) break;
+      await wait(itemRequestGap());
+      const result = await requestGameApi(`${ITEMS_API}/${item.id}/use`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quantity: 1, heroId: hero.id }),
+      });
+      item.available--;
+      current = { ...current, ...(result.hero || { sp: Math.min(current.fullSp, current.sp + item.healSp) }), statuses: current.statuses };
+      used.push(item.name);
+    }
+    if (used.length || empty) logItemUse(`［挖礦］${hero.name} ${used.length ? `喝了 ${used.join('、')}` : ''}${empty ? `${used.length ? '，' : ''}沒有體力藥水了` : ''}，體力 ${current.sp}/${current.fullSp}`);
+    return { hero: current, used, empty };
   }
 
   async function miningHeroStep(settings, hero, plans, data, now, waits) {
@@ -12288,6 +12353,20 @@
       done.push(`${hero.name} 休息完`);
     }
     if (hero.actionState || hero.perished || hero.hp <= 0 || !inTownHero(hero) || inHuntTeam(hero) || forgeByApiHeroIds(settings).includes(hero.id)) return done;
+    if (settings.miningConditionRest && heroConditions(hero).length) {
+      waits.push(Date.now() + 10 * 60000);
+      return done;
+    }
+    if (settings.miningPotionEnabled) {
+      const drink = await drinkMiningPotions(settings, hero);
+      if (drink.used.length) done.push(`${hero.name} 喝了 ${drink.used.length} 瓶體力藥水`);
+      if (!drink.empty) miningNotified.delete(`${hero.id}:potion`);
+      if (drink.empty && !miningNotified.has(`${hero.id}:potion`)) {
+        miningNotified.add(`${hero.id}:potion`);
+        showToast(`挖礦：${hero.name} 沒有體力藥水了，改成休息補體力`);
+      }
+      hero = drink.hero;
+    }
     if (miningNeedsRest(settings, hero)) {
       const minutes = miningRestMinutes(settings, hero, data);
       await requestGameApi(`${HEROES_API}/${hero.id}/rest`, { method: 'POST' });
@@ -12297,8 +12376,11 @@
     } else {
       const site = Number(plans[hero.id]);
       await requestGameApi(`${HEROES_API}/${hero.id}/mining/${site}`, { method: 'POST' });
-      data.active[hero.id] = { kind: 'mine', at: Date.now(), sp: hero.sp, hp: hero.hp, site };
-      done.push(`${hero.name} 去${MINING_SITES[site]}挖礦`);
+      const baseHours = Number(settings.miningIntervalHours) || 0;
+      const jitter = Math.min(50, Math.max(0, Number(settings.miningIntervalJitterPercent) || 0)) / 100;
+      const hours = baseHours > 0 ? baseHours * (1 + (Math.random() * 2 - 1) * jitter) : 0;
+      data.active[hero.id] = { kind: 'mine', at: Date.now(), sp: hero.sp, hp: hero.hp, site, hours };
+      done.push(`${hero.name} 去${MINING_SITES[site]}挖礦${hours ? `（約 ${hours.toFixed(1)} 小時後收）` : ''}`);
     }
     saveMining(data);
     refreshGameView([['heroes']]);
@@ -12430,14 +12512,16 @@
       });
   }
 
-  function miningHeroText(hero, data, now) {
+  function miningHeroText(hero, data, now, settings) {
     if (hero.perished) return '死透了';
     if (hero.hp <= 0) return '死亡';
     const spText = (sp) => `體 ${Math.round(sp)}/${hero.fullSp}`;
     if (hero.actionState === 4) {
       const estimate = estimatedMiningSp(hero, data, now);
       const ready = Boolean(hero.canComplete) || Date.parse(hero.actionCompleteTime) <= now;
-      return `${MINING_SITES[hero.actionTarget] || '挖礦'}挖了 ${durationText(actionMinutes(hero, now))}${ready ? '' : '（未滿 3 分）'}・${estimate === null ? `開挖時${spText(hero.sp)}` : `約${spText(estimate)}`}`;
+      const plan = settings && miningPlans(settings)[hero.id] ? new Date(miningCollectAt(settings, hero, data, now)) : null;
+      const collect = plan ? `・${plan.getHours()}:${String(plan.getMinutes()).padStart(2, '0')} 收` : '';
+      return `${MINING_SITES[hero.actionTarget] || '挖礦'}挖了 ${durationText(actionMinutes(hero, now))}${ready ? '' : '（未滿 3 分）'}・${estimate === null ? `開挖時${spText(hero.sp)}` : `約${spText(estimate)}`}${collect}`;
     }
     const hpText = `HP ${hero.hp}/${hero.fullHp}`;
     if (hero.actionState === 2) return `休息了 ${durationText(actionMinutes(hero, now))}・${hpText}`;
@@ -12458,7 +12542,7 @@
         .map((hero) => ({
           name: hero.name,
           planned: Boolean(plans[hero.id]),
-          text: miningHeroText(hero, data, now),
+          text: miningHeroText(hero, data, now, settings),
           conditions: heroConditions(hero).map((condition) => `${condition.name}${condition.level}`),
         })),
       last: data.log[0] || null,
@@ -12485,7 +12569,7 @@
               .join('');
             return `<div class="row" style="margin:0;padding:3px 0;border-bottom:1px solid #2e2e34">
               <div style="flex:1;min-width:0"><b>${escapeHtml(hero.name)}</b> <span style="color:#a0a0aa">挖礦 ${hero.mining ?? '?'}</span>
-                <div style="color:${hero.actionState === 4 ? '#60a5fa' : '#a0a0aa'}">${escapeHtml(miningHeroText(hero, data, now))}${conditions.length ? ` <span style="color:#fb923c">${escapeHtml(conditions.join('、'))}</span>` : ''}${blocked ? ` <span style="color:#f87171">${blocked}（不會被拿去挖）</span>` : ''}</div></div>
+                <div style="color:${hero.actionState === 4 ? '#60a5fa' : '#a0a0aa'}">${escapeHtml(miningHeroText(hero, data, now, settings))}${conditions.length ? ` <span style="color:#fb923c">${escapeHtml(conditions.join('、'))}</span>` : ''}${blocked ? ` <span style="color:#f87171">${blocked}（不會被拿去挖）</span>` : ''}</div></div>
               <select data-mining-hero="${hero.id}" style="flex:none;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px">${options}</select>
             </div>`;
           })
