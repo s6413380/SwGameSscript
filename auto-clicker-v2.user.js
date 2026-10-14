@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.44
+// @version      3.45
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -294,6 +294,13 @@
     forgeAutoNameEnabled: false,
     forgeAutoNameMinutes: 10,
     forgeAutoNamePercent: 80,
+    // 每種裝備看重的屬性順序：自動換名稱時各類型挑自己最好的名稱（沒列到的類型用六圍平均）
+    forgeNamePriorities: [
+      '單手劍、細劍、短刀、單手錘、雙手劍、太刀、雙手斧、長槍：攻>重>耐',
+      '盾牌、頭盔、盔甲：防>重>攻',
+      '帽子、大衣：防>智>重',
+      '項鍊：幸>智>防',
+    ].join('\n'),
     forgeRecipeName: '',
     forgeRecipeTarget: 1,
     // 配方頁直接連續鍛造幾爐（0＝鍛到材料不夠為止）
@@ -897,7 +904,10 @@
         <fieldset class="group" data-fold="closed">
           <legend>每天自動換名稱</legend>
           <label class="row"><input data-field="forgeAutoNameEnabled" type="checkbox" style="flex:none;width:auto"> <b>每天自動換名稱</b>：過 00:00 先暫停開爐，等測名表有好名稱再換上繼續</label>
-          <div class="row">每 ${numberInput('forgeAutoNameMinutes', 'min="1"')} 分鐘抓一次測名表，六圍平均 ≥ ${numberInput('forgeAutoNamePercent', 'min="0" max="100" step="0.5"')} % 就用（0＝有資料就用最高的）</div>
+          <div class="row">每 ${numberInput('forgeAutoNameMinutes', 'min="1"')} 分鐘抓一次測名表，分數 ≥ ${numberInput('forgeAutoNamePercent', 'min="0" max="100" step="0.5"')} % 就用（0＝有資料就用最高的）</div>
+          <label>各裝備看重的屬性（一行一組，越前面越重要；屬性用 攻 防 智 幸 重 耐）</label>
+          <textarea data-field="forgeNamePriorities" rows="4" style="width:100%;box-sizing:border-box"></textarea>
+          <div class="hint">每種裝備各自挑分數最高的名稱：排第 1 的屬性佔最多（3 個屬性就是 3:2:1 加權平均）。佇列裡不同類型的角色會拿到不同名稱；沒列到的類型用六圍平均。全部類型都到門檻才開新爐</div>
           <div class="hint">換名稱時勾選角色的名稱、配方頁的名稱都會換成今天六圍平均最高的（同名稱測過好幾次取平均）。暫停期間做好的爐照樣收。手動開始、重整頁面也一樣：今天的名稱還沒定就先等。當天自己改過名稱就用自己的，下一個 00:00 才換</div>
         </fieldset>
         <div class="hint">佇列裡的角色好了就收、閒著就用自己的類型與配方開下一爐；材料不夠會暫停提醒，鍛造體力照下面的設定補</div>
@@ -11284,6 +11294,34 @@
   }
 
   // 今天測過的名稱，依目標排序（合計＝攻防智幸平均）
+  const NAME_STAT_INDEX = { 攻: 0, 防: 1, 智: 2, 幸: 3, 重: 4, 耐: 5 };
+
+  // 「盔甲」→ ['防', '重', '攻']；沒設定就 null
+  function namePriorityFor(settings, type) {
+    for (const line of String(settings.forgeNamePriorities || '').split('\n')) {
+      const [left, right] = line.split(/[:：]/);
+      if (!right || !left.split(/[,，、\s]+/).includes(type)) continue;
+      const stats = right
+        .split(/[>＞,，、\s]+/)
+        .map((stat) => stat.trim())
+        .filter((stat) => stat in NAME_STAT_INDEX);
+      if (stats.length) return stats;
+    }
+    return null;
+  }
+
+  // 這種裝備今天的名稱排名：照屬性順序加權（3 個屬性就是 3:2:1）
+  function todayNamesForType(settings, type) {
+    const stats = namePriorityFor(settings, type);
+    const names = todayNames('six');
+    if (!stats) return names;
+    const weights = stats.map((_, index) => stats.length - index);
+    const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+    return names
+      .map((entry) => ({ ...entry, score: stats.reduce((sum, stat, index) => sum + weights[index] * entry.w[NAME_STAT_INDEX[stat]], 0) / totalWeight }))
+      .sort((first, second) => second.score - first.score);
+  }
+
   function todayNames(goal) {
     const weights = loadNameWeights();
     const today = weights ? weights.days[localDayKey(Date.now())] || {} : {};
@@ -11313,6 +11351,15 @@
           weights ? `；${new Date(weights.fetchedAt).toLocaleTimeString('zh-TW', { hour12: false })} 更新` : ''
         }</div>`
       : `<div class="hint">${weights ? '測名表今天還沒有資料' : '按「更新測名表」讀取'}</div>`;
+    const settings = readSettingsFromPanel();
+    const stats = namePriorityFor(settings, settings.forgeRecipeType);
+    const best = names.length && stats ? todayNamesForType(settings, settings.forgeRecipeType)[0] : null;
+    if (best) {
+      panel.querySelector('[data-role="name-suggest"]').insertAdjacentHTML(
+        'afterbegin',
+        `<div style="margin-bottom:4px">${escapeHtml(settings.forgeRecipeType)}（${stats.join('>')}）今天最好：<b>${escapeHtml(best.name)}</b> ${(best.score * 100).toFixed(1)}% <button data-action="name-use" data-name="${escapeHtml(best.name)}">用</button></div>`
+      );
+    }
   }
 
   // 推薦配方：同類型裝備依「材料組合」分組，用換成普通品質的基本值排名；選好的配方可以直接用 API 鍛造
@@ -12059,6 +12106,19 @@
     return forgeShops.count || FORGE_BASE_SHOPS;
   }
 
+  function applyForgeNamesByType(namesByType) {
+    const settings = readSettingsFromPanel();
+    const plans = forgeByApiPlans(settings);
+    forgeByApiHeroIds(settings).forEach((heroId) => {
+      const name = namesByType[forgeApiPlan(settings, heroId).type];
+      if (name && plans[heroId]) plans[heroId].name = name;
+    });
+    setPanelField('forgeByApiPlans', JSON.stringify(plans));
+    if (namesByType[settings.forgeRecipeType]) setPanelField('forgeRecipeName', namesByType[settings.forgeRecipeType]);
+    saveSettings(readSettingsFromPanel());
+    if (panel.querySelector('[data-forge-plan-hero]')) showForgeApiHeroChoices().catch(() => {});
+  }
+
   function applyForgeName(name) {
     const settings = readSettingsFromPanel();
     const plans = forgeByApiPlans(settings);
@@ -12078,14 +12138,20 @@
     } catch (error) {
       return `讀取測名表失敗（${error.message}）`;
     }
-    const best = todayNames('six')[0];
-    if (!best) return '測名表今天還沒有資料';
-    const bestText = `今天最高「${best.name}」六圍 ${(best.score * 100).toFixed(1)}%`;
-    if (best.score * 100 < settings.forgeAutoNamePercent) return `${bestText}，還沒到 ${settings.forgeAutoNamePercent}%`;
-    applyForgeName(best.name);
+    // 佇列裡每種裝備各挑各的；全部類型都到門檻才換
+    const types = [...new Set([settings.forgeRecipeType, ...forgeByApiHeroIds(settings).map((heroId) => forgeApiPlan(settings, heroId).type)].filter(Boolean))];
+    const picks = types.map((type) => {
+      const stats = namePriorityFor(settings, type);
+      return { type, label: stats ? stats.join('>') : '六圍', best: todayNamesForType(settings, type)[0] };
+    });
+    if (picks.some((pick) => !pick.best)) return '測名表今天還沒有資料';
+    const pickText = (pick) => `${pick.type}「${pick.best.name}」${pick.label} ${(pick.best.score * 100).toFixed(1)}%`;
+    const short = picks.filter((pick) => pick.best.score * 100 < settings.forgeAutoNamePercent);
+    if (short.length) return `今天最高 ${short.map(pickText).join('、')}，還沒到 ${settings.forgeAutoNamePercent}%`;
+    applyForgeNamesByType(Object.fromEntries(picks.map((pick) => [pick.type, pick.best.name])));
     writeJsonStorage(FORGE_NAME_DAY_KEY, localDayKey(Date.now()));
     forgeRunner.nameWaiting = '';
-    forgeLog(`換成${bestText}，繼續鍛造`);
+    forgeLog(`換成 ${picks.map(pickText).join('、')}，繼續鍛造`);
     return null;
   }
 
