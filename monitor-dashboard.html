@@ -443,12 +443,20 @@
         ${row.materials.length ? `<span class="muted">共 ${row.total}${row.cap ? `/${row.cap}` : ''}</span>` : ''}
         ${row.possible === null ? '' : `<span style="color:${row.possible ? '#4ade80' : '#f87171'}">・夠 ${row.possible} 爐</span>`}</div>
       ${row.problems.length ? `<div style="color:#f87171">⚠ ${escapeHtml(row.problems.join('；'))}</div>` : ''}
-      <div class="line" style="justify-content:flex-end"><button class="small" data-forge-edit="${row.heroId}">編輯配方</button><button class="small" data-forge-unqueue="${row.heroId}">移出</button></div>
+      <div class="line" style="justify-content:flex-end">${forgeFavoriteSelectHtml(account, row)}<button class="small" data-forge-edit="${row.heroId}">編輯配方</button><button class="small" data-forge-unqueue="${row.heroId}">移出</button></div>
       ${editing ? forgeEditorHtml(account, row.heroId) : ''}
     </div>`;
   }
 
   // 我的最愛排前面，再來是照鍛造紀錄排名的歷史配方
+  // 一鍵換成同類型的最愛配方（名稱不變）
+  function forgeFavoriteSelectHtml(account, row) {
+    const favorites = (account.data.forgeBoard.favorites || []).filter((item) => item.type === row.type);
+    if (!favorites.length) return '';
+    return `<select data-forge-fav="${row.heroId}" data-type="${escapeHtml(row.type)}" data-name="${row.ownName ? escapeHtml(row.itemName) : ''}" style="max-width:150px">
+      <option value="">★ 換最愛配方</option>${favorites.map((item) => `<option value="${escapeHtml(item.recipe)}">${escapeHtml(item.recipe)}</option>`).join('')}</select>`;
+  }
+
   function forgeRecipeOptionsHtml(forge, type) {
     const favorites = (forge.favorites || [])
       .filter((item) => item.type === type)
@@ -546,7 +554,7 @@
       const editor = event.target.closest('[data-editor]');
       const value = (field) => editor.querySelector(`[data-edit="${field}"]`).value;
       const heroId = forgeEditing.heroId === 'new' ? Number(value('hero')) : forgeEditing.heroId;
-      sendCommand(target, { type: 'forge-plan', heroId, type: value('type'), recipe: value('recipe'), name: value('name') });
+      sendCommand(target, { type: 'forge-plan', heroId, itemType: value('type'), recipe: value('recipe'), name: value('name') });
       forgeBoardSent(`${account ? account.data.nickname : ''} 配方已送出，分頁 5 秒內套用（不對的話看卡片上的「上一個指令」）`);
       return closeForgeEditor();
     }
@@ -586,6 +594,13 @@
     if (editor && account && edit === 'pick') {
       if (event.target.value) editor.querySelector('[data-edit="recipe"]').value = event.target.value;
       checkForgeEditor(editor, account);
+      return;
+    }
+    const favoriteHero = event.target.dataset.forgeFav;
+    if (favoriteHero && event.target.value) {
+      sendCommand(block.dataset.forgeTarget, { type: 'forge-plan', heroId: Number(favoriteHero), itemType: event.target.dataset.type, recipe: event.target.value, name: event.target.dataset.name || '' });
+      event.target.blur();
+      forgeBoardSent('配方已送出');
       return;
     }
     const field = event.target.dataset.forgeField;

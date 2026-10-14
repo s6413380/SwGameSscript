@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.51
+// @version      3.52
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -8059,6 +8059,10 @@
       renderRecipeFavorites();
     } else if (action === 'recipe-fav') {
       toggleFavoriteRecipe(event.target.dataset.type, event.target.dataset.recipe);
+    } else if (action === 'recipe-fav-apply') {
+      const settings = readSettingsFromPanel();
+      const heroIds = queuedHeroesOfType(settings, event.target.dataset.type);
+      if (heroIds.length) applyRecipeToHeroes(heroIds, event.target.dataset.type, event.target.dataset.recipe);
     } else if (action === 'recipe-fav-current') {
       const settings = readSettingsFromPanel();
       if (isFavoriteRecipe(settings, settings.forgeRecipeType, settings.forgeRecipe)) setStatus('這個配方已經在我的最愛了');
@@ -11576,6 +11580,31 @@
     return recipeFavorites(settings).some((item) => item.type === type && normalizeRecipe(item.recipe) === key);
   }
 
+  // 換配方不動名稱；類型跟著配方走
+  function applyRecipeToHeroes(heroIds, type, recipe) {
+    const settings = readSettingsFromPanel();
+    const plans = forgeByApiPlans(settings);
+    heroIds.forEach((heroId) => {
+      plans[heroId] = { ...(plans[heroId] || {}), type, recipe: normalizeRecipe(recipe) };
+    });
+    setPanelField('forgeByApiPlans', JSON.stringify(plans));
+    afterForgeQueueChange();
+    renderRecipeFavorites();
+    const names = heroIds.map((heroId) => (forgeHeroes.find((hero) => hero.id === heroId) || {}).name || heroId);
+    setStatus(`${names.join('、')} 改用 ${type} ${normalizeRecipe(recipe)}`);
+  }
+
+  // 佇列裡做這種裝備的角色
+  function queuedHeroesOfType(settings, type) {
+    return forgeByApiHeroIds(settings).filter((heroId) => forgeApiPlan(settings, heroId).type === type);
+  }
+
+  function favoriteOptionsHtml(settings, type, placeholder) {
+    const list = recipeFavorites(settings).filter((item) => item.type === type);
+    if (!list.length) return '';
+    return `<option value="">${placeholder}</option>${list.map((item) => `<option value="${escapeHtml(item.recipe)}">★ ${escapeHtml(item.recipe)}</option>`).join('')}`;
+  }
+
   function toggleFavoriteRecipe(type, recipe) {
     const settings = readSettingsFromPanel();
     const key = normalizeRecipe(recipe);
@@ -11603,6 +11632,7 @@
     const current = normalizeRecipe(settings.forgeRecipe);
     const list = recipeFavorites(settings).filter((item) => item.type === type);
     const others = recipeFavorites(settings).length - list.length;
+    const queued = queuedHeroesOfType(settings, type);
     box.innerHTML =
       (list.length
         ? `<table class="combat">${list
@@ -11610,6 +11640,7 @@
               const using = normalizeRecipe(item.recipe) === current;
               return `<tr style="${using ? 'background:#16261c' : ''}"><td style="white-space:normal">${escapeHtml(item.recipe)}</td><td>${recipeStockCell(item.recipe)}</td>
                 <td style="white-space:nowrap">${using ? '<span style="color:#4ade80">使用中</span>' : `<button data-action="recipe-use" data-recipe="${escapeHtml(item.recipe)}">用</button>`}
+                ${queued.length ? `<button data-action="recipe-fav-apply" data-type="${escapeHtml(type)}" data-recipe="${escapeHtml(item.recipe)}" title="佇列裡做${escapeHtml(type)}的角色全部改用這個配方（名稱不變）">套用到佇列 ${queued.length} 人</button>` : ''}
                 <button data-action="recipe-fav" data-type="${escapeHtml(type)}" data-recipe="${escapeHtml(item.recipe)}" title="從我的最愛拿掉">★</button></td></tr>`;
             })
             .join('')}</table>`
@@ -12210,6 +12241,10 @@
         return `<div style="border:1px solid #2e2e34;border-radius:8px;padding:5px 6px;margin:4px 0;background:${row.next ? '#16261c' : '#1c1c21'}">
           <div style="display:flex;gap:6px;align-items:baseline"><b style="white-space:nowrap">${escapeHtml(row.name)}</b>
             <span style="flex:1;text-align:right;color:${row.statusColor}">${row.statusText}</span>
+            ${(() => {
+              const options = favoriteOptionsHtml(readSettingsFromPanel(), row.type, '★ 換最愛');
+              return options ? `<select data-forge-fav="${row.heroId}" data-type="${escapeHtml(row.type)}" style="flex:none;max-width:110px;padding:1px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px">${options}</select>` : '';
+            })()}
             <button data-action="forge-unqueue" data-hero="${row.heroId}" style="padding:0 6px" title="移出佇列（配方會留著）">移出</button></div>
           <div style="margin:2px 0"><span style="padding:0 6px;border-radius:9px;background:#3b2f5c;color:#ddd6fe">${escapeHtml(row.type || '?')}</span>
             「<b>${escapeHtml(row.itemName)}</b>」${row.ownName ? '' : '<span style="color:#a0a0aa">（配方頁的名稱）</span>'}</div>
@@ -12277,7 +12312,7 @@
   // 總覽頁編某個角色的配方：類型、材料、名稱（名稱空白＝用配方頁的名稱）；不在佇列的順便加進去
   function setForgePlanFromDashboard(command) {
     const heroId = Number(command.heroId);
-    const type = String(command.type || '').trim();
+    const type = String(command.itemType || '').trim();
     const recipe = parseRecipe(command.recipe);
     if (!heroId) throw new Error('沒有指定角色');
     if (!Object.values(FORGE_TYPE_NAMES).includes(type)) throw new Error(`不認得的裝備類型 ${type}`);
@@ -13386,6 +13421,12 @@
         })
         .join('') || '<div class="hint">還沒有</div>';
   }
+
+  panel.addEventListener('change', (event) => {
+    const heroId = event.target.dataset && event.target.dataset.forgeFav;
+    if (!heroId || !event.target.value) return;
+    applyRecipeToHeroes([Number(heroId)], event.target.dataset.type, event.target.value);
+  });
 
   panel.addEventListener('change', (event) => {
     if (!event.target.matches || !event.target.matches('[data-mining-potion]')) return;
