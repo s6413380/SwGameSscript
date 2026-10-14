@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.52
+// @version      3.53
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -54,6 +54,7 @@
     ['income', '收益'],
     ['growth', '成長'],
     ['draw', '抽卡'],
+    ['scratch', '刮刮樂'],
     ['pick', '勾選'],
     ['alert', '提醒'],
     ['cloud', '雲端'],
@@ -67,7 +68,7 @@
   const TAB_GROUPS = [
     ['hunt', '打怪', ['main', 'health', 'resource', 'move', 'equip', 'train', 'pause']],
     ['forging', '鍛造', ['forge', 'recipe', 'material', 'mining']],
-    ['stats', '統計', ['income', 'combat', 'huntStats', 'growth', 'draw']],
+    ['stats', '統計', ['income', 'combat', 'huntStats', 'growth', 'draw', 'scratch']],
     ['other', '其他', ['pick', 'transfer', 'cardBuy', 'alert', 'cloud', 'log', 'api', 'backup']],
   ];
   const TAB_STORAGE_KEY = 'autoClickerV2Tab';
@@ -1190,6 +1191,12 @@
       <div data-role="draw-stats"></div>
     </div>
 
+    <div data-tab="scratch">
+      <div class="hint">在遊戲賭場刮刮樂時自動記下花多少、中什麼（這個瀏覽器、這個帳號自己的紀錄）。清除後從零開始算</div>
+      <div class="row"><select data-role="scratch-card" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="">全部刮刮樂</option><option value="regular">200 元</option><option value="premium">1,600 元</option></select><button data-action="scratch-clear">清除紀錄</button></div>
+      <div data-role="scratch-stats"></div>
+    </div>
+
     <div data-tab="cardBuy">
       <div class="row"><label style="flex:1"><input data-field="cardBuyEnabled" type="checkbox" style="width:auto"> <b>看拍賣場英雄</b></label><select data-field="cardWatchMode" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="passive">被動（不多發請求）</option><option value="active">主動查（搶卡用）</option></select></div>
       <div class="hint">被動：你在遊戲開拍賣場的英雄頁、切回這個視窗，或停在人口販子頁時，遊戲抓到清單就順便比對，伺服器看到的跟一般玩家一樣。主動：自己去查，要搶卡時才開</div>
@@ -1491,6 +1498,7 @@
     }
     if (tabId === 'income') renderIncome();
     if (tabId === 'draw') renderDrawStats();
+    if (tabId === 'scratch') renderScratchStats();
     if (tabId === 'forge') {
       renderForgePlanOverview();
       renderNameWeightTable();
@@ -4438,6 +4446,7 @@
   const FORGE_COMPLETE_PATTERN = /\/api\/heroes\/(\d+)\/complete(?:Forge|Action)(?:[?#]|$)/;
   const ITEM_LIST_PATTERN = /\/api\/(?:items|mines)(?:[?#]|$)/;
   const ITEM_USE_PATTERN = /\/api\/items\/(\d+)\/use(?:[?#]|$)/;
+  const SCRATCH_CARD_PATTERN = /\/api\/casino\/scratchCard(?:[?#]|$)/;
 
   // 原地掛機的回應已經帶回打完後的隊伍數值與裝備變化，直接拿來用，下一步就不用再 GET 一次
   // 遊戲隊伍資料每人有 statuses；kind 為 condition 的是異常（中毒、燒傷…），classification 是程度
@@ -7918,6 +7927,11 @@
     } else if (action === 'enchant-plan-clear') {
       enchantPlan.clear();
       renderMaterialSummary();
+    } else if (action === 'scratch-clear') {
+      if (window.confirm('要清除這個帳號的刮刮樂紀錄嗎？清掉就找不回來')) {
+        writeJsonStorage(SCRATCH_LOG_KEY, []);
+        renderScratchStats();
+      }
     } else if (action === 'draw-clear') {
       if (window.confirm('要清除這個帳號的抽卡紀錄嗎？清掉就找不回來')) {
         writeJsonStorage(DRAW_LOG_KEY, []);
@@ -8298,6 +8312,7 @@
       const isEquipmentList = !growthOnly && EQUIPMENT_LIST_PATTERN.test(url);
       const isForgeData = FORGE_START_PATTERN.test(url) || FORGE_COMPLETE_PATTERN.test(url) || ITEM_LIST_PATTERN.test(url);
       const itemUseMatch = !growthOnly && url.match(ITEM_USE_PATTERN);
+      const isScratchCard = !growthOnly && SCRATCH_CARD_PATTERN.test(url);
       const isCardMarket = !growthOnly && (MARKET_HEROES_PATTERN.test(url) || RELEASED_MARKET_PATTERN.test(url));
       const isOtherSite = /^https?:/i.test(url) && !url.startsWith(location.origin);
       const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
@@ -8307,7 +8322,7 @@
       const manualMiningMatch = !growthOnly && !fromScript && method === 'POST' ? url.match(MINING_ACTION_PATTERN) : null;
       const needsResponse = growthOnly
         ? isHunt || growthHeroId || isHeroList || isForgeData || isPlace
-        : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData || itemUseMatch || isPlace || isMoney || isCardMarket || manualMiningMatch;
+        : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData || itemUseMatch || isPlace || isMoney || isCardMarket || manualMiningMatch || isScratchCard;
       if (!needsResponse || STATIC_ASSET_PATTERN.test(url) || isOtherSite) {
         return originalFetch.apply(this, args);
       }
@@ -8387,6 +8402,10 @@
             if (response.ok && isCardMarket && method === 'GET') noticeGameMarket(url, parseJsonText(responseText));
             // 角色列表不管是遊戲自己讀（每 16 秒、抽到新卡、買賣角色後）還是腳本讀的，挖礦頁都跟著換，新卡馬上看得到
             if (response.ok && method === 'GET' && isHeroList) noticeHeroList(parseJsonText(responseText));
+            if (response.ok && isScratchCard && method === 'POST') {
+              const data = parseJsonText(responseText);
+              if (data && Array.isArray(data.prizes)) recordScratch(requestBody, data);
+            }
             if (response.ok && itemUseMatch) {
               const data = parseJsonText(responseText);
               if (data && data.drawResult) {
@@ -9826,6 +9845,128 @@
       ${table('稀有度', countBy(draws, 'tier'))}
       <details><summary>各卡片（${countBy(draws, 'type').size} 種）</summary>${table('卡片', countBy(draws, 'type'))}</details>
       <div class="subhead">最近 ${Math.min(DRAW_RECENT_COUNT, draws.length)} 抽</div>
+      <div class="hint">${recent}</div>`;
+  }
+
+  // 刮刮樂統計：POST /api/casino/scratchCard {cardId, count} 回 {prizes[{kind, message}], netChange, cost}
+  // netChange 只算錢（中道具不算進去），所以贏到的錢 = netChange + 花費
+  const SCRATCH_LOG_KEY = 'autoClickerV2Scratch';
+  const SCRATCH_LOG_LIMIT = 3000;
+  const SCRATCH_RECENT_COUNT = 20;
+  const SCRATCH_CARDS = { regular: { label: '200 元', cost: 200 }, premium: { label: '1,600 元', cost: 1600 } };
+
+  function recordScratch(requestBody, data) {
+    const body = parseJsonText(requestBody) || {};
+    const card = String(body.cardId || 'regular');
+    const count = Math.max(1, Number(body.count) || data.prizes.length || 1);
+    const cost = Number.isFinite(Number(data.cost)) ? Number(data.cost) : ((SCRATCH_CARDS[card] || {}).cost || 0) * count;
+    const net = Number(data.netChange) || 0;
+    const prizes = {};
+    data.prizes.forEach((prize) => {
+      const key = `${prize.kind || ''}\u0000${prize.message || '（沒有說明）'}`;
+      prizes[key] = (prizes[key] || 0) + 1;
+    });
+    const plays = readJsonStorage(SCRATCH_LOG_KEY, []);
+    plays.push({ at: Date.now(), card, count, cost, won: net + cost, prizes });
+    writeJsonStorage(SCRATCH_LOG_KEY, plays.slice(-SCRATCH_LOG_LIMIT));
+    if (activeTab === 'scratch') renderScratchStats();
+  }
+
+  function scratchMoney(amount) {
+    return `${amount < 0 ? '-' : ''}$${Math.abs(Math.round(amount)).toLocaleString()}`;
+  }
+
+  function scratchNetHtml(net) {
+    const color = net > 0 ? '#4ade80' : net < 0 ? '#f87171' : '#a1a1aa';
+    return `<span style="color:${color}">${net > 0 ? '+' : ''}${scratchMoney(net)}</span>`;
+  }
+
+  function scratchTotals(plays) {
+    const totals = { count: 0, cost: 0, won: 0, items: 0 };
+    plays.forEach((play) => {
+      totals.count += play.count;
+      totals.cost += play.cost;
+      totals.won += play.won;
+      Object.entries(play.prizes).forEach(([key, times]) => {
+        if (key.startsWith('item\u0000')) totals.items += times;
+      });
+    });
+    return totals;
+  }
+
+  function renderScratchStats() {
+    const select = panel.querySelector('[data-role="scratch-card"]');
+    const all = readJsonStorage(SCRATCH_LOG_KEY, []);
+    const plays = select.value ? all.filter((play) => play.card === select.value) : all;
+    const box = panel.querySelector('[data-role="scratch-stats"]');
+    if (!plays.length) {
+      box.innerHTML = '<div class="hint">還沒有刮刮樂紀錄：在遊戲的賭場刮刮樂，這裡就會記下來</div>';
+      return;
+    }
+    const totals = scratchTotals(plays);
+    const returnRate = totals.cost ? `${((totals.won / totals.cost) * 100).toFixed(1)}%` : '-';
+    // 每張平均：拿來判斷長期刮下去是賺是賠
+    const perCard = totals.count ? (totals.won - totals.cost) / totals.count : 0;
+
+    const days = new Map();
+    plays.forEach((play) => {
+      const day = new Date(play.at).toLocaleDateString('zh-TW', { month: 'numeric', day: 'numeric' });
+      const list = days.get(day) || [];
+      list.push(play);
+      days.set(day, list);
+    });
+    const dayRows = [...days.entries()]
+      .reverse()
+      .map(([day, list]) => {
+        const dayTotals = scratchTotals(list);
+        return `<tr><td style="text-align:left">${day}</td><td>${dayTotals.count}</td><td>${scratchMoney(dayTotals.cost)}</td><td>${scratchMoney(dayTotals.won)}</td><td>${scratchNetHtml(dayTotals.won - dayTotals.cost)}</td><td>${dayTotals.items || ''}</td></tr>`;
+      })
+      .join('');
+
+    const cardRows = Object.entries(SCRATCH_CARDS)
+      .map(([card, info]) => {
+        const list = plays.filter((play) => play.card === card);
+        if (!list.length) return '';
+        const cardTotals = scratchTotals(list);
+        return `<tr><td style="text-align:left">${info.label}</td><td>${cardTotals.count}</td><td>${scratchMoney(cardTotals.cost)}</td><td>${scratchMoney(cardTotals.won)}</td><td>${scratchNetHtml(cardTotals.won - cardTotals.cost)}</td><td>${cardTotals.items || ''}</td></tr>`;
+      })
+      .join('');
+
+    const prizeCounts = new Map();
+    plays.forEach((play) => {
+      Object.entries(play.prizes).forEach(([key, times]) => prizeCounts.set(key, (prizeCounts.get(key) || 0) + times));
+    });
+    const prizeRows = [...prizeCounts.entries()]
+      .sort((first, second) => second[1] - first[1])
+      .map(([key, times]) => {
+        const [kind, message] = key.split('\u0000');
+        const style = kind === 'item' ? ' style="text-align:left;color:#fbbf24"' : ' style="text-align:left"';
+        return `<tr><td${style}>${escapeHtml(message)}</td><td>${times}</td><td>${((times / totals.count) * 100).toFixed(1)}%</td></tr>`;
+      })
+      .join('');
+
+    const recent = plays
+      .slice(-SCRATCH_RECENT_COUNT)
+      .reverse()
+      .map((play) => {
+        const time = new Date(play.at).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        const items = Object.entries(play.prizes)
+          .filter(([key]) => key.startsWith('item\u0000'))
+          .map(([key, times]) => `${key.split('\u0000')[1]}${times > 1 ? ` ×${times}` : ''}`);
+        return `<div>${time} ${(SCRATCH_CARDS[play.card] || { label: play.card }).label} × ${play.count} 張：${scratchNetHtml(play.won - play.cost)}${items.length ? `　<span style="color:#fbbf24">${escapeHtml(items.join('、'))}</span>` : ''}</div>`;
+      })
+      .join('');
+
+    const head = '<tr><th style="text-align:left">%s</th><th>張</th><th>花費</th><th>贏得</th><th>損益</th><th>道具</th></tr>';
+    box.innerHTML = `
+      <div>共刮 <b>${totals.count}</b> 張（${new Date(plays[0].at).toLocaleDateString()} 起）</div>
+      <div>花費 <b>${scratchMoney(totals.cost)}</b>　贏得 <b>${scratchMoney(totals.won)}</b>　損益 <b>${scratchNetHtml(totals.won - totals.cost)}</b></div>
+      <div>回收率 <b>${returnRate}</b>　平均每張 ${scratchNetHtml(perCard)}${totals.items ? `　中道具 <b style="color:#fbbf24">${totals.items}</b> 次（道具價值沒算進損益）` : ''}</div>
+      ${select.value ? '' : `<table class="combat">${head.replace('%s', '種類')}${cardRows}</table>`}
+      <div class="subhead">每天</div>
+      <table class="combat">${head.replace('%s', '日期')}${dayRows}</table>
+      <details><summary>獎項分布（${prizeCounts.size} 種）</summary><table class="combat"><tr><th style="text-align:left">獎項</th><th>次</th><th>每張機率</th></tr>${prizeRows}</table></details>
+      <div class="subhead">最近 ${Math.min(SCRATCH_RECENT_COUNT, plays.length)} 次</div>
       <div class="hint">${recent}</div>`;
   }
 
@@ -14405,6 +14546,7 @@
   renderTrainStatus();
   // data-role 的欄位不會進設定的 change 處理，篩選道具要自己接
   panel.querySelector('[data-role="draw-item"]').addEventListener('change', renderDrawStats);
+  panel.querySelector('[data-role="scratch-card"]').addEventListener('change', renderScratchStats);
   panel.querySelector('[data-role="material-summary"]').addEventListener('input', (event) => {
     const name = event.target.dataset.enchantMaterial;
     if (name === undefined) return;
