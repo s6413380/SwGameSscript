@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.55
+// @version      3.56
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -834,8 +834,8 @@
       <div class="row">休閒：每小時玩 ${numberInput('lowProfileCasualMinutes', 'min="0" max="60"')} 分鐘（每小時前後飄 30%，分 1～2 段）</div>
       <div class="row">休閒離開時每 ${numberInput('lowProfileCheckinMinMinutes', 'min="1"')}～${numberInput('lowProfileCheckinMaxMinutes', 'min="1"')} 分鐘回來點 ${numberInput('lowProfileCheckinMinHunts', 'min="1"')}～${numberInput('lowProfileCheckinMaxHunts', 'min="1"')} 下狩獵</div>
       <label class="row"><input data-field="lowProfileForgeCheckin" type="checkbox" style="flex:none;width:auto"> 休閒離開時鍛造好了就回來收（晚 1～8 分鐘），順便點幾下狩獵</label>
-      <div class="row">每天 <input data-field="lowProfileSleepHours" placeholder="留空＝不睡" style="width:70px;flex:none"> 點睡覺（例：2-9；每天前後飄 1 小時，偶爾多睡）</div>
-      <div class="row">每天 <input data-field="lowProfileOffHours" placeholder="留空＝沒有" style="width:110px;flex:none"> 點完全休息（例：9-12,14-17；前後飄 15 分鐘）</div>
+      <div class="row">每天 <input data-field="lowProfileSleepHours" placeholder="留空＝不睡" style="width:70px;flex:none"> 點睡覺（例：2-9；不會比設定早睡，晚 0～45 分鐘才睡，起床前後飄 30 分鐘，偶爾多睡）</div>
+      <div class="row">每天 <input data-field="lowProfileOffHours" placeholder="留空＝沒有" style="width:110px;flex:none"> 點完全休息（例：9-12,14-17；不會比設定早，開始、結束都晚 0～15 分鐘）</div>
       <div class="hint">完全休息跟睡覺一樣：不打怪、不開爐、不收鍛造，休閒的「回來看一下」也不會有。不管哪種玩法都照這個時段停</div>
       <div class="hint">開了之後掛機、API 鍛造每一步多等 1～8 秒（多數短、偶爾長），偶爾分心停 0.5～2 分鐘，要補給、換裝時晚幾秒才反應，動作之間的間隔也拉長；玩一陣子就整個停下休息，晚上睡覺。休息、睡覺時不會打怪、開爐，也不會躲紅名（血量、活人驗證照常監控）。反應變慢，補給門檻設高一點比較安全</div>
       <div class="hint" data-role="low-profile-personality"></div>
@@ -2457,6 +2457,7 @@
       lastAction: { at: lastGameRequest.actionAt, label: lastGameRequest.actionLabel, readAt: lastGameRequest.readAt, text: lastActionText() },
       globalMode: globalPauseActive() ? globalPause.mode : 'run',
       nextActionAt: nextActionAt(),
+      restSchedule: optionalReport('作息', () => restScheduleReport(settings)),
       // 轉移時賣方看這個確認買方已經待命，才掛單
       transferArmed: transferWatch.arm ? transferWatch.arm.token : '',
       transferRefused: transferWatch.refused,
@@ -5582,22 +5583,19 @@
       distractChance: 0.03 + random() * 0.05,
       play: 0.8 + random() * 0.45,
       rest: 0.8 + random() * 0.5,
-      sleepShiftMinutes: Math.round(random() * 180 - 90),
     };
     // 三個帳號同步＝同一個人：玩多久、休息多久、幾點睡用同一組，手速和分心還是各視窗自己的
     if (readSettingsFromPanel().syncAccountsEnabled) {
       const shared = seededRandom('personality:shared');
       personality.play = 0.8 + shared() * 0.45;
       personality.rest = 0.8 + shared() * 0.5;
-      personality.sleepShiftMinutes = Math.round(shared() * 180 - 90);
     }
     return personality;
   }
 
   function lowProfilePersonalityText() {
     const personality = accountPersonality();
-    const shift = personality.sleepShiftMinutes;
-    return `這個帳號的節奏：手速 ×${(1 / personality.speed).toFixed(2)}、分心 ${Math.round(personality.distractChance * 100)}%、玩 ×${personality.play.toFixed(2)}、休息 ×${personality.rest.toFixed(2)}、睡覺${shift >= 0 ? '晚' : '早'} ${Math.abs(shift)} 分鐘`;
+    return `這個帳號的節奏：手速 ×${(1 / personality.speed).toFixed(2)}、分心 ${Math.round(personality.distractChance * 100)}%、玩 ×${personality.play.toFixed(2)}、休息 ×${personality.rest.toFixed(2)}`;
   }
 
   function lowModeOf(settings) {
@@ -5612,11 +5610,16 @@
 
   // 「9-12,14-17」完全休息：時段內回傳結束時間，否則 0
   function offHoursEndAt(settings, now) {
-    const range = hourRanges(settings.lowProfileOffHours, 'off', 15, settings, now).find(([start, end]) => now >= start && now < end);
+    const range = offHourRanges(settings, now).find(([start, end]) => now >= start && now < end);
     return range ? range[1] : 0;
   }
 
-  function hourRanges(text, seedName, jitterMinutes, settings, now) {
+  // 只往後飄：設 9 點就 9 點到 9 點 15 分之間才停，不會比設定早
+  function offHourRanges(settings, now) {
+    return hourRanges(settings.lowProfileOffHours, 'off', 15, settings, now, true);
+  }
+
+  function hourRanges(text, seedName, jitterMinutes, settings, now, lateOnly = false) {
     const profile = dashboard.profile || {};
     const who = settings.syncAccountsEnabled ? 'shared' : profile.nickname || profile.id || '';
     const ranges = [];
@@ -5633,7 +5636,7 @@
           day.setDate(day.getDate() + dayOffset);
           day.setHours(0, 0, 0, 0);
           const random = seededRandom(`${seedName}:${who}:${index}:${day.toDateString()}`);
-          const jitter = () => (random() * 2 - 1) * jitterMinutes;
+          const jitter = () => (lateOnly ? random() : random() * 2 - 1) * jitterMinutes;
           const start = day.getTime() + (from * 60 + jitter()) * 60000;
           const end = day.getTime() + ((to <= from ? to + 24 : to) * 60 + jitter()) * 60000;
           ranges.push([start, end]);
@@ -5693,28 +5696,40 @@
     return randomGap(low, Math.max(low, Number(settings[maxKey]) || low)) * 60000 * factor;
   }
 
-  // 「2-9」＝每天 2 點睡到 9 點；起床、睡覺時間每天各自前後飄最多 1 小時，偶爾多睡 1～3 小時（那天少玩）
-  function sleepEndAt(settings, now = Date.now()) {
+  // 「2-9」＝每天 2 點睡到 9 點。睡覺只會晚 0～45 分鐘、不會比設定早；起床前後飄 30 分鐘，偶爾多睡 30～90 分鐘（那天少玩）
+  function sleepWindows(settings, now = Date.now()) {
     const match = String(settings.lowProfileSleepHours || '').trim().match(/^(\d{1,2}(?:\.\d+)?)[-~～](\d{1,2}(?:\.\d+)?)$/);
-    if (!match) return 0;
+    if (!match) return [];
     const from = Number(match[1]);
     const to = Number(match[2]);
-    const personality = accountPersonality();
     const profile = dashboard.profile || {};
-    for (const dayOffset of [-1, 0]) {
+    const sleeper = settings.syncAccountsEnabled ? 'shared' : profile.nickname || profile.id || '';
+    return [-1, 0, 1].map((dayOffset) => {
       const day = new Date(now);
       day.setDate(day.getDate() + dayOffset);
       day.setHours(0, 0, 0, 0);
-      const sleeper = settings.syncAccountsEnabled ? 'shared' : profile.nickname || profile.id || '';
       const random = seededRandom(`sleep:${sleeper}:${day.toDateString()}`);
-      const startMinutes = from * 60 + personality.sleepShiftMinutes + (random() * 120 - 60);
-      let endMinutes = (to <= from ? to + 24 : to) * 60 + personality.sleepShiftMinutes + (random() * 120 - 60);
-      if (random() < 0.15) endMinutes += 60 + random() * 120;
-      const start = day.getTime() + startMinutes * 60000;
-      const end = day.getTime() + endMinutes * 60000;
-      if (now >= start && now < end) return end;
-    }
-    return 0;
+      const startMinutes = from * 60 + random() * 45;
+      let endMinutes = Math.max(startMinutes + 30, (to <= from ? to + 24 : to) * 60 + (random() * 60 - 30));
+      if (random() < 0.15) endMinutes += 30 + random() * 60;
+      return [day.getTime() + startMinutes * 60000, day.getTime() + endMinutes * 60000];
+    });
+  }
+
+  function sleepEndAt(settings, now = Date.now()) {
+    const current = sleepWindows(settings, now).find(([start, end]) => now >= start && now < end);
+    return current ? current[1] : 0;
+  }
+
+  // 給總覽頁看：接下來（或正在）的睡覺、完全休息實際是幾點到幾點
+  function restScheduleReport(settings) {
+    if (!settings.lowProfileEnabled) return null;
+    const now = Date.now();
+    const upcoming = (ranges) => ranges.filter(([, end]) => end > now).sort((first, second) => first[0] - second[0]);
+    return {
+      sleep: upcoming(sleepWindows(settings, now))[0] || null,
+      off: upcoming(offHourRanges(settings, now)).filter(([start]) => start < now + 24 * 3600000),
+    };
   }
 
   // 三個帳號同步時：玩／休息的時間表由日期決定，每個分頁自己算出來都一樣，不用互相通知就會一起停下來
