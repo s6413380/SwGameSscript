@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.30
+// @version      3.31
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -2341,6 +2341,7 @@
       huntRunning: state.running && !state.forgeMode,
       forgeRunning: (state.running && state.forgeMode) || forgeRunner.running,
       forgeQueue: forgeQueueReport(settings),
+      actorLoot: actorLootReport(),
       alert: dashboard.alert,
       status: statusElement.textContent,
       location: dashboardLocationText(settings),
@@ -12435,6 +12436,20 @@
       .forEach((key) => delete saved.days[key]);
     writeJsonStorage(ACTOR_LOOT_KEY, saved);
     if (activeTab === 'huntStats') renderActorLoot();
+  }
+
+  // 總覽頁用：今天每個角色拿到的錢（照動作分）和道具件數
+  function actorLootReport() {
+    const today = loadActorLoot().days[localDayKey(Date.now())] || {};
+    return Object.entries(today).map(([name, actor]) => ({
+      name,
+      ours: actor.ours,
+      money: actor.money,
+      items: Object.values(actor.items).reduce((sum, quantity) => sum + quantity, 0),
+      topItems: Object.entries(actor.items)
+        .sort(([, first], [, second]) => second - first)
+        .slice(0, 3),
+    }));
   }
 
   function renderActorLoot() {
