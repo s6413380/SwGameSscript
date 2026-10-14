@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.54
+// @version      3.55
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -12630,6 +12630,10 @@
   const forgeRunner = { running: false, runId: 0, timerId: null, started: 0, captchaWaiting: false, captchaCheckedAt: 0, failures: 0, nameWaiting: '' };
   // 名稱是哪一天定的（自動換上或手動改名稱）；存起來，重開腳本、重整頁面後才知道今天的名稱定了沒
   const FORGE_NAME_DAY_KEY = 'autoClickerV2ForgeNameDay';
+  // 今天自動換上的名稱 {day, names{類型: 名稱}}：測名表之後出現更好的就再換，但只換還是自動名稱的（手動改過的不動）
+  const FORGE_AUTO_NAMES_KEY = 'autoClickerV2ForgeAutoNames';
+  // 分數只高一點點不換，免得樣本數變動時兩個名稱換來換去
+  const FORGE_NAME_UPGRADE_MARGIN = 0.005;
   // 遊戲回錯誤或連線失敗時重試幾次才停（例如伺服器偶爾 502、掛機剛好同時動到同一個角色）
   const FORGE_RETRY_LIMIT = 5;
   // 鍛造坊數量＝基本 2 間＋擴建次數（/api/profile 的 forgeExpanded）；當成 6 間的話，真的都滿時會送到不存在的鍛造坊被拒
@@ -12693,11 +12697,60 @@
     const pickText = (pick) => `${pick.type}「${pick.best.name}」${pick.label} ${(pick.best.score * 100).toFixed(1)}%`;
     const short = picks.filter((pick) => pick.best.score * 100 < settings.forgeAutoNamePercent);
     if (short.length) return `今天最高 ${short.map(pickText).join('、')}，還沒到 ${settings.forgeAutoNamePercent}%`;
-    applyForgeNamesByType(Object.fromEntries(picks.map((pick) => [pick.type, pick.best.name])));
+    const names = Object.fromEntries(picks.map((pick) => [pick.type, pick.best.name]));
+    applyForgeNamesByType(names);
     writeJsonStorage(FORGE_NAME_DAY_KEY, localDayKey(Date.now()));
+    writeJsonStorage(FORGE_AUTO_NAMES_KEY, { day: localDayKey(Date.now()), names });
     forgeRunner.nameWaiting = '';
+    forgeRunner.nameUpgradeAt = Date.now() + settings.forgeAutoNameMinutes * 60000;
     forgeLog(`換成 ${picks.map(pickText).join('、')}，繼續鍛造`);
     return null;
+  }
+
+  // 今天的名稱定了以後，測名表還會有人一直補新名稱；照樣每隔幾分鐘看一次，有更好的就換（不擋鍛造）
+  async function upgradeTodayForgeName(settings) {
+    if (Date.now() < (forgeRunner.nameUpgradeAt || 0)) return;
+    forgeRunner.nameUpgradeAt = Date.now() + settings.forgeAutoNameMinutes * 60000;
+    const today = localDayKey(Date.now());
+    const auto = readJsonStorage(FORGE_AUTO_NAMES_KEY, null);
+    if (!auto || auto.day !== today) return;
+    try {
+      await refreshNameWeights(true);
+    } catch {
+      return;
+    }
+    const plans = forgeByApiPlans(settings);
+    const queued = forgeByApiHeroIds(settings).map((heroId) => ({ heroId, plan: forgeApiPlan(settings, heroId) }));
+    const upgrades = {};
+    Object.entries(auto.names).forEach(([type, oldName]) => {
+      // 這類裝備有角色的名稱被手動改掉了，就是不要自動名稱
+      const ofType = queued.filter((entry) => entry.plan.type === type);
+      if (!ofType.length || ofType.some((entry) => entry.plan.name !== oldName)) return;
+      const ranked = todayNamesForType(settings, type);
+      const best = ranked[0];
+      const current = ranked.find((entry) => entry.name === oldName);
+      if (!best || best.name === oldName || best.score * 100 < settings.forgeAutoNamePercent) return;
+      if (current && best.score < current.score + FORGE_NAME_UPGRADE_MARGIN) return;
+      upgrades[type] = { name: best.name, text: `${type}「${oldName}」${current ? `${(current.score * 100).toFixed(1)}%` : ''} → 「${best.name}」${(best.score * 100).toFixed(1)}%` };
+    });
+    if (!Object.keys(upgrades).length) return;
+    // 只改佇列裡這些類型的角色，配方頁的名稱欄也是同類型才跟著換
+    queued.forEach(({ heroId, plan }) => {
+      if (upgrades[plan.type] && plans[heroId]) plans[heroId].name = upgrades[plan.type].name;
+    });
+    setPanelField('forgeByApiPlans', JSON.stringify(plans));
+    if (upgrades[settings.forgeRecipeType] && settings.forgeRecipeName === auto.names[settings.forgeRecipeType]) {
+      setPanelField('forgeRecipeName', upgrades[settings.forgeRecipeType].name);
+    }
+    saveSettings(readSettingsFromPanel());
+    Object.entries(upgrades).forEach(([type, upgrade]) => {
+      auto.names[type] = upgrade.name;
+    });
+    writeJsonStorage(FORGE_AUTO_NAMES_KEY, auto);
+    if (panel.querySelector('[data-forge-plan-hero]')) showForgeApiHeroChoices().catch(() => {});
+    const text = Object.values(upgrades).map((upgrade) => upgrade.text).join('、');
+    forgeLog(`測名表有更好的名稱：${text}`);
+    showToast(`鍛造名稱換成更好的：${text}`);
   }
 
   // 同樣的原因只提醒一次，換了原因（例如另一個角色也沒材料了）才再提醒
@@ -12871,6 +12924,10 @@
           scheduleForgeRunner(randomGap(minutes * 60000, minutes * 60000 + 30000));
           return;
         }
+        settings = readSettingsFromPanel();
+      } else if (settings.forgeAutoNameEnabled) {
+        await upgradeTodayForgeName(settings);
+        if (cancelled()) return;
         settings = readSettingsFromPanel();
       }
       forgeRunner.nameWaiting = '';
