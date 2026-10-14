@@ -72,6 +72,8 @@
   .brief { font-size:12px; margin-top:2px; }
   .card:not(.collapsed) .brief { display:none; }
   .forge-progress { font:12px monospace; margin:6px 0; }
+  .mode { margin:4px 0; font-size:12px; }
+  .mode button.on { background:var(--good); border-color:var(--good); font-weight:bold; }
 </style>
 </head>
 <body>
@@ -369,6 +371,7 @@
         <span><span class="money">💰 ${Number(data.money || 0).toLocaleString()}</span>
         <button class="small" data-toggle title="縮小／展開">${collapsed.has(account.id) ? '＋' : '－'}</button></span></div>
       <div>${badgeHtml(data)} <span class="muted">${data.location && (!forge || data.huntRunning) ? `${escapeHtml(data.location)}・` : ''}${age} 秒前</span></div>
+      ${modeHtml(data)}
       ${data.alert ? `<div class="alert-text">⚠ ${escapeHtml(data.alert)}</div>` : ''}
       <div class="brief muted" data-role="brief">${escapeHtml(briefText(data))}</div>
       <div data-role="detail">
@@ -379,6 +382,20 @@
       ${data.lastCommand ? `<div class="status">上一個指令：${escapeHtml(data.lastCommand)}</div>` : ''}
       ${account.pending ? `<div class="status">還有 ${account.pending} 個指令等分頁取走</div>` : ''}
       </div>`;
+  }
+
+  // 掛機和 API 鍛造可以同時跑，各自開關；亮的是現在在跑的
+  function modeHtml(data) {
+    if (!('huntRunning' in data)) return '';
+    const queue = data.forgeQueue;
+    const queueText = queue
+      ? `佇列 ${queue.queued} 角・欄位 ${queue.forging}/${queue.shops || '?'}${queue.limit ? `・已開 ${queue.started}/${queue.limit} 爐` : queue.started ? `・已開 ${queue.started} 爐` : ''}`
+      : '';
+    return `<div class="row mode">
+      <span class="hunt-only">掛機</span><button class="hunt-only ${data.huntRunning ? 'on' : ''}" data-command="start">開</button><button class="hunt-only" data-command="stop-hunt">停</button>
+      <span>鍛造</span><button class="${data.forgeRunning ? 'on' : ''}" data-command="forge">開</button><button data-command="stop-forge">停</button>
+      ${queueText ? `<span class="muted">${escapeHtml(queueText)}</span>` : ''}
+    </div>`;
   }
 
   // 操作區只建一次，之後只更新值；每次重畫的話正在輸入的內容會被洗掉
@@ -452,7 +469,7 @@
         return;
       }
       const action = button.dataset.command;
-      if (['start', 'forge', 'stop', 'resume', 'town'].includes(action)) {
+      if (['start', 'forge', 'stop', 'stop-hunt', 'stop-forge', 'resume', 'town'].includes(action)) {
         sendCommand(accountId, { type: action });
       } else if (action === 'reload' || action === 'reload-start') {
         sendCommand(accountId, { type: 'reload', autoStart: action === 'reload-start' });

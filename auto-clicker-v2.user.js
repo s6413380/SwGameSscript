@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.25
+// @version      3.26
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -260,6 +260,8 @@
     // 每個角色自己的 { type, recipe, name }（JSON）；鍛造師數值不同，最好的配方也不同
     forgeByApiPlans: '{}',
     forgeByApiCount: 0,
+    // 這個帳號有幾個鍛造欄位；0＝從遊戲讀（基本 2 格＋擴建次數）
+    forgeShopSlots: 0,
     // 名稱效果每天 00:00 換：過了 00:00 先不開新爐，每隔幾分鐘抓測名表，有六圍平均 ≥ 這個 % 的名稱就換上繼續
     forgeAutoNameEnabled: false,
     forgeAutoNameMinutes: 10,
@@ -833,22 +835,28 @@
       <div class="hint">勾「用 API 鍛造」：鍛造自己跑，可以跟上方「開始」的掛機同時進行，人也不用待在鍛造頁。沒勾（按鈕鍛造）：要待在鍛造頁，跟掛機只能二選一，按其中一個開始會停掉另一個。上方「開始」只管掛機</div>
       <fieldset class="group">
         <legend>API 鍛造（用「配方」頁的配方）</legend>
-        <label class="row"><input data-field="forgeByApiEnabled" type="checkbox" style="flex:none;width:auto"> <b>用 API 鍛造</b>（不用設下面的按鈕與鍛造坊）</label>
-        <div class="row">開 ${numberInput('forgeByApiCount', 'min="0"')} 爐（0＝不限）<button data-action="forge-api-heroes">讀取角色</button></div>
+        <label class="row"><input data-field="forgeByApiEnabled" type="checkbox" style="flex:none;width:auto"> <b>用 API 鍛造</b>（不用設下面的按鈕鍛造）</label>
+        <div class="row">鍛造欄位 ${numberInput('forgeShopSlots', 'min="0"')} 個（0＝自動讀遊戲）　開 ${numberInput('forgeByApiCount', 'min="0"')} 爐（0＝不限）</div>
+        <div class="hint">只要填這個帳號有幾個鍛造欄位；哪個角色用哪一格會自動找空的</div>
         <fieldset class="group">
+          <legend>鍛造佇列</legend>
+          <div data-role="forge-plan-overview" style="font-size:12px"></div>
+        </fieldset>
+        <fieldset class="group" data-fold="closed">
+          <legend>編輯佇列（列出所有角色）</legend>
+          <div class="row"><button data-action="forge-api-heroes">讀取角色</button></div>
+          <input data-field="forgeByApiHeroIds" type="hidden"><input data-field="forgeByApiPlans" type="hidden">
+          <div data-role="forge-api-heroes" style="font-size:12px;max-height:200px;overflow:auto"></div>
+          <div class="hint">勾選＝排進佇列。每個角色可以有自己的類型、名稱、配方；名稱沒填就用「配方」頁的。按「帶入」把「配方」頁目前的類型與配方帶進來。平常在「配方」頁的「④ 給誰用」按「加入」就好</div>
+          <label class="row"><input data-field="forgeFillGameForm" type="checkbox" style="flex:none;width:auto"> 送出前把類型、名稱、材料也填到遊戲的鍛造頁（停在鍛造頁、而且「按鈕鍛造」區設過該鍛造坊的「切換」按鈕才會切過去填）</label>
+        </fieldset>
+        <fieldset class="group" data-fold="closed">
           <legend>每天自動換名稱</legend>
           <label class="row"><input data-field="forgeAutoNameEnabled" type="checkbox" style="flex:none;width:auto"> <b>每天自動換名稱</b>：過 00:00 先暫停開爐，等測名表有好名稱再換上繼續</label>
           <div class="row">每 ${numberInput('forgeAutoNameMinutes', 'min="1"')} 分鐘抓一次測名表，六圍平均 ≥ ${numberInput('forgeAutoNamePercent', 'min="0" max="100" step="0.5"')} % 就用（0＝有資料就用最高的）</div>
           <div class="hint">換名稱時勾選角色的名稱、配方頁的名稱都會換成今天六圍平均最高的（同名稱測過好幾次取平均）。暫停期間做好的爐照樣收。手動開始、重整頁面也一樣：今天的名稱還沒定就先等。當天自己改過名稱就用自己的，下一個 00:00 才換</div>
         </fieldset>
-        <fieldset class="group">
-          <legend>鍛造計畫（勾選的角色接下來會鍛造什麼）</legend>
-          <div data-role="forge-plan-overview" style="font-size:12px"></div>
-        </fieldset>
-        <label class="row"><input data-field="forgeFillGameForm" type="checkbox" style="flex:none;width:auto"> 送出前把類型、名稱、材料也填到遊戲的鍛造頁（停在鍛造頁、而且「按鈕鍛造」區設過該鍛造坊的「切換」按鈕才會切過去填）</label>
-        <input data-field="forgeByApiHeroIds" type="hidden"><input data-field="forgeByApiPlans" type="hidden">
-        <div data-role="forge-api-heroes" style="font-size:12px;max-height:150px;overflow:auto"></div>
-        <div class="hint">勾選的角色好了就收、閒著就用自己的類型與配方開下一爐；名稱沒填就用「配方」頁的名稱。鍛造坊自動找空的；材料不夠會暫停提醒，鍛造體力照下面的設定補。<br>配方在「配方」頁勾好後按「存成這個角色的自動鍛造配方」，或在這裡按「帶入」</div>
+        <div class="hint">佇列裡的角色好了就收、閒著就用自己的類型與配方開下一爐；材料不夠會暫停提醒，鍛造體力照下面的設定補</div>
       </fieldset>
       <fieldset class="group" data-fold="closed">
         <legend>按鈕鍛造（沒勾「用 API 鍛造」才用）</legend>
@@ -1015,7 +1023,7 @@
     </div>
 
     <div data-tab="recipe">
-      <div class="hint">這頁是配方編輯器：①看推薦 ②勾材料 ③取名稱 ④存給自動鍛造的角色，或直接鍛造一次</div>
+      <div class="hint">這頁是配方編輯器：①看推薦 ②勾材料 ③取名稱 ④按「加入」把角色排進自動鍛造，或只鍛一次</div>
       <div class="subhead">① 推薦配方</div>
       <div class="row"><select data-field="forgeRecipeType" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option>單手劍</option><option>細劍</option><option>短刀</option><option>單手錘</option><option>盾牌</option><option>雙手劍</option><option>太刀</option><option>雙手斧</option><option>長槍</option><option>頭盔</option><option>帽子</option><option>盔甲</option><option>大衣</option><option>項鍊</option></select>
         <select data-role="recipe-goal" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="total">攻防智運合計</option><option value="atk">攻擊</option><option value="def">防禦</option><option value="int">智力</option><option value="lck">幸運</option><option value="fullDur">耐久</option><option value="wgt">重量輕</option></select></div>
@@ -1031,14 +1039,11 @@
       <div class="row">名稱<input data-field="forgeRecipeName" list="autoClickerTodayNames" placeholder="名稱每天影響數值，自己取"><button data-action="name-sheet-refresh">更新測名表</button></div>
       <datalist id="autoClickerTodayNames"></datalist>
       <div data-role="name-suggest" style="font-size:12px;max-height:180px;overflow:auto"></div>
-      <div class="subhead">④ 給誰用</div>
-      <div class="row"><select data-role="recipe-hero" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="">先讀取角色</option></select><button data-action="recipe-heroes">讀取角色</button></div>
-      <div class="row"><button data-action="recipe-save-hero" style="font-weight:bold">存成這個角色的自動鍛造配方</button></div>
-      <div class="hint">存了之後，「自動鍛造」用 API 鍛造時這個角色就一直用這個配方（名稱沒填的用上面的名稱）</div>
-      <div class="row">連續鍛造 ${numberInput('forgeRecipeRepeat', 'min="0"')} 爐（0＝到材料不夠）<button data-action="recipe-auto-forge" style="font-weight:bold">開始連續鍛造</button></div>
-      <div class="hint">會把配方存給上面選的角色，再用「自動鍛造」跑：好了就收、閒著就開下一爐，鍛造坊自動找空的。自動鍛造頁已勾的其他角色也會一起跑</div>
-      <div class="row">鍛造坊 ${numberInput('forgeRecipeTarget', 'min="1" max="${FORGE_SHOP_COUNT}"')}<button data-action="recipe-forge">只鍛造一次</button></div>
-      <div class="hint">送出前會再確認一次；材料不夠或超過上限會擋下</div>
+      <div class="subhead">④ 給誰用（按「加入」就排進自動鍛造佇列）</div>
+      <div data-role="recipe-heroes" style="font-size:12px;max-height:240px;overflow:auto"></div>
+      <div class="row"><button data-action="recipe-heroes">重新讀取角色</button></div>
+      <div class="row">開 ${numberInput('forgeRecipeRepeat', 'min="0"')} 爐（0＝不限）<button data-action="recipe-auto-forge" style="font-weight:bold">開始自動鍛造</button></div>
+      <div class="hint">「加入」：這個角色以後都用上面的類型與配方（名稱沒填的用上面的名稱），閒著就開爐，鍛造欄位自動找空的；佇列在「自動鍛造」頁。「鍛一次」：只用它鍛一爐，送出前再確認。狩獵隊伍的角色不會被拿去鍛造</div>
       <div class="row"><button data-action="material-refresh">更新裝備資料</button></div>
     </div>
 
@@ -1375,7 +1380,16 @@
       renderRecipes();
       renderRecipePicker();
       // 第一次開配方頁就順便讀材料庫存
-      if (Date.now() - mineStockAt > MINE_STOCK_FRESH_MILLISECONDS) refreshMineStock().then(renderRecipePicker).catch(() => {});
+      if (Date.now() - mineStockAt > MINE_STOCK_FRESH_MILLISECONDS) {
+        refreshMineStock()
+          .then(() => {
+            renderRecipePicker();
+            renderRecipes();
+          })
+          .catch(() => {});
+      }
+      renderRecipeHeroes();
+      refreshForgeHeroes().catch((error) => setStatus(`讀取角色失敗（${error.message}）`));
     }
     if (tabId === 'huntStats') renderHuntStats();
     if (tabId === 'income') renderIncome();
@@ -1383,6 +1397,7 @@
     if (tabId === 'forge') {
       renderForgePlanOverview();
       if (Date.now() - mineStockAt > MINE_STOCK_FRESH_MILLISECONDS) refreshMineStock().then(renderForgePlanOverview).catch(() => {});
+      refreshForgeHeroes().catch((error) => setStatus(`讀取角色失敗（${error.message}）`));
     }
     if (tabId === 'transfer') refreshTransferChoices(readSettingsFromPanel()).catch((error) => transferLog(`讀取帳號或角色失敗（${error.message}）`));
     panel.querySelectorAll('[data-tab]').forEach((section) => {
@@ -2224,6 +2239,17 @@
     };
   }
 
+  function forgeQueueReport(settings) {
+    if (!settings.forgeByApiEnabled) return null;
+    return {
+      queued: forgeByApiHeroIds(settings).length,
+      shops: Number(settings.forgeShopSlots) || forgeShops.count || 0,
+      forging: forgeHeroes.filter((hero) => hero.actionState === 5).length,
+      started: forgeRunner.started,
+      limit: settings.forgeByApiCount,
+    };
+  }
+
   function dashboardBaseUrl(settings) {
     return String(settings.dashboardUrl || '').replace(/\/+$/, '');
   }
@@ -2285,6 +2311,7 @@
       forgeMode: state.forgeMode,
       huntRunning: state.running && !state.forgeMode,
       forgeRunning: (state.running && state.forgeMode) || forgeRunner.running,
+      forgeQueue: forgeQueueReport(settings),
       alert: dashboard.alert,
       status: statusElement.textContent,
       location: dashboardLocationText(settings),
@@ -3282,6 +3309,13 @@
         stop('總覽頁按了停止');
         stopForgeRunner('總覽頁按了停止');
         return '停止';
+      case 'stop-hunt':
+        if (state.running && !state.forgeMode) stop('總覽頁停止掛機');
+        return '停止掛機';
+      case 'stop-forge':
+        if (forgeRunner.running) stopForgeRunner('總覽頁停止鍛造');
+        if (state.running && state.forgeMode) stop('總覽頁停止鍛造');
+        return '停止鍛造';
       case 'resume':
         clearAlert();
         start(state.forgeMode);
@@ -7553,13 +7587,20 @@
       refreshMineStock()
         .then(() => {
           renderRecipePicker();
+          renderRecipes();
           setStatus(`材料庫存 ${mineStock.length} 種`);
         })
         .catch((error) => setStatus(`讀取材料失敗（${error.message}）`));
-    } else if (action === 'recipe-save-hero') {
-      saveRecipeToHero();
+    } else if (action === 'recipe-queue') {
+      queueHeroForForge(Number(event.target.dataset.hero));
+    } else if (action === 'forge-unqueue') {
+      unqueueHeroForForge(Number(event.target.dataset.hero));
+    } else if (action === 'recipe-forge-once') {
+      forgeWithRecipe(readSettingsFromPanel(), Number(event.target.dataset.hero));
     } else if (action === 'recipe-auto-forge') {
-      if (saveRecipeToHero()) {
+      if (!forgeByApiHeroIds(readSettingsFromPanel()).length) {
+        setStatus('佇列是空的：先在上面的角色按「加入」');
+      } else {
         setPanelField('forgeByApiEnabled', true);
         setPanelField('forgeByApiCount', readSettingsFromPanel().forgeRecipeRepeat);
         start(true);
@@ -7577,9 +7618,7 @@
     } else if (action === 'recipe-use') {
       setPanelField('forgeRecipe', event.target.dataset.recipe);
     } else if (action === 'recipe-heroes') {
-      loadForgeHeroes().catch((error) => setStatus(`讀取角色失敗（${error.message}）`));
-    } else if (action === 'recipe-forge') {
-      forgeWithRecipe(readSettingsFromPanel());
+      refreshForgeHeroes(true).catch((error) => setStatus(`讀取角色失敗（${error.message}）`));
     } else if (action === 'hunt-stats-clear') {
       if (!window.confirm('要清除所有樓層統計與掉落紀錄嗎？')) return;
       writeJsonStorage(HUNT_STATS_KEY, { places: {}, recent: [] });
@@ -10562,28 +10601,33 @@
     setPanelField('forgeRecipe', parts.join('、'));
   }
 
-  // 配方頁編好的類型與配方存成某個角色的自動鍛造配方，並把他勾進自動鍛造
-  function saveRecipeToHero() {
+  // 配方頁編好的類型與配方存成這個角色的自動鍛造配方，並把他排進佇列
+  function queueHeroForForge(heroId) {
     const settings = readSettingsFromPanel();
-    const heroSelect = panel.querySelector('[data-role="recipe-hero"]');
-    const heroId = heroSelect.value;
-    if (!heroId) {
-      setStatus('先按「讀取角色」選角色');
-      return false;
-    }
     if (!parseRecipeLoosely(settings.forgeRecipe).length) {
-      setStatus('配方是空的，先勾材料');
-      return false;
+      setStatus('配方是空的，先在「② 配方」勾材料');
+      return;
     }
     const plans = forgeByApiPlans(settings);
     plans[heroId] = { ...(plans[heroId] || {}), type: settings.forgeRecipeType, recipe: settings.forgeRecipe };
     setPanelField('forgeByApiPlans', JSON.stringify(plans));
-    const heroIds = forgeByApiHeroIds(settings).map(String);
+    const heroIds = forgeByApiHeroIds(settings);
     if (!heroIds.includes(heroId)) setPanelField('forgeByApiHeroIds', [...heroIds, heroId].join(','));
-    if (panel.querySelector('[data-forge-plan-hero]')) showForgeApiHeroChoices().catch(() => {});
-    const heroName = heroSelect.selectedOptions[0].textContent.replace(/（.*$/, '');
-    setStatus(`已存成 ${heroName} 的自動鍛造配方：${settings.forgeRecipeType} ${settings.forgeRecipe}`);
-    return true;
+    afterForgeQueueChange();
+    const hero = forgeHeroes.find((candidate) => candidate.id === heroId);
+    setStatus(`${hero ? hero.name : `角色 ${heroId}`} 已加入鍛造佇列：${settings.forgeRecipeType} ${settings.forgeRecipe}${forgeRunner.running ? '' : '（還沒開始自動鍛造）'}`);
+  }
+
+  function unqueueHeroForForge(heroId) {
+    setPanelField('forgeByApiHeroIds', forgeByApiHeroIds(readSettingsFromPanel()).filter((id) => id !== heroId).join(','));
+    afterForgeQueueChange();
+  }
+
+  function afterForgeQueueChange() {
+    saveSettings(readSettingsFromPanel());
+    if (panel.querySelector('[data-forge-plan-hero]')) renderForgeApiHeroChoices();
+    renderForgePlanOverview();
+    renderRecipeHeroes();
   }
 
   // 遊戲的裝備詳細資料加上鍛造材料、鍛造時間、鍛造師當時數值與換成「普通」品質的基本值。
@@ -10962,13 +11006,23 @@
     renderNameSuggestions();
     const scoreText = (score) => String(Math.round(goal === 'wgt' ? -score : score));
     panel.querySelector('[data-role="recipe-list"]').innerHTML = recipes.length
-      ? `<table class="combat"><tr><th>配方</th><th>件</th><th>${escapeHtml(RECIPE_GOALS[goal])}</th><th></th></tr>${recipes
+      ? `<table class="combat"><tr><th>配方</th><th>件</th><th>${escapeHtml(RECIPE_GOALS[goal])}</th><th title="照目前的材料庫存，夠鍛幾爐">夠</th><th></th></tr>${recipes
           .map(
             (recipe) => `<tr><td style="white-space:normal">${escapeHtml(recipe.key)}${recipe.skills ? `<div class="hint" style="margin:0">${recipe.skills}</div>` : ''}</td><td>${recipe.count}</td><td>${scoreText(recipe.score)}</td>
-              <td><button data-action="recipe-use" data-recipe="${escapeHtml(recipe.key)}">用</button></td></tr>`
+              <td>${recipeStockCell(recipe.key)}</td><td><button data-action="recipe-use" data-recipe="${escapeHtml(recipe.key)}">用</button></td></tr>`
           )
           .join('')}</table><div class="hint">數值是換成普通品質的平均；鍛造師的鍛造、裁縫、工藝也會影響成品，選同一個鍛造師比較準；件數少的只能參考</div>`
       : `<div class="hint">這個類型還沒有${nameAdjust ? '對得到測名表的' : ''}材料紀錄</div>`;
+  }
+
+  // 推薦配方旁邊直接看材料夠不夠：夠幾爐，不夠的話缺哪些
+  function recipeStockCell(recipeText) {
+    const recipe = parseRecipeLoosely(recipeText);
+    if (!recipe.length || !mineStock.length) return '<span style="color:#666">?</span>';
+    const have = new Map(mineStock.map((mine) => [mine.name, mine.have]));
+    const short = recipe.filter(([name, quantity]) => (have.get(name) || 0) < quantity).map(([name, quantity]) => `${name} 剩 ${have.get(name) || 0}／要 ${quantity}`);
+    const possible = forgesPossible(recipe, mineStock);
+    return `<span style="color:${possible ? '#22c55e' : '#ef4444'}" title="${escapeHtml(short.join('\n') || '材料都夠')}">${possible ? possible : '缺'}</span>`;
   }
 
   // 「泥土×4、楊木×2」→ [['泥土', 4], ['楊木', 2]]
@@ -10984,36 +11038,30 @@
       });
   }
 
-  async function loadForgeHeroes() {
-    const heroes = (await requestGameApi(HEROES_API)).heroes || [];
-    const select = panel.querySelector('[data-role="recipe-hero"]');
-    const previous = select.value;
-    // 忙碌中的角色還是列出來（可以先存配方），只有「鍛造一次」時才擋
-    select.innerHTML = heroes
-      .slice()
-      .sort((first, second) => (second.forge || 0) - (first.forge || 0))
-      .map(
-        (hero) =>
-          `<option value="${hero.id}" data-busy="${hero.actionState ? 1 : ''}">${escapeHtml(hero.name)}（鍛 ${hero.forge ?? '?'}／裁 ${hero.tailor ?? '?'}／工 ${hero.craft ?? '?'}${hero.actionState ? '，忙碌中' : ''}）</option>`
-      )
-      .join('');
-    if ([...select.options].some((option) => option.value === previous)) select.value = previous;
-  }
-
-  async function forgeWithRecipe(settings) {
-    const heroSelect = panel.querySelector('[data-role="recipe-hero"]');
+  async function forgeWithRecipe(settings, heroId) {
     try {
-      if (heroSelect.selectedOptions[0] && heroSelect.selectedOptions[0].dataset.busy) throw new Error('這個角色正在忙');
+      await refreshForgeHeroes(true);
+      const hero = forgeHeroes.find((candidate) => candidate.id === heroId);
+      if (!hero) throw new Error('找不到這個角色，按「重新讀取角色」');
+      if (hero.actionState) throw new Error(`${hero.name} 正在忙`);
+      if (inHuntTeam(hero)) throw new Error(`${hero.name} 在狩獵隊伍裡，拿去鍛造打怪會出錯`);
+      const target = await freeForgeShop(forgeHeroes);
+      if (!target) throw new Error('鍛造欄位都在用（欄位數不對的話到「自動鍛造」頁改）');
       const plan = { type: settings.forgeRecipeType, recipe: settings.forgeRecipe, name: settings.forgeRecipeName };
-      const { body, summary, forgesLeft } = await buildForgeRequest(plan, Number(heroSelect.value), settings.forgeRecipeTarget);
-      const heroName = heroSelect.selectedOptions[0].textContent.replace(/（.*$/, '');
-      if (!window.confirm(`用 ${heroName} 在第 ${settings.forgeRecipeTarget} 個鍛造坊鍛造\n${summary}\n確定送出？`)) return;
+      const { body, summary, forgesLeft } = await buildForgeRequest(plan, heroId, target);
+      if (!window.confirm(`用 ${hero.name} 在第 ${target} 個鍛造欄位鍛造\n${summary}\n確定送出？`)) return;
       await sendForge(body);
       setStatus(`已開始鍛造 ${summary}${forgesLeft === null ? '' : `，材料還夠 ${forgesLeft} 爐`}`);
-      loadForgeHeroes().catch(() => {});
+      refreshForgeHeroes(true).catch(() => {});
     } catch (error) {
       setStatus(`鍛造沒送出（${error.message}）`);
     }
+  }
+
+  async function freeForgeShop(heroes) {
+    const count = await forgeShopCount();
+    const busy = new Set(heroes.filter((hero) => hero.actionState === 5).map((hero) => Number(hero.actionTarget)));
+    return Array.from({ length: count }, (_, index) => index + 1).find((shop) => !busy.has(shop)) || 0;
   }
 
   // 檢查配方、名稱、材料庫存，組出 POST /api/forge 要送的內容；手動鍛造和 API 自動鍛造共用
@@ -11254,9 +11302,15 @@
   }
 
   async function showForgeApiHeroChoices() {
-    const heroes = (await requestGameApi(HEROES_API)).heroes || [];
-    forgeHeroes = heroes;
+    forgeHeroes = (await requestGameApi(HEROES_API)).heroes || [];
+    forgeHeroesAt = Date.now();
     await refreshMineStock().catch(() => {});
+    renderForgeApiHeroChoices();
+    renderRecipeHeroes();
+  }
+
+  function renderForgeApiHeroChoices() {
+    const heroes = forgeHeroes;
     const settings = readSettingsFromPanel();
     const chosen = forgeByApiHeroIds(settings);
     const plans = forgeByApiPlans(settings);
@@ -11281,6 +11335,50 @@
 
   // 最近一次讀到的角色（遊戲回傳的順序就是自動鍛造挑閒置角色的順序）
   let forgeHeroes = [];
+  let forgeHeroesAt = 0;
+  const FORGE_HEROES_FRESH_MILLISECONDS = 60000;
+
+  // 打開配方、自動鍛造頁就讀，不用先按「讀取角色」
+  async function refreshForgeHeroes(force = false) {
+    if (!force && Date.now() - forgeHeroesAt < FORGE_HEROES_FRESH_MILLISECONDS) return;
+    forgeHeroes = (await requestGameApi(HEROES_API)).heroes || [];
+    forgeHeroesAt = Date.now();
+    renderRecipeHeroes();
+    renderForgePlanOverview();
+  }
+
+  function renderRecipeHeroes() {
+    const box = panel.querySelector('[data-role="recipe-heroes"]');
+    if (!box) return;
+    if (!forgeHeroes.length) {
+      box.innerHTML = '<div class="hint">讀取角色中…（沒出現就按「重新讀取角色」）</div>';
+      return;
+    }
+    const settings = readSettingsFromPanel();
+    const queued = forgeByApiHeroIds(settings);
+    const plans = forgeByApiPlans(settings);
+    box.innerHTML = forgeHeroes
+      .slice()
+      .sort((first, second) => Number(queued.includes(second.id)) - Number(queued.includes(first.id)) || (second.forge || 0) - (first.forge || 0))
+      .map((hero) => {
+        const inQueue = queued.includes(hero.id);
+        const plan = plans[hero.id] || {};
+        const sameRecipe = inQueue && plan.recipe === settings.forgeRecipe && plan.type === settings.forgeRecipeType;
+        const tags = [];
+        if (inQueue) tags.push(`<span style="color:#4ade80">佇列中：${escapeHtml(plan.type || settings.forgeRecipeType)} ${escapeHtml(plan.recipe || '（沒有配方）')}</span>`);
+        if (inHuntTeam(hero)) tags.push('<span style="color:#f87171">狩獵隊伍（不會被拿去鍛造）</span>');
+        if (hero.actionState === 5) tags.push(`<span style="color:#60a5fa">第 ${hero.actionTarget} 欄鍛造中</span>`);
+        else if (hero.actionState) tags.push('<span style="color:#a0a0aa">忙別的事</span>');
+        const unavailable = hero.actionState || inHuntTeam(hero);
+        return `<div class="row" style="margin:0;padding:3px 0;border-bottom:1px solid #2e2e34">
+          <div style="flex:1;min-width:0"><b>${escapeHtml(hero.name)}</b> <span style="color:#a0a0aa">鍛 ${hero.forge ?? '?'}／裁 ${hero.tailor ?? '?'}／工 ${hero.craft ?? '?'}</span>${tags.length ? `<div>${tags.join('・')}</div>` : ''}</div>
+          ${sameRecipe ? '<span style="color:#4ade80;white-space:nowrap">✓ 用這個配方</span>' : `<button data-action="recipe-queue" data-hero="${hero.id}" style="font-weight:bold">${inQueue ? '改用這個配方' : '加入'}</button>`}
+          ${inQueue ? `<button data-action="forge-unqueue" data-hero="${hero.id}">移出</button>` : ''}
+          <button data-action="recipe-forge-once" data-hero="${hero.id}" ${unavailable ? 'disabled' : ''}>鍛一次</button>
+        </div>`;
+      })
+      .join('');
+  }
 
   // 狩獵隊伍的角色在兩次打怪之間也是「閒置」，拿去開爐的話打怪會一直回「英雄狀態錯誤」
   function inHuntTeam(hero) {
@@ -11295,13 +11393,13 @@
     if (!hero) return ['#a0a0aa', '狀態未知（按「讀取角色」）'];
     if (hero.actionState === 5) {
       const time = Date.parse(hero.actionCompleteTime);
-      if (hero.canComplete || (Number.isFinite(time) && time <= Date.now())) return ['#facc15', `鍛造坊 ${hero.actionTarget}・已完成待收`];
+      if (hero.canComplete || (Number.isFinite(time) && time <= Date.now())) return ['#facc15', `第 ${hero.actionTarget} 欄・已完成待收`];
       const clock = Number.isFinite(time) ? new Date(time).toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit' }) : '?';
-      return ['#60a5fa', `鍛造坊 ${hero.actionTarget}・${clock} 完成`];
+      return ['#60a5fa', `第 ${hero.actionTarget} 欄・${clock} 完成`];
     }
     if (hero.actionState) return ['#a0a0aa', '忙別的事（打怪、移動…），閒下來才鍛造'];
     if (inHuntTeam(hero)) return ['#f87171', '在狩獵隊伍裡，不會拿去鍛造（要鍛造先移出隊伍）'];
-    return ['#4ade80', isNext ? '閒置・下一爐就是它' : '閒置・等鍛造坊空出來'];
+    return ['#4ade80', isNext ? '閒置・下一爐就是它' : '閒置・等鍛造欄位空出來'];
   }
 
   function renderForgePlanOverview() {
@@ -11309,8 +11407,13 @@
     if (!box) return;
     const settings = readSettingsFromPanel();
     const heroIds = forgeByApiHeroIds(settings);
+    const shopTotal = Number(settings.forgeShopSlots) || forgeShops.count;
+    const forgingCount = forgeHeroes.filter((hero) => hero.actionState === 5).length;
+    const shopLine = forgeHeroesAt
+      ? `<div>鍛造欄位：使用中 <b>${forgingCount}</b>／${shopTotal || '?'}${Number(settings.forgeShopSlots) ? '' : '（自動讀遊戲）'}</div>`
+      : '';
     if (!heroIds.length) {
-      box.innerHTML = '<div class="hint">還沒勾角色：按「讀取角色」後勾要鍛造的角色</div>';
+      box.innerHTML = `${shopLine}<div class="hint">佇列是空的：到「配方」頁編好配方，在「④ 給誰用」按「加入」</div>`;
       return;
     }
     const heroById = new Map(forgeHeroes.map((hero) => [hero.id, hero]));
@@ -11318,7 +11421,7 @@
     const nextId = order.find((id) => heroById.has(id) && canStartForge(heroById.get(id)));
     const stock = new Map(mineStock.map((mine) => [mine.name, mine.have]));
     const plans = forgeByApiPlans(settings);
-    box.innerHTML = order
+    box.innerHTML = shopLine + order
       .map((heroId) => {
         const hero = heroById.get(heroId);
         const plan = forgeApiPlan(settings, heroId);
@@ -11340,7 +11443,8 @@
         const possible = recipe.length && mineStock.length ? forgesPossible(recipe, mineStock) : null;
         return `<div style="border:1px solid #2e2e34;border-radius:8px;padding:5px 6px;margin:4px 0;background:${heroId === nextId ? '#16261c' : '#1c1c21'}">
           <div style="display:flex;gap:6px;align-items:baseline"><b style="white-space:nowrap">${escapeHtml(hero ? hero.name : `角色 ${heroId}`)}</b>
-            <span style="flex:1;text-align:right;color:${statusColor}">${statusText}</span></div>
+            <span style="flex:1;text-align:right;color:${statusColor}">${statusText}</span>
+            <button data-action="forge-unqueue" data-hero="${heroId}" style="padding:0 6px" title="移出佇列（配方會留著）">移出</button></div>
           <div style="margin:2px 0"><span style="padding:0 6px;border-radius:9px;background:#3b2f5c;color:#ddd6fe">${escapeHtml(plan.type || '?')}</span>
             「<b>${escapeHtml(plan.name || '')}</b>」${own.name ? '' : '<span style="color:#a0a0aa">（配方頁的名稱）</span>'}</div>
           <div>${chips || '<span style="color:#666">沒有配方</span>'}
@@ -11349,7 +11453,7 @@
           ${problems.length ? `<div style="color:#f87171">⚠ ${problems.join('；')}</div>` : ''}
         </div>`;
       })
-      .join('') + '<div class="hint">綠底＝下一個開爐的角色；紅色材料＝庫存不夠這一爐。改了上面的角色設定會即時更新</div>';
+      .join('') + '<div class="hint">綠底＝下一個開爐的角色；紅色材料＝庫存不夠這一爐</div>';
   }
 
   function forgeCountText(recipeText) {
@@ -11392,6 +11496,8 @@
   const forgeShops = { count: 0, at: 0 };
 
   async function forgeShopCount() {
+    const manual = Number(readSettingsFromPanel().forgeShopSlots) || 0;
+    if (manual > 0) return manual;
     if (forgeShops.count && Date.now() - forgeShops.at < FORGE_SHOPS_FRESH_MILLISECONDS) return forgeShops.count;
     try {
       const profile = await requestGameApi(PROFILE_API);
@@ -11534,6 +11640,8 @@
       let heroes = (await requestGameApi(HEROES_API)).heroes || [];
       if (cancelled()) return;
       forgeHeroes = heroes;
+      forgeHeroesAt = Date.now();
+      renderRecipeHeroes();
       const actions = [];
       for (const hero of heroes.filter((candidate) => heroIds.includes(candidate.id) && candidate.actionState === 5 && candidate.canComplete)) {
         heroes = (await requestGameApi(`${HEROES_API}/${hero.id}/completeForge`, { method: 'POST' })).heroes || heroes;
@@ -12379,6 +12487,10 @@
     if (event.target.dataset.pickChoice) updatePickFromChoices(event.target.dataset.pickChoice);
     if (event.target.dataset.forgeApiHero !== undefined) updateForgeApiHeroesFromChoices();
     if (event.target.dataset.forgePlan) updateForgeApiPlansFromChoices();
+    if (event.target.dataset.forgeApiHero !== undefined || event.target.dataset.forgePlan || ['forgeRecipe', 'forgeRecipeType'].includes(event.target.dataset.field)) {
+      renderRecipeHeroes();
+    }
+    if (event.target.dataset.field === 'forgeShopSlots') renderForgePlanOverview();
     if (event.target.dataset.trainChoice) updateTrainFromChoices();
     if (event.target.dataset.cardRule) updateCardRulesFromRows();
     if (event.target.dataset.field === 'trainEnabled') renderTrainStatus();
