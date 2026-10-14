@@ -91,6 +91,7 @@
   .forge-progress { font:12px monospace; margin:6px 0; }
   .mode { margin:4px 0; font-size:12px; }
   .mode button.on { background:var(--good); border-color:var(--good); font-weight:bold; }
+  button.sent { outline:2px solid #3b82f6; outline-offset:1px; }
 </style>
 </head>
 <body>
@@ -230,6 +231,9 @@
     try {
       const response = await fetch(`/command?id=${encodeURIComponent(accountId)}`, { method: 'POST', body: JSON.stringify(command) });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      // 分頁每秒拿指令、做完馬上回報：1.5 秒後就重抓一次，不用等下一輪
+      setTimeout(refresh, 1500);
+      setTimeout(refresh, 3500);
     } catch (error) {
       alert(`送出指令失敗：${error.message}`);
     }
@@ -598,6 +602,12 @@
     forgeTargets.forEach((account) => sendCommand(account.id, { type: 'stop-forge' }));
     forgeBoardSent(`${forgeTargets.length} 個帳號停止鍛造`);
   });
+
+  // 按下去馬上看得到有送出（框線），等分頁回報後畫面會換成新的狀態
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-command], button[data-forge-cmd], button[data-forge-unqueue], button[data-main], button[data-low], button[data-global]');
+    if (button) button.classList.add('sent');
+  }, true);
 
   document.getElementById('income-board').addEventListener('click', (event) => {
     const key = event.target.dataset.incomePeriod;

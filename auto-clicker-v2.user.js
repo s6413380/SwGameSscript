@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.48
+// @version      3.49
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -3481,7 +3481,12 @@
   }
 
   // 指令跟著回報的回應一起拿回來，不用另外輪詢；做完馬上再回報一次，總覽頁才看得到結果
+  // 總覽頁按的指令接下來這段時間的請求插隊（不像面板按鈕那樣能穿過全體暫停）
+  const DASHBOARD_PRIORITY_MILLISECONDS = 15000;
+  let dashboardPriorityUntil = 0;
+
   async function runDashboardCommands(commands) {
+    dashboardPriorityUntil = Date.now() + DASHBOARD_PRIORITY_MILLISECONDS;
     for (const command of commands) {
       const time = new Date().toLocaleTimeString('zh-TW', { hour12: false });
       try {
@@ -3494,6 +3499,30 @@
       }
     }
     dashboard.reportedAt = 0;
+  }
+
+  // 總覽頁按的指令每秒拿一次，不用等 5 秒一次的回報；中繼站是舊版（沒有 GET /command）就只靠回報帶回來
+  const DASHBOARD_COMMAND_POLL_MILLISECONDS = 1000;
+  const commandPoll = { at: 0, busy: false, unsupported: false };
+
+  async function pollDashboardCommands(settings) {
+    if (!settings.dashboardEnabled || !dashboard.reportingId || commandPoll.busy || commandPoll.unsupported) return;
+    if (Date.now() - commandPoll.at < DASHBOARD_COMMAND_POLL_MILLISECONDS) return;
+    commandPoll.at = Date.now();
+    commandPoll.busy = true;
+    try {
+      const response = await window.fetch(`${dashboardBaseUrl(settings)}/command?id=${encodeURIComponent(dashboard.reportingId)}`, { cache: 'no-store' });
+      if (response.status === 404 || response.status === 405) {
+        commandPoll.unsupported = true;
+        return;
+      }
+      const reply = response.ok ? await response.json().catch(() => null) : null;
+      if (reply && Array.isArray(reply.commands) && reply.commands.length) await runDashboardCommands(reply.commands);
+    } catch {
+      // 連不上就等下一次回報
+    } finally {
+      commandPoll.busy = false;
+    }
   }
 
   async function reportToDashboard(settings) {
@@ -3512,7 +3541,9 @@
           dashboard.dataError = `讀取遊戲資料失敗（${error.message}）`;
         }
       );
-      if (!dashboard.profile || !settings.turnTakingEnabled) await refreshing;
+      // 讀遊戲資料最多等 3 秒：全體暫停或請求排很長時，回報（和跟著回報拿的指令）不能一起卡住
+      if (!dashboard.profile) await refreshing;
+      else if (!settings.turnTakingEnabled) await Promise.race([refreshing, wait(3000)]);
       if (!dashboard.profile) return;
       const reportingId = `${dashboard.profile.id}-${tabKey}`;
       const response = await window.fetch(`${dashboardBaseUrl(settings)}/status?id=${encodeURIComponent(reportingId)}`, {
@@ -3696,7 +3727,9 @@
     const startedAt = Date.now();
     try {
       while (Date.now() - startedAt < TURN_GIVE_UP_MILLISECONDS) {
-        const reply = await askTurnRelay(settings, 'turn', 'GET', { id, query: transfer ? '&transfer=1' : '' });
+        // 玩家剛在面板或總覽頁按過：插隊，不用等別的帳號的預約和輪流
+        const priority = Date.now() < Math.max(manualRequestUntil, dashboardPriorityUntil);
+        const reply = await askTurnRelay(settings, 'turn', 'GET', { id, query: `${transfer ? '&transfer=1' : ''}${priority ? '&priority=1' : ''}` });
         if (reply.granted) {
           // 別的帳號預約的打怪時間快到了，讀完就交出去，不要佔著
           if (id === TURN_ID) turnTaking.linger = reply.linger !== false;
@@ -6413,6 +6446,7 @@
     lines.unshift(lastActionText());
     monitorElement.textContent = lines.join('\n');
     reportToDashboard(settings);
+    pollDashboardCommands(settings);
     checkForUpdate(settings);
     syncGrowth(settings);
     syncSharedSettings(settings);

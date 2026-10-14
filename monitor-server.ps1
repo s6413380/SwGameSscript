@@ -183,7 +183,7 @@ function Slot-Taken([string]$id, [long]$now) {
   return $false
 }
 
-function Request-Turn([string]$id, [bool]$isTransfer) {
+function Request-Turn([string]$id, [bool]$isTransfer, [bool]$isPriority) {
   $now = Now-Milliseconds
   if ($turn.holder -and $turn.until -lt $now) { Release-Turn $now }
   if ($turn.holder -eq $id) {
@@ -196,6 +196,7 @@ function Request-Turn([string]$id, [bool]$isTransfer) {
   }
   if (-not $turnWaiters.ContainsKey($id)) { $turnWaiters[$id] = @{ since = $now; seen = $now; transfer = $isTransfer } }
   $turnWaiters[$id].seen = $now
+  $turnWaiters[$id].priority = $isPriority
   if (Transfer-Active $now) {
     # Everything else (other accounts, and the transferring tabs' own hunting) waits until the transfer ends
     if (-not $isTransfer) { return 500 }
@@ -208,9 +209,12 @@ function Request-Turn([string]$id, [bool]$isTransfer) {
     Grant-Turn $id $now
     return 0
   }
-  if ($turn.holder) { return $(if (Plan-Due $id $now) { 100 } else { 300 }) }
-  if (Slot-Taken $id $now) { return 100 }
-  if (Plan-Due $id $now) { $turn.pick = $id }
+  if ($turn.holder) { return $(if ($isPriority -or (Plan-Due $id $now)) { 100 } else { 300 }) }
+  # Something the player just clicked (dashboard or panel) goes ahead of bookings and the random pick
+  $pickIsPriority = $turn.pick -and $turnWaiters.ContainsKey($turn.pick) -and $turnWaiters[$turn.pick].priority
+  if ($isPriority) { if (-not $pickIsPriority) { $turn.pick = $id } }
+  elseif (Slot-Taken $id $now) { return 100 }
+  elseif ((Plan-Due $id $now) -and -not $pickIsPriority) { $turn.pick = $id }
   # A person finishes a quick burst on one window before switching; cap it so other accounts still get a go
   if ($id -eq $turn.lastHolder -and $now -lt $turn.freeAt + 1500 -and $turn.streak -lt 6) {
     Grant-Turn $id $now
@@ -323,7 +327,7 @@ function Handle-Request($context) {
       Send-Response $response 400 'text/plain' 'bad request'
       return
     }
-    $retry = Request-Turn $id ($request.QueryString['transfer'] -eq '1')
+    $retry = Request-Turn $id ($request.QueryString['transfer'] -eq '1') ($request.QueryString['priority'] -eq '1')
     $transferFlag = if (Transfer-Active (Now-Milliseconds)) { 'true' } else { 'false' }
     $soon = @($turnPlans.Keys | Where-Object { $_ -ne $id -and $turnPlans[$_] -le (Now-Milliseconds) + 3000 -and $turnPlans[$_] -ge (Now-Milliseconds) - 1500 }).Count -gt 0
     $body = if ($retry -eq 0) { '{"granted":true,"linger":' + $(if ($soon) { 'false' } else { 'true' }) + '}' } else { '{"granted":false,"retry":' + $retry + ',"transfer":' + $transferFlag + '}' }
@@ -428,6 +432,22 @@ function Handle-Request($context) {
       if ($transfer.ids.Count -eq 0) { Write-Host "$(Get-Date -Format HH:mm:ss) transfer priority off" }
     }
     Send-Response $response 200 'application/json; charset=utf-8' '{"ok":true}'
+    return
+  }
+  # Tabs poll this every second so dashboard buttons do not wait for the 5 s status report
+  if ($request.HttpMethod -eq 'GET' -and $path -eq '/command') {
+    $id = $request.QueryString['id']
+    if ($id -notmatch '^[\w-]{1,40}$') {
+      Send-Response $response 400 'text/plain' 'bad request'
+      return
+    }
+    $pending = @()
+    if ($commands.ContainsKey($id)) {
+      $pending = $commands[$id].ToArray()
+      $commands.Remove($id)
+      Write-Host "$(Get-Date -Format HH:mm:ss) delivered $($pending.Count) command(s) to account $id"
+    }
+    Send-Response $response 200 'application/json; charset=utf-8' ('{"commands":[' + ($pending -join ',') + ']}')
     return
   }
   if ($request.HttpMethod -eq 'POST' -and $path -eq '/command') {
