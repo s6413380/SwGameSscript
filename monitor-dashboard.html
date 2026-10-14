@@ -448,10 +448,16 @@
     </div>`;
   }
 
+  // 我的最愛排前面，再來是照鍛造紀錄排名的歷史配方
   function forgeRecipeOptionsHtml(forge, type) {
-    return (forge.recipeOptions[type] || [])
+    const favorites = (forge.favorites || [])
+      .filter((item) => item.type === type)
+      .map((item) => `<option value="${escapeHtml(item.recipe)}">★ ${escapeHtml(item.recipe)}</option>`)
+      .join('');
+    const history = (forge.recipeOptions[type] || [])
       .map((recipe) => `<option value="${escapeHtml(recipe.key)}">${escapeHtml(recipe.key)}（${escapeHtml(recipe.goal)} ${recipe.score}，${recipe.count} 件）</option>`)
       .join('');
+    return `${favorites ? `<optgroup label="我的最愛">${favorites}</optgroup>` : ''}${history ? `<optgroup label="歷史配方">${history}</optgroup>` : ''}`;
   }
 
   function forgeEditorHtml(account, heroId) {
@@ -465,7 +471,7 @@
     return `<div class="forge-editor" data-editor>
       ${heroSelect}
       <span>類型</span><select data-edit="type">${Object.keys(FORGE_TYPES).map((type) => `<option ${type === plan.type ? 'selected' : ''}>${type}</option>`).join('')}</select>
-      <span>推薦</span><select data-edit="pick"><option value="">（自己填）</option>${forgeRecipeOptionsHtml(forge, plan.type)}</select>
+      <span>挑配方</span><select data-edit="pick"><option value="">（自己填）</option>${forgeRecipeOptionsHtml(forge, plan.type)}</select>
       <span>配方</span><input data-edit="recipe" value="${escapeHtml(plan.recipe || '')}" placeholder="鐵×10、銅×6">
       <span></span><span class="muted" data-edit-check></span>
       <span>名稱</span><input data-edit="name" value="${escapeHtml(ownName)}" placeholder="空白＝用帳號的名稱（${escapeHtml(forge.itemName || '')}）">

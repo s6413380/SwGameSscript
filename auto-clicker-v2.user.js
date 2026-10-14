@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.49
+// @version      3.50
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -294,6 +294,10 @@
     forgeAutoNameEnabled: false,
     forgeAutoNameMinutes: 10,
     forgeAutoNamePercent: 80,
+    // 挑名稱的權重：auto＝照鍛造紀錄這種裝備平均各屬性有多少（不夠 3 件才用下面的順序）；manual＝照下面的順序
+    forgeNameWeightMode: 'auto',
+    // 配方我的最愛：[{ type, recipe }]（JSON）
+    forgeFavorites: '[]',
     // 每種裝備看重的屬性順序：自動換名稱時各類型挑自己最好的名稱（沒列到的類型用六圍平均）
     forgeNamePriorities: [
       '單手劍、細劍、短刀、單手錘、雙手劍、太刀、雙手斧、長槍：攻>重>耐',
@@ -905,9 +909,12 @@
           <legend>每天自動換名稱</legend>
           <label class="row"><input data-field="forgeAutoNameEnabled" type="checkbox" style="flex:none;width:auto"> <b>每天自動換名稱</b>：過 00:00 先暫停開爐，等測名表有好名稱再換上繼續</label>
           <div class="row">每 ${numberInput('forgeAutoNameMinutes', 'min="1"')} 分鐘抓一次測名表，分數 ≥ ${numberInput('forgeAutoNamePercent', 'min="0" max="100" step="0.5"')} % 就用（0＝有資料就用最高的）</div>
-          <label>各裝備看重的屬性（一行一組，越前面越重要；屬性用 攻 防 智 幸 重 耐）</label>
+          <div class="row">挑名稱的權重 <select data-field="forgeNameWeightMode" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="auto">自動：照鍛造紀錄算</option><option value="manual">手動：照下面的順序</option></select></div>
+          <div class="hint">名稱的倍率是乘在裝備原本的數值上：盔甲幾乎沒有攻擊，名稱攻擊再高也沒用。「自動」照你的鍛造紀錄算出每種裝備平均各屬性有多少，數值越大的屬性占越重（耐久不算，用久會掉）；某種裝備紀錄不到 3 件才用下面的順序</div>
+          <div data-role="name-weight-table" style="font-size:12px"></div>
+          <label>手動順序（一行一組，越前面越重要；屬性用 攻 防 智 幸 重 耐）</label>
           <textarea data-field="forgeNamePriorities" rows="4" style="width:100%;box-sizing:border-box"></textarea>
-          <div class="hint">每種裝備各自挑分數最高的名稱：排第 1 的屬性佔最多（3 個屬性就是 3:2:1 加權平均）。佇列裡不同類型的角色會拿到不同名稱；沒列到的類型用六圍平均。全部類型都到門檻才開新爐</div>
+          <div class="hint">手動：排第 1 的屬性佔最多（3 個屬性就是 3:2:1）。佇列裡不同類型的角色會拿到不同名稱；都沒有的類型用六圍平均。全部類型都到門檻才開新爐</div>
           <div class="hint">換名稱時勾選角色的名稱、配方頁的名稱都會換成今天六圍平均最高的（同名稱測過好幾次取平均）。暫停期間做好的爐照樣收。手動開始、重整頁面也一樣：今天的名稱還沒定就先等。當天自己改過名稱就用自己的，下一個 00:00 才換</div>
         </fieldset>
         <div class="hint">佇列裡的角色好了就收、閒著就用自己的類型與配方開下一爐；材料不夠會暫停提醒，鍛造體力照下面的設定補</div>
@@ -1099,18 +1106,24 @@
     </div>
 
     <div data-tab="recipe">
-      <div class="hint">這頁是配方編輯器：①看推薦 ②勾材料 ③取名稱 ④按「加入」把角色排進自動鍛造，或只鍛一次</div>
-      <div class="subhead">① 推薦配方</div>
-      <div class="row"><select data-field="forgeRecipeType" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option>單手劍</option><option>細劍</option><option>短刀</option><option>單手錘</option><option>盾牌</option><option>雙手劍</option><option>太刀</option><option>雙手斧</option><option>長槍</option><option>頭盔</option><option>帽子</option><option>盔甲</option><option>大衣</option><option>項鍊</option></select>
+      <div class="hint">選裝備 → 從「我的最愛」或「歷史配方」挑一個（或自己勾材料）→ 取名稱 → 在最下面把角色「加入」自動鍛造</div>
+      <div class="row" style="font-size:14px"><b style="flex:none">裝備</b><select data-field="forgeRecipeType" style="flex:1;min-width:0;padding:4px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px;font-size:14px"><option>單手劍</option><option>細劍</option><option>短刀</option><option>單手錘</option><option>盾牌</option><option>雙手劍</option><option>太刀</option><option>雙手斧</option><option>長槍</option><option>頭盔</option><option>帽子</option><option>盔甲</option><option>大衣</option><option>項鍊</option></select></div>
+      <div class="row">目前配方<input data-field="forgeRecipe" placeholder="從下面挑，或勾材料"></div>
+      <div data-role="recipe-total" style="font-size:12px;margin:2px 0"></div>
+      <div class="subhead">★ 我的最愛</div>
+      <input data-field="forgeFavorites" type="hidden">
+      <div data-role="recipe-favorites" style="font-size:12px"></div>
+      <div class="subhead">① 歷史配方（照鍛造紀錄排名，按 ☆ 加進最愛）</div>
+      <div class="row">
         <select data-role="recipe-goal" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="total">攻防智運合計</option><option value="atk">攻擊</option><option value="def">防禦</option><option value="int">智力</option><option value="lck">幸運</option><option value="fullDur">耐久</option><option value="wgt">重量輕</option></select></div>
       <div class="row"><select data-role="recipe-forger" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
       <label class="row"><input data-field="recipeNameAdjust" type="checkbox" style="flex:none;width:auto"> 扣掉名稱影響（只算對得到測名表的裝備）</label>
       <div data-role="recipe-list" style="font-size:12px;max-height:200px;overflow:auto"></div>
-      <div class="subhead">② 配方（勾選材料）</div>
-      <div class="row"><button data-action="mines-refresh">讀取材料庫存</button><input data-role="recipe-filter" placeholder="篩選材料名稱" style="flex:1;min-width:0"></div>
-      <div data-role="recipe-total" style="font-size:12px;margin:2px 0"></div>
-      <div data-role="recipe-picker" style="font-size:12px;max-height:220px;overflow:auto"></div>
-      <div class="row">配方<input data-field="forgeRecipe" placeholder="勾上面的材料，或按推薦的「用」"></div>
+      <fieldset class="group" data-fold="closed">
+        <legend>② 自己勾材料</legend>
+        <div class="row"><button data-action="mines-refresh">讀取材料庫存</button><input data-role="recipe-filter" placeholder="篩選材料名稱" style="flex:1;min-width:0"></div>
+        <div data-role="recipe-picker" style="font-size:12px;max-height:220px;overflow:auto"></div>
+      </fieldset>
       <div class="subhead">③ 名稱</div>
       <div class="row">名稱<input data-field="forgeRecipeName" list="autoClickerTodayNames" placeholder="名稱每天影響數值，自己取"><button data-action="name-sheet-refresh">更新測名表</button></div>
       <datalist id="autoClickerTodayNames"></datalist>
@@ -1458,6 +1471,7 @@
     if (tabId === 'material') renderMaterialSummary();
     if (tabId === 'recipe') {
       renderRecipes();
+      renderRecipeFavorites();
       renderRecipePicker();
       // 第一次開配方頁就順便讀材料庫存
       if (Date.now() - mineStockAt > MINE_STOCK_FRESH_MILLISECONDS) {
@@ -1479,6 +1493,7 @@
     if (tabId === 'draw') renderDrawStats();
     if (tabId === 'forge') {
       renderForgePlanOverview();
+      renderNameWeightTable();
       if (Date.now() - mineStockAt > MINE_STOCK_FRESH_MILLISECONDS) refreshMineStock().then(renderForgePlanOverview).catch(() => {});
       refreshForgeHeroes().catch((error) => setStatus(`讀取角色失敗（${error.message}）`));
     }
@@ -8028,6 +8043,13 @@
         .catch((error) => setStatus(`讀取測名表失敗（${error.message}）`));
     } else if (action === 'recipe-use') {
       setPanelField('forgeRecipe', event.target.dataset.recipe);
+      renderRecipeFavorites();
+    } else if (action === 'recipe-fav') {
+      toggleFavoriteRecipe(event.target.dataset.type, event.target.dataset.recipe);
+    } else if (action === 'recipe-fav-current') {
+      const settings = readSettingsFromPanel();
+      if (isFavoriteRecipe(settings, settings.forgeRecipeType, settings.forgeRecipe)) setStatus('這個配方已經在我的最愛了');
+      else toggleFavoriteRecipe(settings.forgeRecipeType, settings.forgeRecipe);
     } else if (action === 'recipe-heroes') {
       refreshForgeHeroes(true).catch((error) => setStatus(`讀取角色失敗（${error.message}）`));
     } else if (action === 'hunt-stats-clear') {
@@ -11362,15 +11384,77 @@
   }
 
   // 這種裝備今天的名稱排名：照屬性順序加權（3 個屬性就是 3:2:1）
-  function todayNamesForType(settings, type) {
+  // 名稱倍率乘在裝備原本的數值上：照鍛造紀錄算這種裝備平均各屬性有多少，當成挑名稱的權重。
+  // 耐久不算（用久會掉，不算戰力）；換成普通品質再平均，品質高低不影響比例
+  const AUTO_WEIGHT_FIELDS = { 攻: 'atk', 防: 'def', 智: 'int', 幸: 'lck', 重: 'wgt' };
+  const AUTO_WEIGHT_MIN_RECORDS = 3;
+  const AUTO_WEIGHT_FRESH_MILLISECONDS = 60000;
+  const autoWeightCache = { at: 0, byType: {} };
+
+  function autoNameWeights(type) {
+    if (Date.now() - autoWeightCache.at > AUTO_WEIGHT_FRESH_MILLISECONDS) {
+      const multipliers = qualityMultipliers();
+      const sums = {};
+      forgedRecords().forEach((equipment) => {
+        const base = baseStats(equipment, multipliers);
+        const sum = sums[equipment.type] || (sums[equipment.type] = { count: 0, stats: {} });
+        sum.count++;
+        Object.entries(AUTO_WEIGHT_FIELDS).forEach(([stat, field]) => (sum.stats[stat] = (sum.stats[stat] || 0) + Math.abs(base[field] || 0)));
+      });
+      autoWeightCache.byType = Object.fromEntries(
+        Object.entries(sums)
+          .filter(([, sum]) => sum.count >= AUTO_WEIGHT_MIN_RECORDS)
+          .map(([itemType, sum]) => {
+            const total = Object.values(sum.stats).reduce((all, value) => all + value, 0);
+            // 不到 3% 的屬性當成這種裝備沒有
+            const pairs = Object.entries(sum.stats)
+              .map(([stat, value]) => [stat, total ? value / total : 0])
+              .filter(([, share]) => share >= 0.03)
+              .sort(([, first], [, second]) => second - first);
+            return [itemType, { count: sum.count, pairs }];
+          })
+      );
+      autoWeightCache.at = Date.now();
+    }
+    return autoWeightCache.byType[type] || null;
+  }
+
+  // 這種裝備挑名稱用的權重：[[屬性, 比重]]、說明文字；都沒有就 null（用六圍平均）
+  function nameWeightsFor(settings, type) {
+    const auto = settings.forgeNameWeightMode !== 'manual' ? autoNameWeights(type) : null;
+    if (auto && auto.pairs.length) {
+      return { pairs: auto.pairs, label: `自動 ${auto.pairs.map(([stat, share]) => `${stat}${Math.round(share * 100)}%`).join(' ')}` };
+    }
     const stats = namePriorityFor(settings, type);
+    if (!stats) return null;
+    const total = stats.reduce((sum, _, index) => sum + stats.length - index, 0);
+    return { pairs: stats.map((stat, index) => [stat, (stats.length - index) / total]), label: stats.join('>') };
+  }
+
+  // 這種裝備今天的名稱排名
+  function todayNamesForType(settings, type) {
+    const weights = nameWeightsFor(settings, type);
     const names = todayNames('six');
-    if (!stats) return names;
-    const weights = stats.map((_, index) => stats.length - index);
-    const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+    if (!weights) return names;
     return names
-      .map((entry) => ({ ...entry, score: stats.reduce((sum, stat, index) => sum + weights[index] * entry.w[NAME_STAT_INDEX[stat]], 0) / totalWeight }))
+      .map((entry) => ({ ...entry, score: weights.pairs.reduce((sum, [stat, share]) => sum + share * entry.w[NAME_STAT_INDEX[stat]], 0) }))
       .sort((first, second) => second.score - first.score);
+  }
+
+  function renderNameWeightTable() {
+    const box = panel.querySelector('[data-role="name-weight-table"]');
+    if (!box) return;
+    const settings = readSettingsFromPanel();
+    const rows = Object.values(FORGE_TYPE_NAMES).map((type) => {
+      const weights = nameWeightsFor(settings, type);
+      const auto = autoNameWeights(type);
+      const source = weights ? (weights.label.startsWith('自動') ? `${auto.count} 件紀錄` : '手動順序') : '六圍平均';
+      const bars = weights
+        ? weights.pairs.map(([stat, share]) => `<span style="display:inline-block;margin-right:6px">${stat} <span style="display:inline-block;width:${Math.max(4, Math.round(share * 60))}px;height:8px;background:#7c5cff;border-radius:3px"></span> ${Math.round(share * 100)}%</span>`).join('')
+        : '<span style="color:#a0a0aa">六個屬性一樣重</span>';
+      return `<tr><td>${type}</td><td style="white-space:normal">${bars}</td><td style="color:#a0a0aa">${source}</td></tr>`;
+    });
+    box.innerHTML = `<table class="combat"><tr><th>裝備</th><th>挑名稱時各屬性占多少</th><th>依據</th></tr>${rows.join('')}</table>`;
   }
 
   function todayNames(goal) {
@@ -11403,12 +11487,12 @@
         }</div>`
       : `<div class="hint">${weights ? '測名表今天還沒有資料' : '按「更新測名表」讀取'}</div>`;
     const settings = readSettingsFromPanel();
-    const stats = namePriorityFor(settings, settings.forgeRecipeType);
-    const best = names.length && stats ? todayNamesForType(settings, settings.forgeRecipeType)[0] : null;
+    const typeWeights = nameWeightsFor(settings, settings.forgeRecipeType);
+    const best = names.length && typeWeights ? todayNamesForType(settings, settings.forgeRecipeType)[0] : null;
     if (best) {
       panel.querySelector('[data-role="name-suggest"]').insertAdjacentHTML(
         'afterbegin',
-        `<div style="margin-bottom:4px">${escapeHtml(settings.forgeRecipeType)}（${stats.join('>')}）今天最好：<b>${escapeHtml(best.name)}</b> ${(best.score * 100).toFixed(1)}% <button data-action="name-use" data-name="${escapeHtml(best.name)}">用</button></div>`
+        `<div style="margin-bottom:4px">${escapeHtml(settings.forgeRecipeType)}（${escapeHtml(typeWeights.label)}）今天最好：<b>${escapeHtml(best.name)}</b> ${(best.score * 100).toFixed(1)}% <button data-action="name-use" data-name="${escapeHtml(best.name)}">用</button></div>`
       );
     }
   }
@@ -11458,6 +11542,68 @@
       .slice(0, RECIPE_LIMIT);
   }
 
+  // 配方我的最愛：同一種裝備存幾個常用的，從歷史配方按 ☆ 或把目前的配方加進來
+  function normalizeRecipe(text) {
+    return parseRecipeLoosely(text)
+      .map(([name, quantity]) => `${name}×${quantity}`)
+      .join('、');
+  }
+
+  function recipeFavorites(settings) {
+    try {
+      const list = JSON.parse(settings.forgeFavorites || '[]');
+      return Array.isArray(list) ? list.filter((item) => item && item.type && item.recipe) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function isFavoriteRecipe(settings, type, recipe) {
+    const key = normalizeRecipe(recipe);
+    return recipeFavorites(settings).some((item) => item.type === type && normalizeRecipe(item.recipe) === key);
+  }
+
+  function toggleFavoriteRecipe(type, recipe) {
+    const settings = readSettingsFromPanel();
+    const key = normalizeRecipe(recipe);
+    if (!key) {
+      setStatus('配方是空的，先勾材料或從歷史配方挑一個');
+      return;
+    }
+    const list = recipeFavorites(settings);
+    const index = list.findIndex((item) => item.type === type && normalizeRecipe(item.recipe) === key);
+    if (index >= 0) list.splice(index, 1);
+    else list.push({ type, recipe: key });
+    setPanelField('forgeFavorites', JSON.stringify(list));
+    saveSettings(readSettingsFromPanel());
+    setStatus(index >= 0 ? `已從我的最愛拿掉：${type} ${key}` : `已加入我的最愛：${type} ${key}`);
+    recipeOptionsCache.at = 0;
+    renderRecipeFavorites();
+    renderRecipes();
+  }
+
+  function renderRecipeFavorites() {
+    const box = panel.querySelector('[data-role="recipe-favorites"]');
+    if (!box) return;
+    const settings = readSettingsFromPanel();
+    const type = settings.forgeRecipeType;
+    const current = normalizeRecipe(settings.forgeRecipe);
+    const list = recipeFavorites(settings).filter((item) => item.type === type);
+    const others = recipeFavorites(settings).length - list.length;
+    box.innerHTML =
+      (list.length
+        ? `<table class="combat">${list
+            .map((item) => {
+              const using = normalizeRecipe(item.recipe) === current;
+              return `<tr style="${using ? 'background:#16261c' : ''}"><td style="white-space:normal">${escapeHtml(item.recipe)}</td><td>${recipeStockCell(item.recipe)}</td>
+                <td style="white-space:nowrap">${using ? '<span style="color:#4ade80">使用中</span>' : `<button data-action="recipe-use" data-recipe="${escapeHtml(item.recipe)}">用</button>`}
+                <button data-action="recipe-fav" data-type="${escapeHtml(type)}" data-recipe="${escapeHtml(item.recipe)}" title="從我的最愛拿掉">★</button></td></tr>`;
+            })
+            .join('')}</table>`
+        : `<div class="hint">${escapeHtml(type)}還沒有最愛：在下面「歷史配方」按 ☆，或把目前的配方加進來</div>`) +
+      `<div class="row" style="margin-top:4px"><button data-action="recipe-fav-current">☆ 把目前的配方加進最愛</button>${others ? `<span style="color:#a0a0aa">其他裝備還有 ${others} 個最愛</span>` : ''}</div>`;
+  }
+
   function renderRecipes() {
     const type = readSettingsFromPanel().forgeRecipeType;
     const goal = panel.querySelector('[data-role="recipe-goal"]').value;
@@ -11471,7 +11617,10 @@
       ? `<table class="combat"><tr><th>配方</th><th>件</th><th>${escapeHtml(RECIPE_GOALS[goal])}</th><th title="照目前的材料庫存，夠鍛幾爐">夠</th><th></th></tr>${recipes
           .map(
             (recipe) => `<tr><td style="white-space:normal">${escapeHtml(recipe.key)}${recipe.skills ? `<div class="hint" style="margin:0">${recipe.skills}</div>` : ''}</td><td>${recipe.count}</td><td>${scoreText(recipe.score)}</td>
-              <td>${recipeStockCell(recipe.key)}</td><td><button data-action="recipe-use" data-recipe="${escapeHtml(recipe.key)}">用</button></td></tr>`
+              <td>${recipeStockCell(recipe.key)}</td><td style="white-space:nowrap"><button data-action="recipe-use" data-recipe="${escapeHtml(recipe.key)}">用</button>${(() => {
+                const favorite = isFavoriteRecipe(readSettingsFromPanel(), type, recipe.key);
+                return `<button data-action="recipe-fav" data-type="${escapeHtml(type)}" data-recipe="${escapeHtml(recipe.key)}" title="${favorite ? '從我的最愛拿掉' : '加入我的最愛'}" style="${favorite ? 'color:#facc15' : ''}">${favorite ? '★' : '☆'}</button>`;
+              })()}</td></tr>`
           )
           .join('')}</table><div class="hint">數值是換成普通品質的平均；鍛造師的鍛造、裁縫、工藝也會影響成品，選同一個鍛造師比較準；件數少的只能參考</div>`
       : `<div class="hint">這個類型還沒有${nameAdjust ? '對得到測名表的' : ''}材料紀錄</div>`;
@@ -12081,6 +12230,7 @@
       rows: forgeQueueRows(settings),
       plans: Object.fromEntries(forgeByApiHeroIds(settings).map((heroId) => [heroId, forgeApiPlan(settings, heroId)])),
       recipeOptions: forgeRecipeOptions(settings),
+      favorites: recipeFavorites(settings),
       mines: mineStock.map((mine) => [mine.name, mine.have]),
       candidates: forgeHeroes
         .filter((hero) => !heroIds.includes(hero.id) && !inHuntTeam(hero))
@@ -12099,8 +12249,8 @@
     const weights = settings.recipeNameAdjust ? loadNameWeights() || { days: {} } : null;
     recipeOptionsCache.value = Object.fromEntries(
       Object.values(FORGE_TYPE_NAMES).map((type) => {
-        const stats = namePriorityFor(settings, type);
-        const goal = stats ? NAME_STAT_GOALS[stats[0]] : 'total';
+        const weights = nameWeightsFor(settings, type);
+        const goal = weights ? NAME_STAT_GOALS[weights.pairs[0][0]] : 'total';
         const recipes = recommendRecipes(type, goal, '', weights)
           .slice(0, 5)
           .map((recipe) => ({ key: recipe.key, count: recipe.count, score: Math.round(goal === 'wgt' ? -recipe.score : recipe.score), goal: RECIPE_GOALS[goal] }));
@@ -12238,8 +12388,8 @@
     // 佇列裡每種裝備各挑各的；全部類型都到門檻才換
     const types = [...new Set([settings.forgeRecipeType, ...forgeByApiHeroIds(settings).map((heroId) => forgeApiPlan(settings, heroId).type)].filter(Boolean))];
     const picks = types.map((type) => {
-      const stats = namePriorityFor(settings, type);
-      return { type, label: stats ? stats.join('>') : '六圍', best: todayNamesForType(settings, type)[0] };
+      const weights = nameWeightsFor(settings, type);
+      return { type, label: weights ? weights.label : '六圍', best: todayNamesForType(settings, type)[0] };
     });
     if (picks.some((pick) => !pick.best)) return '測名表今天還沒有資料';
     const pickText = (pick) => `${pick.type}「${pick.best.name}」${pick.label} ${(pick.best.score * 100).toFixed(1)}%`;
@@ -14117,12 +14267,17 @@
     if (event.target.dataset.pickChoice) updatePickFromChoices(event.target.dataset.pickChoice);
     if (event.target.dataset.forgeApiHero !== undefined) updateForgeApiHeroesFromChoices();
     if (event.target.dataset.forgePlan) updateForgeApiPlansFromChoices();
+    if (['forgeRecipe', 'forgeRecipeType'].includes(event.target.dataset.field)) renderRecipeFavorites();
     if (event.target.dataset.forgeApiHero !== undefined || event.target.dataset.forgePlan || ['forgeRecipe', 'forgeRecipeType'].includes(event.target.dataset.field)) {
       renderRecipeHeroes();
     }
     if (event.target.dataset.field === 'forgeShopSlots') renderForgePlanOverview();
     // 自動換名稱的門檻改了：鍛造正在等好名稱的話馬上再看一次，不用等下一輪
     if (['forgeAutoNamePercent', 'forgeAutoNameEnabled'].includes(event.target.dataset.field)) wakeForgeRunner();
+    if (['forgeNameWeightMode', 'forgeNamePriorities'].includes(event.target.dataset.field)) {
+      renderNameWeightTable();
+      recipeOptionsCache.at = 0;
+    }
     if (['lowProfileEnabled', 'lowProfileStyle', 'lowProfileCasualMinutes', 'lowProfileSeriousHours', 'lowProfileOffHours', 'lowProfileSleepHours'].includes(event.target.dataset.field)) resetLowProfileRhythm();
     if (event.target.dataset.trainChoice) updateTrainFromChoices();
     if (event.target.dataset.cardRule) updateCardRulesFromRows();
