@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.28
+// @version      3.29
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -192,6 +192,8 @@
     lowProfileSleepHours: '2-9',
     // 玩法：serious＝認真玩（一段一段長時間玩）；casual＝休閒（每小時玩一點，離開時偶爾回來點幾下）
     lowProfileStyle: 'serious',
+    // 自動玩法：這些時段認真玩，其他時間休閒
+    lowProfileSeriousHours: '20-24',
     lowProfileCasualMinutes: 20,
     lowProfileCheckinMinMinutes: 8,
     lowProfileCheckinMaxMinutes: 20,
@@ -782,6 +784,7 @@
       <button data-action="low-mode" data-low-mode="off">關</button>
       <button data-action="low-mode" data-low-mode="serious">認真</button>
       <button data-action="low-mode" data-low-mode="casual">休閒</button>
+      <button data-action="low-mode" data-low-mode="auto">自動</button>
     </div>
     <div data-role="status" style="margin-top:6px">待命中</div>
     <div data-role="monitor" class="monitor"></div>
@@ -795,7 +798,8 @@
       <label>冷卻結束後再等 ${numberInput('huntReactMinSeconds', 'min="0" step="0.5"')} ～ ${numberInput('huntReactMaxSeconds', 'min="0" step="0.5"')} 秒（隨機）才打</label>
       <div class="hint">像人看到冷卻結束才按。這是打怪頻率最大的變數：1～3 秒一輪約 13 秒，0.5～1.5 秒約快 8%，但越短越不像人。三個帳號自動同步</div>
       <label class="row"><input data-field="lowProfileEnabled" type="checkbox" style="flex:none;width:auto"> <b>低調模式</b>（模擬人類操作的延遲）</label>
-      <div class="row">玩法 <select data-field="lowProfileStyle" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="serious">認真玩：一段一段長時間玩</option><option value="casual">休閒：每小時玩一點，離開時偶爾回來點幾下</option></select></div>
+      <div class="row">玩法 <select data-field="lowProfileStyle" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="serious">認真玩：一段一段長時間玩</option><option value="casual">休閒：每小時玩一點，離開時偶爾回來點幾下</option><option value="auto">自動：認真時段認真玩，其他時間休閒</option></select></div>
+      <div class="row">自動：每天 <input data-field="lowProfileSeriousHours" placeholder="20-24" style="width:110px;flex:none"> 點認真玩（可寫多段 12-13,20-24；每天前後飄 30 分鐘）</div>
       <div class="row">認真：玩 ${numberInput('lowProfilePlayMinMinutes', 'min="5"')}～${numberInput('lowProfilePlayMaxMinutes', 'min="5"')} 分鐘，休息 ${numberInput('lowProfileBreakMinMinutes', 'min="1"')}～${numberInput('lowProfileBreakMaxMinutes', 'min="1"')} 分鐘</div>
       <div class="row">休閒：每小時玩 ${numberInput('lowProfileCasualMinutes', 'min="0" max="60"')} 分鐘（每小時前後飄 30%，分 1～2 段）</div>
       <div class="row">休閒離開時每 ${numberInput('lowProfileCheckinMinMinutes', 'min="1"')}～${numberInput('lowProfileCheckinMaxMinutes', 'min="1"')} 分鐘回來點 ${numberInput('lowProfileCheckinMinHunts', 'min="1"')}～${numberInput('lowProfileCheckinMaxHunts', 'min="1"')} 下狩獵</div>
@@ -3439,6 +3443,7 @@
     'lowProfileBreakMaxMinutes',
     'lowProfileSleepHours',
     'lowProfileStyle',
+    'lowProfileSeriousHours',
     'lowProfileCasualMinutes',
     'lowProfileCheckinMinMinutes',
     'lowProfileCheckinMaxMinutes',
@@ -5302,7 +5307,47 @@
 
   function lowModeOf(settings) {
     if (!settings.lowProfileEnabled) return 'off';
-    return settings.lowProfileStyle === 'casual' ? 'casual' : 'serious';
+    return ['casual', 'auto'].includes(settings.lowProfileStyle) ? settings.lowProfileStyle : 'serious';
+  }
+
+  // 「20-24」「12-13,20-24」＝這些時段認真玩；每天邊界前後飄 30 分鐘，三個帳號同步時一起飄
+  function seriousRanges(settings, now) {
+    const profile = dashboard.profile || {};
+    const who = settings.syncAccountsEnabled ? 'shared' : profile.nickname || profile.id || '';
+    const ranges = [];
+    String(settings.lowProfileSeriousHours || '')
+      .split(/[,，、\s]+/)
+      .filter(Boolean)
+      .forEach((part, index) => {
+        const match = part.match(/^(\d{1,2}(?:\.\d+)?)[-~～](\d{1,2}(?:\.\d+)?)$/);
+        if (!match) return;
+        const from = Number(match[1]);
+        const to = Number(match[2]);
+        for (const dayOffset of [-1, 0, 1]) {
+          const day = new Date(now);
+          day.setDate(day.getDate() + dayOffset);
+          day.setHours(0, 0, 0, 0);
+          const random = seededRandom(`serious:${who}:${index}:${day.toDateString()}`);
+          const start = day.getTime() + (from * 60 + random() * 60 - 30) * 60000;
+          const end = day.getTime() + ((to <= from ? to + 24 : to) * 60 + random() * 60 - 30) * 60000;
+          ranges.push([start, end]);
+        }
+      });
+    return ranges;
+  }
+
+  function effectiveLowStyle(settings, now = Date.now()) {
+    if (settings.lowProfileStyle !== 'auto') return settings.lowProfileStyle === 'casual' ? 'casual' : 'serious';
+    return seriousRanges(settings, now).some(([start, end]) => now >= start && now < end) ? 'serious' : 'casual';
+  }
+
+  // 自動玩法：休閒離開中最晚在認真時段開始時醒來
+  function nextSeriousStart(settings, now) {
+    if (settings.lowProfileStyle !== 'auto') return Infinity;
+    const starts = seriousRanges(settings, now)
+      .map(([start]) => start)
+      .filter((start) => start > now);
+    return starts.length ? Math.min(...starts) : Infinity;
   }
 
   function renderLowModeButtons() {
@@ -5317,7 +5362,7 @@
     const settings = readSettingsFromPanel();
     saveSettings(settings);
     if (settings.syncAccountsEnabled) pushSharedSettings(settings);
-    setStatus(`低調模式：${{ off: '關', serious: '認真玩', casual: '休閒' }[mode]}${settings.syncAccountsEnabled ? '（三個帳號一起換）' : ''}`);
+    setStatus(`低調模式：${{ off: '關', serious: '認真玩', casual: '休閒', auto: '自動（認真時段認真玩，其他休閒）' }[mode]}${settings.syncAccountsEnabled ? '（三個帳號一起換）' : ''}`);
   }
 
   // 換了玩法就重排作息：正在睡到休息結束的掛機、鍛造叫醒，照新的玩法重新算
@@ -5451,7 +5496,7 @@
       startCasualCheckin(settings, '離開中回來看一下');
       return 0;
     }
-    const until = Math.min(breakEnd, lowProfile.nextCheckinAt);
+    const until = Math.min(breakEnd, lowProfile.nextCheckinAt, nextSeriousStart(settings, now));
     lowProfile.breakUntil = until;
     const minutes = (time) => Math.max(1, Math.round((time - now) / 60000));
     setStatus(
@@ -5462,7 +5507,7 @@
 
   // 休閒離開中（不是睡覺）且會為了鍛造回來：鍛造照完成時間排，不等整段休息結束
   function casualForgeAway(settings) {
-    if (!settings.lowProfileEnabled || settings.lowProfileStyle !== 'casual' || !settings.lowProfileForgeCheckin) return false;
+    if (!settings.lowProfileEnabled || effectiveLowStyle(settings) !== 'casual' || !settings.lowProfileForgeCheckin) return false;
     return lowProfileBreakLeft(settings) > 0 && Date.now() >= lowProfile.sleepUntil;
   }
 
@@ -5470,6 +5515,10 @@
   function lowProfileBreakLeft(settings) {
     if (!settings.lowProfileEnabled) return 0;
     const now = Date.now();
+    // 自動玩法換了時段：上一個玩法排的休息作廢，照新的玩法重算
+    const style = effectiveLowStyle(settings, now);
+    if (lowProfile.style && lowProfile.style !== style) Object.assign(lowProfile, { sessionEnd: 0, breakUntil: 0, checkin: null, nextCheckinAt: 0 });
+    lowProfile.style = style;
     if (now < lowProfile.sleepUntil) return lowProfile.sleepUntil - now;
     if (now < lowProfile.breakUntil) return lowProfile.breakUntil - now;
     const personality = accountPersonality();
@@ -5482,7 +5531,7 @@
       setStatus(`低調模式：睡覺中，${wake.getHours()}:${String(wake.getMinutes()).padStart(2, '0')} 起床`);
       return wakeAt - now;
     }
-    if (settings.lowProfileStyle === 'casual') return casualBreakLeft(settings, now);
+    if (style === 'casual') return casualBreakLeft(settings, now);
     if (settings.syncAccountsEnabled) {
       const breakEnd = sharedBreakEndAt(settings, now);
       if (!breakEnd) return 0;
@@ -12637,7 +12686,7 @@
       renderRecipeHeroes();
     }
     if (event.target.dataset.field === 'forgeShopSlots') renderForgePlanOverview();
-    if (['lowProfileEnabled', 'lowProfileStyle', 'lowProfileCasualMinutes'].includes(event.target.dataset.field)) resetLowProfileRhythm();
+    if (['lowProfileEnabled', 'lowProfileStyle', 'lowProfileCasualMinutes', 'lowProfileSeriousHours'].includes(event.target.dataset.field)) resetLowProfileRhythm();
     if (event.target.dataset.trainChoice) updateTrainFromChoices();
     if (event.target.dataset.cardRule) updateCardRulesFromRows();
     if (event.target.dataset.field === 'trainEnabled') renderTrainStatus();

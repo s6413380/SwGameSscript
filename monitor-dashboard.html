@@ -89,7 +89,7 @@
     <input id="global-minutes" type="number" min="1" value="10" style="width:48px"> 分鐘
     <span class="muted" id="global-text"></span></span>
   <span class="global">低調
-    <button data-low="off">關</button><button data-low="serious">認真</button><button data-low="casual">休閒</button>
+    <button data-low="off">關</button><button data-low="serious">認真</button><button data-low="casual">休閒</button><button data-low="auto" title="認真時段（遊戲面板設定，預設 20-24 點）認真玩，其他時間休閒">自動</button>
     休閒每小時 <input id="low-casual-minutes" type="number" min="0" max="60" style="width:48px"> 分鐘
     <span class="muted" id="low-text"></span></span>
 </header>
@@ -603,7 +603,7 @@
   function renderLow(shared) {
     const values = (shared && shared.values) || {};
     const known = 'lowProfileEnabled' in values;
-    const mode = !known ? '' : !values.lowProfileEnabled ? 'off' : values.lowProfileStyle === 'casual' ? 'casual' : 'serious';
+    const mode = !known ? '' : !values.lowProfileEnabled ? 'off' : ['casual', 'auto'].includes(values.lowProfileStyle) ? values.lowProfileStyle : 'serious';
     document.querySelectorAll('[data-low]').forEach((button) => button.toggleAttribute('data-low-current', button.dataset.low === mode));
     const minutes = document.getElementById('low-casual-minutes');
     if (document.activeElement !== minutes && Date.now() > lowMinutesHoldUntil) minutes.value = values.lowProfileCasualMinutes ?? 20;
