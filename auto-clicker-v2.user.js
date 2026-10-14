@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.26
+// @version      3.27
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -190,6 +190,14 @@
     lowProfileBreakMinMinutes: 5,
     lowProfileBreakMaxMinutes: 20,
     lowProfileSleepHours: '2-9',
+    // 玩法：serious＝認真玩（一段一段長時間玩）；casual＝休閒（每小時玩一點，離開時偶爾回來點幾下）
+    lowProfileStyle: 'serious',
+    lowProfileCasualMinutes: 20,
+    lowProfileCheckinMinMinutes: 8,
+    lowProfileCheckinMaxMinutes: 20,
+    lowProfileCheckinMinHunts: 2,
+    lowProfileCheckinMaxHunts: 5,
+    lowProfileForgeCheckin: true,
     // 多開輪流：同一台電腦的幾個帳號透過中繼站排隊，一次只有一個分頁打遊戲 API
     turnTakingEnabled: false,
     // 三個帳號同步＝當成同一個人：共用設定經中繼站同步，低調模式的玩／休息／睡覺時間表也一樣
@@ -782,7 +790,11 @@
       <label>冷卻結束後再等 ${numberInput('huntReactMinSeconds', 'min="0" step="0.5"')} ～ ${numberInput('huntReactMaxSeconds', 'min="0" step="0.5"')} 秒（隨機）才打</label>
       <div class="hint">像人看到冷卻結束才按。這是打怪頻率最大的變數：1～3 秒一輪約 13 秒，0.5～1.5 秒約快 8%，但越短越不像人。三個帳號自動同步</div>
       <label class="row"><input data-field="lowProfileEnabled" type="checkbox" style="flex:none;width:auto"> <b>低調模式</b>（模擬人類操作的延遲）</label>
-      <div class="row">玩 ${numberInput('lowProfilePlayMinMinutes', 'min="5"')}～${numberInput('lowProfilePlayMaxMinutes', 'min="5"')} 分鐘，休息 ${numberInput('lowProfileBreakMinMinutes', 'min="1"')}～${numberInput('lowProfileBreakMaxMinutes', 'min="1"')} 分鐘</div>
+      <div class="row">玩法 <select data-field="lowProfileStyle" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="serious">認真玩：一段一段長時間玩</option><option value="casual">休閒：每小時玩一點，離開時偶爾回來點幾下</option></select></div>
+      <div class="row">認真：玩 ${numberInput('lowProfilePlayMinMinutes', 'min="5"')}～${numberInput('lowProfilePlayMaxMinutes', 'min="5"')} 分鐘，休息 ${numberInput('lowProfileBreakMinMinutes', 'min="1"')}～${numberInput('lowProfileBreakMaxMinutes', 'min="1"')} 分鐘</div>
+      <div class="row">休閒：每小時玩 ${numberInput('lowProfileCasualMinutes', 'min="0" max="60"')} 分鐘（每小時前後飄 30%，分 1～2 段）</div>
+      <div class="row">休閒離開時每 ${numberInput('lowProfileCheckinMinMinutes', 'min="1"')}～${numberInput('lowProfileCheckinMaxMinutes', 'min="1"')} 分鐘回來點 ${numberInput('lowProfileCheckinMinHunts', 'min="1"')}～${numberInput('lowProfileCheckinMaxHunts', 'min="1"')} 下狩獵</div>
+      <label class="row"><input data-field="lowProfileForgeCheckin" type="checkbox" style="flex:none;width:auto"> 休閒離開時鍛造好了就回來收（晚 1～8 分鐘），順便點幾下狩獵</label>
       <div class="row">每天 <input data-field="lowProfileSleepHours" placeholder="留空＝不睡" style="width:70px;flex:none"> 點睡覺（例：2-9；每天前後飄 1 小時，偶爾多睡）</div>
       <div class="hint">開了之後掛機、API 鍛造每一步多等 1～8 秒（多數短、偶爾長），偶爾分心停 0.5～2 分鐘，要補給、換裝時晚幾秒才反應，動作之間的間隔也拉長；玩一陣子就整個停下休息，晚上睡覺。休息、睡覺時不會打怪、開爐，也不會躲紅名（血量、活人驗證照常監控）。反應變慢，補給門檻設高一點比較安全</div>
       <div class="hint" data-role="low-profile-personality"></div>
@@ -3419,6 +3431,13 @@
     'lowProfileBreakMinMinutes',
     'lowProfileBreakMaxMinutes',
     'lowProfileSleepHours',
+    'lowProfileStyle',
+    'lowProfileCasualMinutes',
+    'lowProfileCheckinMinMinutes',
+    'lowProfileCheckinMaxMinutes',
+    'lowProfileCheckinMinHunts',
+    'lowProfileCheckinMaxHunts',
+    'lowProfileForgeCheckin',
     'turnTakingEnabled',
     'transferTurnMode',
     'huntReactMinSeconds',
@@ -5233,7 +5252,7 @@
   const FINISH_MOVE_DEFAULT_TEXT = '完成移動';
 
   // 低調模式：休息時間是這個分頁自己的，掛機和 API 鍛造一起休息
-  const lowProfile = { sessionEnd: 0, breakUntil: 0, sleepUntil: 0, reaction: null };
+  const lowProfile = { sessionEnd: 0, breakUntil: 0, sleepUntil: 0, reaction: null, checkin: null, nextCheckinAt: 0 };
 
   // 同一個字串永遠得到同一串亂數：帳號個性、每天的睡覺時間重新整理後才不會變
   function seededRandom(text) {
@@ -5329,6 +5348,85 @@
     return 0;
   }
 
+  // 休閒：每個小時玩幾分鐘（前後飄 30%），分成 1～2 段放在這個小時裡的隨機位置；同一個小時每次算都一樣
+  function casualSessions(settings, hourStart, seedKey) {
+    const random = seededRandom(`casual:${seedKey}:${hourStart}`);
+    const perHour = Math.min(60, Math.max(0, Number(settings.lowProfileCasualMinutes) || 0));
+    const minutes = Math.min(60, perHour * (0.7 + random() * 0.6));
+    const parts = minutes > 10 && random() < 0.5 ? 2 : 1;
+    const segment = 60 / parts;
+    const length = Math.min(segment, minutes / parts);
+    return Array.from({ length: parts }, (_, index) => {
+      const start = hourStart + (index * segment + random() * (segment - length)) * 60000;
+      return [start, start + length * 60000];
+    });
+  }
+
+  // 0＝現在是玩的時段；否則回傳下一段開始的時間
+  function casualBreakEndAt(settings, now, seedKey) {
+    if ((Number(settings.lowProfileCasualMinutes) || 0) >= 60) return 0;
+    const hour = new Date(now);
+    hour.setMinutes(0, 0, 0);
+    for (let offset = 0; offset < 4; offset++) {
+      const sessions = casualSessions(settings, hour.getTime() + offset * 3600000, seedKey);
+      if (sessions.some(([start, end]) => now >= start && now < end)) return 0;
+      const next = sessions.find(([start]) => start > now);
+      if (next) return next[0];
+    }
+    return now + 3600000;
+  }
+
+  // 休閒離開中回來看一下：點幾下狩獵（鍛造也順便收）再離開；時間到也走，免得這個分頁沒在打怪就一直卡著
+  function startCasualCheckin(settings, reason) {
+    const low = Math.max(1, Number(settings.lowProfileCheckinMinHunts) || 1);
+    const high = Math.max(low, Number(settings.lowProfileCheckinMaxHunts) || low);
+    const hunts = Math.round(randomGap(low, high));
+    lowProfile.checkin = { hunts, until: Date.now() + (hunts * 25 + 60) * 1000 };
+    lowProfile.breakUntil = 0;
+    setStatus(`低調模式（休閒）：${reason}，點 ${hunts} 下狩獵再離開`);
+    // 掛機正睡到休息結束：叫醒它
+    if (state.running && !state.forgeMode && nextTickAt.hunt - Date.now() > 20000) {
+      backgroundTimer.clearTimeout(state.timerId);
+      state.timerId = planTick(() => tick(settings), randomGap(3000, 10000));
+    }
+  }
+
+  function noteCheckinHunt() {
+    if (lowProfile.checkin && lowProfile.checkin.hunts > 0) lowProfile.checkin.hunts--;
+  }
+
+  function casualBreakLeft(settings, now) {
+    const profile = dashboard.profile || {};
+    const seedKey = settings.syncAccountsEnabled ? 'shared' : profile.nickname || profile.id || '';
+    const breakEnd = casualBreakEndAt(settings, now, seedKey);
+    if (!breakEnd) {
+      lowProfile.checkin = null;
+      return 0;
+    }
+    if (lowProfile.checkin && lowProfile.checkin.hunts > 0 && now < lowProfile.checkin.until) return 0;
+    lowProfile.checkin = null;
+    const gap = () => minutesBetween(settings, 'lowProfileCheckinMinMinutes', 'lowProfileCheckinMaxMinutes');
+    if (!lowProfile.nextCheckinAt || lowProfile.nextCheckinAt < now - 60000) lowProfile.nextCheckinAt = now + gap();
+    if (now >= lowProfile.nextCheckinAt && lowProfile.nextCheckinAt < breakEnd) {
+      lowProfile.nextCheckinAt = now + gap();
+      startCasualCheckin(settings, '離開中回來看一下');
+      return 0;
+    }
+    const until = Math.min(breakEnd, lowProfile.nextCheckinAt);
+    lowProfile.breakUntil = until;
+    const minutes = (time) => Math.max(1, Math.round((time - now) / 60000));
+    setStatus(
+      `低調模式（休閒）：離開中，${minutes(breakEnd)} 分鐘後回來玩${lowProfile.nextCheckinAt < breakEnd ? `，${minutes(lowProfile.nextCheckinAt)} 分鐘後回來看一下` : ''}`
+    );
+    return until - now;
+  }
+
+  // 休閒離開中（不是睡覺）且會為了鍛造回來：鍛造照完成時間排，不等整段休息結束
+  function casualForgeAway(settings) {
+    if (!settings.lowProfileEnabled || settings.lowProfileStyle !== 'casual' || !settings.lowProfileForgeCheckin) return false;
+    return lowProfileBreakLeft(settings) > 0 && Date.now() >= lowProfile.sleepUntil;
+  }
+
   // 回傳還要休息多久（毫秒）；0＝正在玩
   function lowProfileBreakLeft(settings) {
     if (!settings.lowProfileEnabled) return 0;
@@ -5345,6 +5443,7 @@
       setStatus(`低調模式：睡覺中，${wake.getHours()}:${String(wake.getMinutes()).padStart(2, '0')} 起床`);
       return wakeAt - now;
     }
+    if (settings.lowProfileStyle === 'casual') return casualBreakLeft(settings, now);
     if (settings.syncAccountsEnabled) {
       const breakEnd = sharedBreakEndAt(settings, now);
       if (!breakEnd) return 0;
@@ -6476,7 +6575,10 @@
       state.apiHeroStateErrors = 0;
       syncGameHuntView(data);
       clearItemSkips();
-      if (!type) state.clickCountA++;
+      if (!type) {
+        state.clickCountA++;
+        noteCheckinHunt();
+      }
       setStatus(
         type
           ? `API ${type === 'forward' ? '前進' : '後退'}一層（${note || `目標第 ${settings.stageTargetNumber} 層`}）`
@@ -6837,6 +6939,7 @@
       if (clickBySelector(settings.selectorA)) {
         clearItemSkips();
         state.clickCountA++;
+        noteCheckinHunt();
         setStatus(`第 ${state.cycleCount + 1} 輪：原地掛機 ${state.clickCountA}/${settings.repeatCount}`);
       } else {
         // 找不到時不計次，下一輪再試，避免頁面還在載入時就把次數用掉
@@ -11544,7 +11647,8 @@
   }
 
   function scheduleForgeRunner(delay) {
-    delay = lowProfileDelay(readSettingsFromPanel(), delay);
+    const settings = readSettingsFromPanel();
+    delay = casualForgeAway(settings) ? delay + randomGap(60000, 480000) : lowProfileDelay(settings, delay);
     backgroundTimer.clearTimeout(forgeRunner.timerId);
     const runId = forgeRunner.runId;
     nextTickAt.forge = Date.now() + Math.max(0, Number(delay) || 0);
@@ -11629,6 +11733,7 @@
     // 中途可能換了名稱，要重讀設定
     let settings = initialSettings;
     if (!forgeRunner.running || forgeRunner.captchaWaiting) return;
+    if (casualForgeAway(settings)) startCasualCheckin(settings, '鍛造好了回來收');
     const runId = forgeRunner.runId;
     const cancelled = () => runId !== forgeRunner.runId;
     const heroIds = forgeByApiHeroIds(settings);
