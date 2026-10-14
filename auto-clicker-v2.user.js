@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.24
+// @version      3.25
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -2352,7 +2352,8 @@
   const TRANSFER_ARM_MILLISECONDS = 60000;
   const TRANSFER_POLL_MILLISECONDS = 500;
   // 等買方回報「待命中」最多這麼久；買方每 5 秒回報一次，留一點餘裕
-  const TRANSFER_ARM_WAIT_MILLISECONDS = 15000;
+  // 指令跟著對方下一次回報（每 5 秒）才送到，對方再查錢、回報待命，15 秒常常不夠
+  const TRANSFER_ARM_WAIT_MILLISECONDS = 30000;
   // 掛上去這麼久還沒被買走就撤回，不要一直公開掛著
   const TRANSFER_SOLD_WAIT_MILLISECONDS = 20000;
   // refused：買方拒絕待命的原因（例如錢不夠），回報給賣方看，賣方就不掛單
@@ -2431,9 +2432,21 @@
 
   // 買方待命：知道暗號、賣家、價格，每 0.5 秒查一次拍賣，一出現就買
   async function armTransfer(command) {
+    const settings = readSettingsFromPanel();
+    const waitMilliseconds = command.waitMilliseconds || TRANSFER_ARM_MILLISECONDS;
+    // 只有兩邊都在這台電腦的中繼站上才搶優先；雲端那條要等好幾分鐘，不能讓其他帳號一直停著。
+    // 先搶優先再查錢：查錢跟著掛機排隊（還可能碰上全體暫停）會拖到賣方等不及
+    if (command.relay) await beginTransferTurn(settings, waitMilliseconds);
+    let profile;
+    try {
+      profile = command.relay ? await inTransferTurn(settings, () => sendGameRequestNow(PROFILE_API)) : await requestGameApi(PROFILE_API);
+    } catch (error) {
+      if (command.relay) endTransferTurn(settings);
+      throw error;
+    }
     // 先確認買得起，買不起就回報原因，賣方不會掛單
-    const profile = await requestGameApi(PROFILE_API);
     if (profile.money < Number(command.price)) {
+      if (command.relay) endTransferTurn(settings);
       const reason = `錢不夠（只有 $${profile.money.toLocaleString()}，要 $${Number(command.price).toLocaleString()}）`;
       transferWatch.refused = { token: command.token, reason };
       dashboard.reportedAt = 0;
@@ -2441,10 +2454,8 @@
     }
     transferWatch.refused = null;
     backgroundTimer.clearTimeout(transferWatch.timerId);
-    transferWatch.arm = { ...command, until: Date.now() + (command.waitMilliseconds || TRANSFER_ARM_MILLISECONDS) };
+    transferWatch.arm = { ...command, until: Date.now() + waitMilliseconds };
     dashboard.reportedAt = 0;
-    // 只有兩邊都在這台電腦的中繼站上才搶優先；雲端那條要等好幾分鐘，不能讓其他帳號一直停著
-    if (command.relay) await beginTransferTurn(readSettingsFromPanel(), command.waitMilliseconds || TRANSFER_ARM_MILLISECONDS);
     pollArmedTransfer();
     const message = `轉移：待命中，對方一掛單就買（最多等 ${(command.waitMilliseconds || TRANSFER_ARM_MILLISECONDS) / 1000} 秒）`;
     transferLog(message);
