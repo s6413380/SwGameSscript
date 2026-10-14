@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.37
+// @version      3.38
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -276,19 +276,12 @@
     // 每個角色自己的 { type, recipe, name }（JSON）；鍛造師數值不同，最好的配方也不同
     forgeByApiPlans: '{}',
     forgeByApiCount: 0,
-    // 挖礦：{ heroId: 地點 1～4 }（JSON）；體力估計剩幾 % 就收、最多挖幾分鐘；收完體力或 HP 低於幾 % 先休息
+    // 挖礦：{ heroId: 地點 1～4 }（JSON）；每幾小時收一次（每次前後飄幾 %）；出發前喝勾選的體力藥水（都不勾＝任何體力道具）
     miningPlans: '{}',
-    miningStopSpPercent: 5,
-    miningMaxMinutes: 60,
-    miningRestSpPercent: 30,
-    miningRestHpPercent: 50,
-    miningRestMaxMinutes: 60,
     miningConditionRest: true,
-    // 每幾小時收一次（每次前後飄幾 %）；0＝照體力估。出發前先喝體力藥水補到幾 %（可用道具名稱，空白＝任何體力道具）
     miningIntervalHours: 6,
     miningIntervalJitterPercent: 15,
     miningPotionEnabled: true,
-    miningPotionTargetPercent: 90,
     miningPotionNames: '',
     // 這個帳號有幾個鍛造欄位；0＝從遊戲讀（基本 2 格＋擴建次數）
     forgeShopSlots: 0,
@@ -1070,12 +1063,13 @@
 
     <div data-tab="mining">
       <div class="row"><button data-action="mining-start" style="font-weight:bold">開始挖礦</button><button data-action="mining-stop">停止挖礦</button><button data-action="mining-refresh">重新讀取</button></div>
-      <div class="hint">選了地點的角色在城裡閒著就去挖（狩獵隊伍、鍛造佇列裡的角色不會被拿去）。挖礦一直耗體力：照這個角色上次挖的耗體力速度估，快用完就收（第一次不知道速度，挖滿上限才收）；遊戲規定至少挖 3 分鐘。可以跟掛機、鍛造同時跑</div>
-      <div class="row">每 ${numberInput('miningIntervalHours', 'min="0" step="0.5"')} 小時收一次再挖（每次前後飄 ${numberInput('miningIntervalJitterPercent', 'min="0" max="50"')} %；0＝照體力估）</div>
-      <div class="row">照體力估時：體力估計剩 ${numberInput('miningStopSpPercent', 'min="0" max="100"')} % 就收，最多挖 ${numberInput('miningMaxMinutes', 'min="3"')} 分鐘</div>
-      <label class="row"><input data-field="miningPotionEnabled" type="checkbox" style="flex:none;width:auto"> 出發前喝體力藥水補到 ${numberInput('miningPotionTargetPercent', 'min="1" max="100"')} %</label>
-      <div class="row">藥水 <input data-field="miningPotionNames" placeholder="空白＝任何體力道具；可寫多個，用逗號分開" style="flex:1;min-width:0"></div>
-      <div class="row">藥水不夠時：體力低於 ${numberInput('miningRestSpPercent', 'min="0" max="100"')} % 或 HP 低於 ${numberInput('miningRestHpPercent', 'min="0" max="100"')} % 先休息（最多 ${numberInput('miningRestMaxMinutes', 'min="1"')} 分鐘）再挖</div>
+      <div class="hint">選了地點的角色在城裡閒著就去挖（狩獵隊伍、鍛造佇列裡的角色不會被拿去），時間到收礦再出發；遊戲規定至少挖 3 分鐘。可以跟掛機、鍛造同時跑</div>
+      <div class="row">挖 ${numberInput('miningIntervalHours', 'min="0.1" step="0.5"')} 小時收一次再挖（每次前後飄 ${numberInput('miningIntervalJitterPercent', 'min="0" max="50"')} %）</div>
+      <label class="row"><input data-field="miningPotionEnabled" type="checkbox" style="flex:none;width:auto"> 出發前喝體力藥水（喝到差不到半瓶就滿為止）</label>
+      <input data-field="miningPotionNames" type="hidden">
+      <div class="row"><button data-action="mining-potions">重新讀取體力道具</button><span style="color:#a0a0aa">都不勾＝任何體力道具</span></div>
+      <div data-role="mining-potions" style="font-size:12px"></div>
+      <div class="hint">沒有藥水時，體力不到三成或 HP 不到一半會先休息再挖</div>
       <label class="row"><input data-field="miningConditionRest" type="checkbox" style="flex:none;width:auto"> 有異常狀態（中毒…）就不出發、正在挖的提早收，並跳出提醒</label>
       <div class="hint">異常狀態下挖礦可能會死。有異常的角色留在城裡不動，好了才再出發</div>
       <input data-field="miningPlans" type="hidden">
@@ -1471,6 +1465,7 @@
     }
     if (tabId === 'mining') {
       renderMiningHeroes();
+      if (!miningPotionItems) loadMiningPotions();
       if (Date.now() - loadMining().heroesAt > 60000) readMiningHeroes(readSettingsFromPanel()).catch((error) => miningLog(`讀取角色失敗（${error.message}）`));
     }
     if (tabId === 'transfer') refreshTransferChoices(readSettingsFromPanel()).catch((error) => transferLog(`讀取帳號或角色失敗（${error.message}）`));
@@ -7852,6 +7847,8 @@
     } else if (action === 'mining-stop') {
       if (miningRunner.running) stopMiningRunner('已停止挖礦');
       else miningLog('挖礦沒有在執行');
+    } else if (action === 'mining-potions') {
+      loadMiningPotions();
     } else if (action === 'mining-refresh') {
       readMiningHeroes(readSettingsFromPanel()).catch((error) => miningLog(`讀取角色失敗（${error.message}）`));
     } else if (action === 'forge-start') {
@@ -12220,6 +12217,10 @@
   const MINING_WATCH_MILLISECONDS = 5 * 60000;
   const MINING_MIN_MINUTES = 3;
   const MINING_DEFAULT_REST_MINUTES = 30;
+  const MINING_REST_SP_PERCENT = 30;
+  const MINING_REST_HP_PERCENT = 50;
+  const MINING_REST_MAX_MINUTES = 60;
+  const MINING_DEFAULT_HOURS = 6;
   const MINING_LOG_LIMIT = 30;
   // 遊戲角色頁「行動紀錄」讀這個；API 收的也寫進去，遊戲裡看得到
   const GAME_ACTION_RESULTS_KEY = 'miningResults';
@@ -12306,18 +12307,8 @@
     const start = Date.parse(hero.actionStart) || now;
     const earliest = Date.parse(hero.actionCompleteTime) || start + MINING_MIN_MINUTES * 60000;
     const record = data.active[hero.id];
-    const hours = Number(settings.miningIntervalHours) || 0;
-    let at = start + Math.max(MINING_MIN_MINUTES, Number(settings.miningMaxMinutes) || 60) * 60000;
-    const rate = (data.rates[hero.id] || {}).mineSp;
-    if (hours > 0) {
-      // 每輪開挖時抽好這輪挖多久，之後每次巡都用同一個
-      at = start + (record && record.kind === 'mine' && record.hours ? record.hours : hours) * 3600000;
-    } else if (rate > 0 && Number(hero.fullSp) > 0) {
-      const record = data.active[hero.id];
-      const startSp = record && record.kind === 'mine' ? record.sp : hero.sp;
-      const usable = startSp - (hero.fullSp * (Number(settings.miningStopSpPercent) || 0)) / 100;
-      at = Math.min(at, start + Math.max(0, usable / rate) * 60000);
-    }
+    // 每輪開挖時抽好這輪挖多久，之後每次巡都用同一個
+    let at = start + (record && record.kind === 'mine' && record.hours ? record.hours : miningHours(settings)) * 3600000;
     if (settings.miningConditionRest && heroConditions(hero).length) at = now;
     return Math.max(at, earliest);
   }
@@ -12326,8 +12317,8 @@
     const percent = (value, full) => (Number(full) > 0 ? (value / full) * 100 : 100);
     return (
       hero.sp <= 0 ||
-      percent(hero.sp, hero.fullSp) < (Number(settings.miningRestSpPercent) || 0) ||
-      percent(hero.hp, hero.fullHp) < (Number(settings.miningRestHpPercent) || 0)
+      percent(hero.sp, hero.fullSp) < MINING_REST_SP_PERCENT ||
+      percent(hero.hp, hero.fullHp) < MINING_REST_HP_PERCENT
     );
   }
 
@@ -12338,7 +12329,50 @@
     if (rates.restSp > 0) needs.push((hero.fullSp - hero.sp) / rates.restSp);
     if (rates.restHp > 0) needs.push((hero.fullHp - hero.hp) / rates.restHp);
     const minutes = needs.length ? Math.max(...needs) : MINING_DEFAULT_REST_MINUTES;
-    return Math.min(Math.max(1, Math.ceil(minutes)), Math.max(1, Number(settings.miningRestMaxMinutes) || 60));
+    return Math.min(Math.max(1, Math.ceil(minutes)), MINING_REST_MAX_MINUTES);
+  }
+
+  function miningHours(settings) {
+    return Math.max(0.1, Number(settings.miningIntervalHours) || MINING_DEFAULT_HOURS);
+  }
+
+  // 勾選可以喝的體力藥水：列出物品欄裡能回體力的道具
+  let miningPotionItems = null;
+
+  async function loadMiningPotions() {
+    try {
+      miningPotionItems = ((await requestGameApi(ITEMS_API)).items || []).filter((item) => item.healSp > 0);
+    } catch (error) {
+      miningLog(`讀取物品欄失敗（${error.message}）`);
+      return;
+    }
+    renderMiningPotions();
+  }
+
+  function miningPotionNames(settings) {
+    return String(settings.miningPotionNames || '')
+      .split(/[,，、]/)
+      .map((name) => name.trim())
+      .filter(Boolean);
+  }
+
+  function renderMiningPotions() {
+    const box = panel.querySelector('[data-role="mining-potions"]');
+    if (!box) return;
+    const chosen = miningPotionNames(readSettingsFromPanel());
+    const items = miningPotionItems || [];
+    // 勾過但物品欄現在沒有的也列出來，才取消得掉
+    const rows = [
+      ...items.map((item) => [item.name, `回 ${item.healSp}，剩 ${item.available}`]),
+      ...chosen.filter((name) => !items.some((item) => item.name === name)).map((name) => [name, '物品欄沒有']),
+    ];
+    box.innerHTML = rows.length
+      ? rows
+          .map(
+            ([name, note]) => `<label style="display:block"><input type="checkbox" data-mining-potion value="${escapeHtml(name)}" ${chosen.includes(name) ? 'checked' : ''} style="width:auto;flex:none"> ${escapeHtml(name)}（${note}）</label>`
+          )
+          .join('')
+      : `<div class="hint">${miningPotionItems ? '物品欄沒有能回體力的道具' : '讀取中…'}</div>`;
   }
 
   // 體力用光（或休息到滿）時只知道真正的速度至少這麼快：往上多估一點，下次早點收，才量得到真正的速度
@@ -12449,11 +12483,8 @@
   // 一次喝一瓶，喝到目標；差不到半瓶就不喝，免得補過頭浪費
   async function drinkMiningPotions(settings, hero) {
     const group = SUPPLY_GROUPS.find((candidate) => candidate.id === 'resource');
-    const names = String(settings.miningPotionNames || '')
-      .split(/[,，、]/)
-      .map((name) => name.trim())
-      .filter(Boolean);
-    const target = (hero.fullSp * (Number(settings.miningPotionTargetPercent) || 0)) / 100;
+    const names = miningPotionNames(settings);
+    const target = hero.fullSp;
     if (!(target - hero.sp > 0)) return { hero, used: [], empty: false };
     const items = (await requestGameApi(ITEMS_API)).items || [];
     let current = hero;
@@ -12530,9 +12561,8 @@
     } else {
       const site = Number(plans[hero.id]);
       syncGameHeroAction(await requestGameApi(`${HEROES_API}/${hero.id}/mining/${site}`, { method: 'POST' }), 'mine');
-      const baseHours = Number(settings.miningIntervalHours) || 0;
       const jitter = Math.min(50, Math.max(0, Number(settings.miningIntervalJitterPercent) || 0)) / 100;
-      const hours = baseHours > 0 ? baseHours * (1 + (Math.random() * 2 - 1) * jitter) : 0;
+      const hours = miningHours(settings) * (1 + (Math.random() * 2 - 1) * jitter);
       data.active[hero.id] = { kind: 'mine', at: Date.now(), sp: hero.sp, hp: hero.hp, site, hours };
       done.push(`${hero.name} 去${MINING_SITES[site]}挖礦${hours ? `（約 ${hours.toFixed(1)} 小時後收）` : ''}`);
     }
@@ -12740,6 +12770,13 @@
         })
         .join('') || '<div class="hint">還沒有</div>';
   }
+
+  panel.addEventListener('change', (event) => {
+    if (!event.target.matches || !event.target.matches('[data-mining-potion]')) return;
+    const names = [...panel.querySelectorAll('[data-mining-potion]:checked')].map((input) => input.value);
+    setPanelField('miningPotionNames', names.join('、'));
+    saveSettings(readSettingsFromPanel());
+  });
 
   panel.addEventListener('change', (event) => {
     const heroId = event.target.dataset && event.target.dataset.miningHero;
