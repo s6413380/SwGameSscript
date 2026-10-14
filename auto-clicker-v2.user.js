@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.41
+// @version      3.42
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -12558,9 +12558,20 @@
   const MINING_POTION_MAX_USES = 10;
 
   // 一次喝一瓶，喝到目標；差不到半瓶就不喝，免得補過頭浪費
+  // 同時回 HP 和體力的道具：另一邊也缺才划算，另一邊滿了就是浪費。挑「兩邊加起來真的補到最多」的，
+  // 一樣多挑浪費少的，再一樣挑剩比較多的
+  function pickMiningPotion(items, supply, names, hero) {
+    const need = (field, full) => Math.max(0, hero[full] - hero[field]);
+    const useful = (item) =>
+      Math.min(item.healHp || 0, need('hp', 'fullHp')) + Math.min(item.healSp || 0, need('sp', 'fullSp'));
+    const waste = (item) => (item.healHp || 0) + (item.healSp || 0) - useful(item);
+    return items
+      .filter((item) => item[supply.heal] > 0 && item.available > 0 && (!names.length || names.includes(item.name)))
+      .sort((first, second) => useful(second) - useful(first) || waste(first) - waste(second) || second.available - first.available)[0] || null;
+  }
+
   async function drinkMiningPotions(settings, hero, kind, items) {
     const supply = MINING_SUPPLIES[kind];
-    const group = SUPPLY_GROUPS.find((candidate) => candidate.id === supply.group);
     const names = miningPotionNames(settings, kind);
     const target = hero[supply.full];
     if (!(target - hero[supply.field] > 0)) return { hero, used: [], empty: false };
@@ -12568,7 +12579,7 @@
     const used = [];
     let empty = false;
     for (let count = 0; count < MINING_POTION_MAX_USES && current[supply.field] < target; count++) {
-      const item = pickHealingItem(items, group, names);
+      const item = pickMiningPotion(items, supply, names, current);
       if (!item) {
         empty = true;
         break;
