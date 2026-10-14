@@ -49,6 +49,7 @@
   button.small { padding:0 5px; font-size:11px; }
   .global button[data-current="run"] { background:#2e7d32; border-color:#2e7d32; font-weight:bold; }
   .global button[data-current="temp"] { background:#e65100; border-color:#e65100; font-weight:bold; }
+  .global button[data-low-current] { background:#2e7d32; border-color:#2e7d32; font-weight:bold; }
   .global button[data-current="stop"] { background:#c62828; border-color:#c62828; font-weight:bold; }
   .queue { font-size:13px; margin:-4px 0 10px; }
   .last-action.stuck { color:#ffe066; font-weight:bold; }
@@ -87,6 +88,10 @@
     <button data-global="run">開始</button><button data-global="temp">暫時暫停</button><button data-global="stop">永久暫停</button>
     <input id="global-minutes" type="number" min="1" value="10" style="width:48px"> 分鐘
     <span class="muted" id="global-text"></span></span>
+  <span class="global">低調
+    <button data-low="off">關</button><button data-low="serious">認真</button><button data-low="casual">休閒</button>
+    休閒每小時 <input id="low-casual-minutes" type="number" min="0" max="60" style="width:48px"> 分鐘
+    <span class="muted" id="low-text"></span></span>
 </header>
 <div class="queue" id="queue"></div>
 <section class="income-board" id="income-board" style="display:none">
@@ -540,6 +545,7 @@
       }
       renderQueue(accounts, now);
       renderGlobal(await fetch('/global', { cache: 'no-store' }).then((response) => (response.ok ? response.json() : null)).catch(() => null));
+      renderLow(await readShared());
       const updated = document.getElementById('updated');
       updated.textContent = oldServer
         ? 'monitor-server.ps1 是舊版，遠端操作不會生效，請關掉重開'
@@ -585,6 +591,45 @@
       if (response && response.ok) renderGlobal(await response.json());
     })
   );
+
+  // 低調模式：改中繼站上「三個帳號同步」那份設定，各分頁 10 秒內跟上（分頁要勾「三個帳號同步」）
+  async function readShared() {
+    return fetch('/shared', { cache: 'no-store' }).then((response) => (response.ok ? response.json() : null)).catch(() => null);
+  }
+
+  let lowMinutesHoldUntil = 0;
+  let lowTextHoldUntil = 0;
+
+  function renderLow(shared) {
+    const values = (shared && shared.values) || {};
+    const known = 'lowProfileEnabled' in values;
+    const mode = !known ? '' : !values.lowProfileEnabled ? 'off' : values.lowProfileStyle === 'casual' ? 'casual' : 'serious';
+    document.querySelectorAll('[data-low]').forEach((button) => button.toggleAttribute('data-low-current', button.dataset.low === mode));
+    const minutes = document.getElementById('low-casual-minutes');
+    if (document.activeElement !== minutes && Date.now() > lowMinutesHoldUntil) minutes.value = values.lowProfileCasualMinutes ?? 20;
+    if (!known) document.getElementById('low-text').textContent = '還沒有帳號送過同步設定';
+    else if (Date.now() > lowTextHoldUntil) document.getElementById('low-text').textContent = '';
+  }
+
+  async function changeLow(changes) {
+    const shared = (await readShared()) || {};
+    const values = { ...(shared.values || {}), ...changes };
+    const response = await fetch('/shared', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ at: Date.now(), values }) }).catch(() => null);
+    lowTextHoldUntil = Date.now() + 10000;
+    document.getElementById('low-text').textContent = response && response.ok ? '已送出，各分頁 10 秒內跟上' : '送不出去（中繼站有開嗎？）';
+    renderLow({ values });
+  }
+
+  document.querySelectorAll('[data-low]').forEach((button) =>
+    button.addEventListener('click', () => {
+      const mode = button.dataset.low;
+      changeLow(mode === 'off' ? { lowProfileEnabled: false } : { lowProfileEnabled: true, lowProfileStyle: mode });
+    })
+  );
+  document.getElementById('low-casual-minutes').addEventListener('change', (event) => {
+    lowMinutesHoldUntil = Date.now() + 15000;
+    changeLow({ lowProfileCasualMinutes: Math.min(60, Math.max(0, Number(event.target.value) || 0)) });
+  });
 
   // 點帳號名稱：中繼站找標題是「名稱｜…」的瀏覽器視窗拉到最上層
   document.getElementById('grid').addEventListener('click', async (event) => {

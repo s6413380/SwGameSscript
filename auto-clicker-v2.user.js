@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.27
+// @version      3.28
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -778,6 +778,11 @@
       <button data-action="global-temp" data-global-mode="temp">暫時暫停</button>
       <button data-action="global-stop" data-global-mode="stop">永久暫停</button>
     </div>
+    <div class="row global-row">低調
+      <button data-action="low-mode" data-low-mode="off">關</button>
+      <button data-action="low-mode" data-low-mode="serious">認真</button>
+      <button data-action="low-mode" data-low-mode="casual">休閒</button>
+    </div>
     <div data-role="status" style="margin-top:6px">待命中</div>
     <div data-role="monitor" class="monitor"></div>
     <hr class="divider">
@@ -1219,6 +1224,7 @@
     [data-auto-clicker] .global-row { font-size:12px; color:#a0a0aa; }
     [data-auto-clicker] .global-row button[data-current="run"] { background:#2e7d32; border-color:#2e7d32; color:#fff; font-weight:bold; }
     [data-auto-clicker] .global-row button[data-current="temp"] { background:#e65100; border-color:#e65100; color:#fff; font-weight:bold; }
+    [data-auto-clicker] .global-row button[data-low-current] { background:#2e7d32; border-color:#2e7d32; color:#fff; font-weight:bold; }
     [data-auto-clicker] .global-row button[data-current="stop"] { background:#c62828; border-color:#c62828; color:#fff; font-weight:bold; }
     [data-auto-clicker] .hint.fold { cursor:pointer; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:1; overflow:hidden; }
     [data-auto-clicker] .hint.fold::before { content:'▸ '; color:#7a7a84; }
@@ -2203,6 +2209,7 @@
     dashboard.profile = { id: profile.id, nickname: profile.nickname, money: profile.money };
     renderAppName();
     renderLowProfilePersonality();
+    renderLowModeButtons();
     applyTitlePrefix();
   }
 
@@ -5293,6 +5300,38 @@
     return `這個帳號的節奏：手速 ×${(1 / personality.speed).toFixed(2)}、分心 ${Math.round(personality.distractChance * 100)}%、玩 ×${personality.play.toFixed(2)}、休息 ×${personality.rest.toFixed(2)}、睡覺${shift >= 0 ? '晚' : '早'} ${Math.abs(shift)} 分鐘`;
   }
 
+  function lowModeOf(settings) {
+    if (!settings.lowProfileEnabled) return 'off';
+    return settings.lowProfileStyle === 'casual' ? 'casual' : 'serious';
+  }
+
+  function renderLowModeButtons() {
+    const mode = lowModeOf(readSettingsFromPanel());
+    panel.querySelectorAll('[data-low-mode]').forEach((button) => button.toggleAttribute('data-low-current', button.dataset.lowMode === mode));
+  }
+
+  // 面板上方的快速切換：三個帳號同步時順便送給其他帳號
+  function setLowMode(mode) {
+    setPanelField('lowProfileEnabled', mode !== 'off');
+    if (mode !== 'off') setPanelField('lowProfileStyle', mode);
+    const settings = readSettingsFromPanel();
+    saveSettings(settings);
+    if (settings.syncAccountsEnabled) pushSharedSettings(settings);
+    setStatus(`低調模式：${{ off: '關', serious: '認真玩', casual: '休閒' }[mode]}${settings.syncAccountsEnabled ? '（三個帳號一起換）' : ''}`);
+  }
+
+  // 換了玩法就重排作息：正在睡到休息結束的掛機、鍛造叫醒，照新的玩法重新算
+  function resetLowProfileRhythm() {
+    Object.assign(lowProfile, { sessionEnd: 0, breakUntil: 0, sleepUntil: 0, checkin: null, nextCheckinAt: 0 });
+    const settings = readSettingsFromPanel();
+    if (state.running && !state.forgeMode && nextTickAt.hunt - Date.now() > 20000) {
+      backgroundTimer.clearTimeout(state.timerId);
+      state.timerId = planTick(() => tick(settings), randomGap(3000, 10000));
+    }
+    if (forgeRunner.running && nextTickAt.forge - Date.now() > 20000) scheduleForgeRunner(randomGap(3000, 10000));
+    renderLowModeButtons();
+  }
+
   function renderLowProfilePersonality() {
     const element = panel.querySelector('[data-role="low-profile-personality"]');
     if (element) element.textContent = lowProfilePersonalityText();
@@ -7633,6 +7672,8 @@
       saveSettings(readSettingsFromPanel());
     } else if (action === 'start') {
       start();
+    } else if (action === 'low-mode') {
+      setLowMode(event.target.dataset.lowMode);
     } else if (action === 'global-run' || action === 'global-temp' || action === 'global-stop') {
       setGlobalPause(readSettingsFromPanel(), action.slice('global-'.length));
     } else if (action === 'forge-start') {
@@ -12596,6 +12637,7 @@
       renderRecipeHeroes();
     }
     if (event.target.dataset.field === 'forgeShopSlots') renderForgePlanOverview();
+    if (['lowProfileEnabled', 'lowProfileStyle', 'lowProfileCasualMinutes'].includes(event.target.dataset.field)) resetLowProfileRhythm();
     if (event.target.dataset.trainChoice) updateTrainFromChoices();
     if (event.target.dataset.cardRule) updateCardRulesFromRows();
     if (event.target.dataset.field === 'trainEnabled') renderTrainStatus();
