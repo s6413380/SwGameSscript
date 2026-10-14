@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.45
+// @version      3.46
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -3415,6 +3415,8 @@
         return '停止挖礦';
       case 'forge-queue':
         return queueHeroFromDashboard(Number(command.heroId), Number(command.fromId) || 0);
+      case 'forge-plan':
+        return setForgePlanFromDashboard(command);
       case 'forge-unqueue':
         unqueueHeroForForge(Number(command.heroId));
         return `${command.heroId} 移出鍛造佇列`;
@@ -12028,11 +12030,57 @@
       autoNamePercent: settings.forgeAutoNamePercent,
       note: forgeRunner.running ? forgeRunner.nameWaiting : forgeRunner.stoppedReason || '',
       rows: forgeQueueRows(settings),
+      plans: Object.fromEntries(forgeByApiHeroIds(settings).map((heroId) => [heroId, forgeApiPlan(settings, heroId)])),
+      recipeOptions: forgeRecipeOptions(settings),
+      mines: mineStock.map((mine) => [mine.name, mine.have]),
       candidates: forgeHeroes
         .filter((hero) => !heroIds.includes(hero.id) && !inHuntTeam(hero))
         .sort((first, second) => (second.forge || 0) - (first.forge || 0))
         .map((hero) => ({ id: hero.id, name: hero.name, forge: hero.forge, tailor: hero.tailor, craft: hero.craft })),
     };
+  }
+
+  // 總覽頁編配方用：每種裝備前 5 個推薦配方（照這種裝備看重的第一個屬性排）；算一次要掃全部鍛造紀錄，1 分鐘重算一次
+  const NAME_STAT_GOALS = { 攻: 'atk', 防: 'def', 智: 'int', 幸: 'lck', 重: 'wgt', 耐: 'fullDur' };
+  const RECIPE_OPTIONS_FRESH_MILLISECONDS = 60000;
+  const recipeOptionsCache = { at: 0, value: {} };
+
+  function forgeRecipeOptions(settings) {
+    if (Date.now() - recipeOptionsCache.at < RECIPE_OPTIONS_FRESH_MILLISECONDS) return recipeOptionsCache.value;
+    const weights = settings.recipeNameAdjust ? loadNameWeights() || { days: {} } : null;
+    recipeOptionsCache.value = Object.fromEntries(
+      Object.values(FORGE_TYPE_NAMES).map((type) => {
+        const stats = namePriorityFor(settings, type);
+        const goal = stats ? NAME_STAT_GOALS[stats[0]] : 'total';
+        const recipes = recommendRecipes(type, goal, '', weights)
+          .slice(0, 5)
+          .map((recipe) => ({ key: recipe.key, count: recipe.count, score: Math.round(goal === 'wgt' ? -recipe.score : recipe.score), goal: RECIPE_GOALS[goal] }));
+        return [type, recipes];
+      })
+    );
+    recipeOptionsCache.at = Date.now();
+    return recipeOptionsCache.value;
+  }
+
+  // 總覽頁編某個角色的配方：類型、材料、名稱（名稱空白＝用配方頁的名稱）；不在佇列的順便加進去
+  function setForgePlanFromDashboard(command) {
+    const heroId = Number(command.heroId);
+    const type = String(command.type || '').trim();
+    const recipe = parseRecipe(command.recipe);
+    if (!heroId) throw new Error('沒有指定角色');
+    if (!Object.values(FORGE_TYPE_NAMES).includes(type)) throw new Error(`不認得的裝備類型 ${type}`);
+    if (!recipe.length) throw new Error('配方是空的');
+    const total = recipe.reduce((sum, [, quantity]) => sum + quantity, 0);
+    if (total > MATERIAL_CAPS[type]) throw new Error(`${type}材料上限 ${MATERIAL_CAPS[type]}，配方共 ${total}`);
+    const settings = readSettingsFromPanel();
+    const plans = forgeByApiPlans(settings);
+    plans[heroId] = { type, recipe: recipe.map(([name, quantity]) => `${name}×${quantity}`).join('、'), name: String(command.name || '').trim() };
+    setPanelField('forgeByApiPlans', JSON.stringify(plans));
+    const heroIds = forgeByApiHeroIds(settings);
+    if (!heroIds.includes(heroId)) setPanelField('forgeByApiHeroIds', [...heroIds, heroId].join(','));
+    afterForgeQueueChange();
+    const hero = forgeHeroes.find((candidate) => candidate.id === heroId);
+    return `${hero ? hero.name : heroId} 的配方改成 ${type} ${plans[heroId].recipe}`;
   }
 
   // 總覽頁「加入」：沿用佇列裡某個角色的配方，沒指定就用配方頁目前的配方

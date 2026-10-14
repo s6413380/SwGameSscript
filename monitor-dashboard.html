@@ -27,12 +27,22 @@
   .hero-line { display:flex; justify-content:space-between; gap:6px; font-size:13px; }
   .income-board { margin:0 0 12px; padding:8px 10px; border:1px solid #2e2e34; border-radius:8px; background:#18181b; }
   .income-board .periods button { margin-left:4px; }
-  .forge-account { margin-top:8px; padding-top:6px; border-top:1px solid #26262b; }
+  .forge-board { margin:16px 0 0; padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:#18181b; }
+  .forge-board .head { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+  .forge-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(380px, 1fr)); gap:10px; margin-top:8px; }
+  .forge-account { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px; }
+  .forge-account .title { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+  .forge-account .settings { display:flex; flex-wrap:wrap; gap:4px 12px; align-items:center; margin:6px 0; font-size:13px; color:var(--muted); }
   .forge-account button.on { background:var(--good); border-color:var(--good); font-weight:bold; }
-  .forge-account th, .forge-account td { text-align:left !important; white-space:normal !important; vertical-align:top; }
-  .forge-account .chip { display:inline-block; margin:1px 3px 1px 0; padding:0 6px; border-radius:9px; background:#2a2a30; font-size:12px; }
-  .forge-account .chip.short { background:#5c1d1d; color:#fca5a5; }
-  .forge-account tr.next td { background:#16261c; }
+  .forge-hero { border:1px solid #2e2e34; border-radius:8px; padding:6px 8px; margin:5px 0; background:#1c1c21; }
+  .forge-hero.next { background:#16261c; border-color:#2f5d3a; }
+  .forge-hero .line { display:flex; gap:6px; align-items:baseline; flex-wrap:wrap; }
+  .forge-hero .status { flex:1; text-align:right; font-size:12px; }
+  .forge-hero .type { padding:0 6px; border-radius:9px; background:#3b2f5c; color:#ddd6fe; font-size:12px; }
+  .chip { display:inline-block; margin:1px 3px 1px 0; padding:0 6px; border-radius:9px; background:#2a2a30; font-size:12px; }
+  .chip.short { background:#5c1d1d; color:#fca5a5; }
+  .forge-editor { margin-top:6px; padding:8px; border-radius:6px; background:#141418; display:grid; grid-template-columns:auto 1fr; gap:5px 8px; align-items:center; font-size:13px; }
+  .forge-editor input, .forge-editor select { width:100%; box-sizing:border-box; }
   .income-board .periods button.active { background:#3b82f6; border-color:#3b82f6; color:#fff; }
   .income-board table { width:100%; border-collapse:collapse; margin-top:6px; font-size:13px; }
   .income-board th, .income-board td { padding:3px 6px; border-bottom:1px solid #26262b; text-align:right; white-space:nowrap; }
@@ -108,14 +118,14 @@
   <table id="income-table"></table>
   <div class="muted" style="font-size:12px;margin-top:4px">經驗＝整隊加總；💰＝遊戲幣餘額淨變化（含花掉的）；同一個帳號開兩個分頁只算一次</div>
 </section>
-<section class="income-board" id="forge-board" style="display:none">
-  <div><b>鍛造</b>
-    全部帳號的名稱 <input id="forge-name-all" style="width:110px"> <button id="forge-name-all-send">套用到全部帳號</button>
-    <button id="forge-start-all">全部開始</button><button id="forge-stop-all">全部停止</button>
-    <span class="muted" id="forge-board-text"></span></div>
-  <div id="forge-board-body"></div>
-</section>
 <div class="grid" id="grid"><div class="muted" id="empty">目前沒有在線的分頁；在遊戲面板「提醒」頁勾選「回報到總覽頁」</div></div>
+<section class="forge-board" id="forge-board" style="display:none">
+  <div class="head"><b>鍛造</b>
+    <button id="forge-start-all">全部開始</button><button id="forge-stop-all">全部停止</button>
+    全部帳號的名稱 <input id="forge-name-all" style="width:120px"> <button id="forge-name-all-send">套用到全部帳號</button>
+    <span class="muted" id="forge-board-text"></span></div>
+  <div class="forge-grid" id="forge-board-body"></div>
+</section>
 <script>
   // 超過這麼久沒回報就當作分頁關掉或卡住，先不顯示，等它再回報時自然會回來
   const OFFLINE_MILLISECONDS = 30000;
@@ -393,77 +403,183 @@
   }
 
   // 鍛造管理：每個帳號一塊，指令送到正在跑鍛造的分頁（沒有就送最新回報的）
+  const FORGE_TYPES = { 單手劍: 16, 細劍: 14, 短刀: 11, 單手錘: 16, 盾牌: 16, 雙手劍: 22, 太刀: 20, 雙手斧: 22, 長槍: 18, 頭盔: 10, 帽子: 10, 盔甲: 16, 大衣: 12, 項鍊: 6 };
   let forgeTargets = [];
+  let lastForgeAccounts = [];
+  // 正在編哪個角色的配方：{ target, heroId }；heroId 是 'new' 就是加入新角色
+  let forgeEditing = null;
 
   function renderForgeBoard(accounts) {
+    lastForgeAccounts = accounts;
     const byAccount = new Map();
     [...accounts]
       .filter((account) => account.data.forgeBoard)
       .sort((first, second) => Number(first.data.forgeBoard.running) - Number(second.data.forgeBoard.running) || first.at - second.at)
       .forEach((account) => byAccount.set(account.data.accountId ?? account.id, account));
     forgeTargets = [...byAccount.values()];
-    const board = document.getElementById('forge-board');
-    board.style.display = forgeTargets.length ? '' : 'none';
+    document.getElementById('forge-board').style.display = forgeTargets.length ? '' : 'none';
     const body = document.getElementById('forge-board-body');
-    // 正在打字或選角色時先不重畫，不然會被洗掉
-    if (body.contains(document.activeElement)) return;
+    // 正在編配方或打字時先不重畫，不然會被洗掉
+    if (forgeEditing || body.contains(document.activeElement)) return;
     body.innerHTML = forgeTargets.map(forgeAccountHtml).join('');
+  }
+
+  function forgeChips(materials) {
+    return materials
+      .map((material) => `<span class="chip ${material.have !== null && material.have < material.quantity ? 'short' : ''}" title="庫存 ${material.have ?? '?'}">${escapeHtml(material.name)}×${material.quantity}</span>`)
+      .join('');
+  }
+
+  function forgeHeroHtml(account, row) {
+    const editing = forgeEditing && forgeEditing.target === account.id && forgeEditing.heroId === row.heroId;
+    return `<div class="forge-hero ${row.next ? 'next' : ''}">
+      <div class="line"><b>${escapeHtml(row.name)}</b><span class="status" style="color:${row.statusColor}">${escapeHtml(row.statusText)}</span></div>
+      <div class="line"><span class="type">${escapeHtml(row.type || '?')}</span>「${escapeHtml(row.itemName)}」${row.ownName ? '' : '<span class="muted">（帳號的名稱）</span>'}</div>
+      <div>${forgeChips(row.materials) || '<span class="muted">沒有配方</span>'}
+        ${row.materials.length ? `<span class="muted">共 ${row.total}${row.cap ? `/${row.cap}` : ''}</span>` : ''}
+        ${row.possible === null ? '' : `<span style="color:${row.possible ? '#4ade80' : '#f87171'}">・夠 ${row.possible} 爐</span>`}</div>
+      ${row.problems.length ? `<div style="color:#f87171">⚠ ${escapeHtml(row.problems.join('；'))}</div>` : ''}
+      <div class="line" style="justify-content:flex-end"><button class="small" data-forge-edit="${row.heroId}">編輯配方</button><button class="small" data-forge-unqueue="${row.heroId}">移出</button></div>
+      ${editing ? forgeEditorHtml(account, row.heroId) : ''}
+    </div>`;
+  }
+
+  function forgeRecipeOptionsHtml(forge, type) {
+    return (forge.recipeOptions[type] || [])
+      .map((recipe) => `<option value="${escapeHtml(recipe.key)}">${escapeHtml(recipe.key)}（${escapeHtml(recipe.goal)} ${recipe.score}，${recipe.count} 件）</option>`)
+      .join('');
+  }
+
+  function forgeEditorHtml(account, heroId) {
+    const forge = account.data.forgeBoard;
+    const plan = (forge.plans && forge.plans[heroId]) || { type: forge.recipeType, recipe: forge.recipe, name: '' };
+    const ownName = plan.name && plan.name !== forge.itemName ? plan.name : '';
+    const heroSelect =
+      heroId === 'new'
+        ? `<span>角色</span><select data-edit="hero">${forge.candidates.map((hero) => `<option value="${hero.id}">${escapeHtml(hero.name)}（鍛 ${hero.forge ?? '?'}／裁 ${hero.tailor ?? '?'}／工 ${hero.craft ?? '?'}）</option>`).join('')}</select>`
+        : '';
+    return `<div class="forge-editor" data-editor>
+      ${heroSelect}
+      <span>類型</span><select data-edit="type">${Object.keys(FORGE_TYPES).map((type) => `<option ${type === plan.type ? 'selected' : ''}>${type}</option>`).join('')}</select>
+      <span>推薦</span><select data-edit="pick"><option value="">（自己填）</option>${forgeRecipeOptionsHtml(forge, plan.type)}</select>
+      <span>配方</span><input data-edit="recipe" value="${escapeHtml(plan.recipe || '')}" placeholder="鐵×10、銅×6">
+      <span></span><span class="muted" data-edit-check></span>
+      <span>名稱</span><input data-edit="name" value="${escapeHtml(ownName)}" placeholder="空白＝用帳號的名稱（${escapeHtml(forge.itemName || '')}）">
+      <span></span><span><button class="small" data-forge-cmd="save">儲存</button> <button class="small" data-forge-cmd="cancel">取消</button></span>
+    </div>`;
   }
 
   function forgeAccountHtml(account) {
     const forge = account.data.forgeBoard;
-    const rows = forge.rows
-      .map((row) => {
-        const chips = row.materials
-          .map((material) => `<span class="chip ${material.have !== null && material.have < material.quantity ? 'short' : ''}" title="庫存 ${material.have ?? '?'}">${escapeHtml(material.name)}×${material.quantity}</span>`)
-          .join('');
-        return `<tr class="${row.next ? 'next' : ''}"><td><b>${escapeHtml(row.name)}</b></td><td style="color:${row.statusColor}">${escapeHtml(row.statusText)}</td>
-          <td>${escapeHtml(row.type)}「${escapeHtml(row.itemName)}」${row.problems.length ? `<div style="color:#f87171">⚠ ${escapeHtml(row.problems.join('；'))}</div>` : ''}</td>
-          <td>${chips || '-'}${row.possible === null ? '' : ` <span style="color:${row.possible ? '#4ade80' : '#f87171'}">夠 ${row.possible} 爐</span>`}</td>
-          <td><button class="small" data-forge-unqueue="${row.heroId}">移出</button></td></tr>`;
-      })
-      .join('');
-    const candidates = forge.candidates.map((hero) => `<option value="${hero.id}">${escapeHtml(hero.name)}（鍛 ${hero.forge ?? '?'}／裁 ${hero.tailor ?? '?'}／工 ${hero.craft ?? '?'}）</option>`).join('');
-    const sources = forge.rows.map((row) => `<option value="${row.heroId}">跟 ${escapeHtml(row.name)} 一樣（${escapeHtml(row.type)}）</option>`).join('');
+    const adding = forgeEditing && forgeEditing.target === account.id && forgeEditing.heroId === 'new';
     return `<div class="forge-account" data-forge-target="${escapeHtml(account.id)}">
-      <div><b>${escapeHtml(account.data.nickname)}</b>
+      <div class="title"><b>${escapeHtml(account.data.nickname)}</b>
         <button class="small ${forge.running ? 'on' : ''}" data-forge-cmd="forge">開</button><button class="small" data-forge-cmd="stop-forge">停</button>
-        <span class="muted">欄位使用中 ${forge.forging}/${forge.shops || '?'}・已開 ${forge.started}${forge.limit ? `/${forge.limit}` : ''} 爐</span>
-        欄位 <input type="number" min="0" style="width:44px" data-forge-field="forgeShopSlots" value="${forge.slots}" title="0＝自動讀遊戲">
-        開 <input type="number" min="0" style="width:44px" data-forge-field="forgeByApiCount" value="${forge.limit}" title="0＝不限"> 爐
-        名稱 <input style="width:90px" data-forge-name value="${escapeHtml(forge.itemName || '')}"><button class="small" data-forge-cmd="name">套用</button>
-        ${forge.autoName ? `自動換名稱門檻 <input type="number" min="0" max="100" step="0.5" style="width:52px" data-forge-field="forgeAutoNamePercent" value="${forge.autoNamePercent}" title="測名表六圍平均到這個 % 才換上；0＝有資料就用最高的">%` : ''}
-        ${forge.note ? `<span class="muted">${escapeHtml(forge.note)}</span>` : ''}</div>
-      ${rows ? `<table><tr><th>角色</th><th>狀態</th><th>裝備</th><th>材料</th><th></th></tr>${rows}</table>` : '<div class="muted">佇列是空的</div>'}
-      ${candidates ? `<div style="margin-top:4px">加入 <select data-forge-add>${candidates}</select> 配方
-        <select data-forge-from><option value="">配方頁目前的（${escapeHtml(forge.recipeType || '')}）</option>${sources}</select>
-        <button class="small" data-forge-cmd="queue">加入佇列</button></div>` : ''}
+        <span class="muted">欄位 ${forge.forging}/${forge.shops || '?'}・已開 ${forge.started}${forge.limit ? `/${forge.limit}` : ''} 爐</span></div>
+      ${forge.note ? `<div style="color:#f59e0b;font-size:13px">${escapeHtml(forge.note)}</div>` : ''}
+      <div class="settings">
+        <span>欄位 <input type="number" min="0" style="width:44px" data-forge-field="forgeShopSlots" value="${forge.slots}" title="0＝自動讀遊戲"></span>
+        <span>開 <input type="number" min="0" style="width:44px" data-forge-field="forgeByApiCount" value="${forge.limit}" title="0＝不限"> 爐</span>
+        <span>名稱 <input style="width:100px" data-forge-name value="${escapeHtml(forge.itemName || '')}"> <button class="small" data-forge-cmd="name">套用</button></span>
+        ${forge.autoName ? `<span>自動換名稱門檻 <input type="number" min="0" max="100" step="0.5" style="width:52px" data-forge-field="forgeAutoNamePercent" value="${forge.autoNamePercent}"> %</span>` : ''}
+      </div>
+      ${forge.rows.map((row) => forgeHeroHtml(account, row)).join('') || '<div class="muted">佇列是空的</div>'}
+      ${adding ? `<div class="forge-hero">${forgeEditorHtml(account, 'new')}</div>` : forge.candidates.length ? '<button class="small" data-forge-cmd="add">＋ 加入角色</button>' : ''}
     </div>`;
+  }
+
+  // 配方欄打字時馬上算總數、上限、庫存夠幾爐
+  function checkForgeEditor(editor, account) {
+    const forge = account.data.forgeBoard;
+    const type = editor.querySelector('[data-edit="type"]').value;
+    const text = editor.querySelector('[data-edit="recipe"]').value;
+    const parts = text.split(/[、,，\n]/).map((part) => part.trim()).filter(Boolean);
+    const recipe = parts.map((part) => /^(.+?)\s*[×xX*＊]\s*(\d+)$/.exec(part)).map((match) => (match ? [match[1].trim(), Number(match[2])] : null));
+    const check = editor.querySelector('[data-edit-check]');
+    if (!parts.length) return (check.textContent = '寫成 名稱×數量，用、分開');
+    if (recipe.includes(null)) return (check.innerHTML = '<span style="color:#f87171">有一段看不懂，要寫成 名稱×數量</span>');
+    const total = recipe.reduce((sum, [, quantity]) => sum + quantity, 0);
+    const have = new Map(forge.mines || []);
+    const possible = Math.min(...recipe.map(([name, quantity]) => Math.floor((have.get(name) || 0) / quantity)));
+    const over = total > FORGE_TYPES[type];
+    check.innerHTML = `<span style="color:${over ? '#f87171' : 'inherit'}">共 ${total}/${FORGE_TYPES[type]}</span>${have.size ? `・<span style="color:${possible ? '#4ade80' : '#f87171'}">夠 ${possible} 爐</span>` : ''}`;
   }
 
   function forgeBoardSent(text) {
     document.getElementById('forge-board-text').textContent = `${text}（${new Date().toLocaleTimeString('zh-TW', { hour12: false })}）`;
   }
 
+  function closeForgeEditor() {
+    forgeEditing = null;
+    document.activeElement && document.activeElement.blur();
+    renderForgeBoard(lastForgeAccounts);
+  }
+
   document.getElementById('forge-board-body').addEventListener('click', (event) => {
     const block = event.target.closest('[data-forge-target]');
     if (!block || event.target.tagName !== 'BUTTON') return;
     const target = block.dataset.forgeTarget;
-    const unqueue = event.target.dataset.forgeUnqueue;
-    const command = event.target.dataset.forgeCmd;
+    const account = forgeTargets.find((item) => item.id === target);
+    const { forgeUnqueue: unqueue, forgeEdit: edit, forgeCmd: command } = event.target.dataset;
+    if (edit) {
+      forgeEditing = { target, heroId: Number(edit) };
+      renderForgeBoardNow();
+      return;
+    }
+    if (command === 'add') {
+      forgeEditing = { target, heroId: 'new' };
+      renderForgeBoardNow();
+      return;
+    }
+    if (command === 'cancel') return closeForgeEditor();
+    if (command === 'save') {
+      const editor = event.target.closest('[data-editor]');
+      const value = (field) => editor.querySelector(`[data-edit="${field}"]`).value;
+      const heroId = forgeEditing.heroId === 'new' ? Number(value('hero')) : forgeEditing.heroId;
+      sendCommand(target, { type: 'forge-plan', heroId, type: value('type'), recipe: value('recipe'), name: value('name') });
+      forgeBoardSent(`${account ? account.data.nickname : ''} 配方已送出，分頁 5 秒內套用（不對的話看卡片上的「上一個指令」）`);
+      return closeForgeEditor();
+    }
     if (unqueue) sendCommand(target, { type: 'forge-unqueue', heroId: Number(unqueue) });
     else if (command === 'forge' || command === 'stop-forge') sendCommand(target, { type: command });
     else if (command === 'name') sendCommand(target, { type: 'forge-name', name: block.querySelector('[data-forge-name]').value });
-    else if (command === 'queue') {
-      sendCommand(target, { type: 'forge-queue', heroId: Number(block.querySelector('[data-forge-add]').value), fromId: Number(block.querySelector('[data-forge-from]').value) || 0 });
-    } else return;
+    else return;
     event.target.blur();
     forgeBoardSent('已送出，分頁 5 秒內處理');
   });
+
+  // 開編輯器時不等下一次輪詢，馬上畫出來
+  function renderForgeBoardNow() {
+    const body = document.getElementById('forge-board-body');
+    body.innerHTML = forgeTargets.map(forgeAccountHtml).join('');
+    const editor = body.querySelector('[data-editor]');
+    const account = forgeTargets.find((item) => item.id === forgeEditing.target);
+    if (editor && account) checkForgeEditor(editor, account);
+  }
+
+  document.getElementById('forge-board-body').addEventListener('input', (event) => {
+    const editor = event.target.closest('[data-editor]');
+    const account = forgeTargets.find((item) => item.id === (event.target.closest('[data-forge-target]') || {}).dataset?.forgeTarget);
+    if (editor && account && event.target.dataset.edit === 'recipe') checkForgeEditor(editor, account);
+  });
   document.getElementById('forge-board-body').addEventListener('change', (event) => {
     const block = event.target.closest('[data-forge-target]');
+    if (!block) return;
+    const account = forgeTargets.find((item) => item.id === block.dataset.forgeTarget);
+    const editor = event.target.closest('[data-editor]');
+    const edit = event.target.dataset.edit;
+    if (editor && account && edit === 'type') {
+      editor.querySelector('[data-edit="pick"]').innerHTML = `<option value="">（自己填）</option>${forgeRecipeOptionsHtml(account.data.forgeBoard, event.target.value)}`;
+      checkForgeEditor(editor, account);
+      return;
+    }
+    if (editor && account && edit === 'pick') {
+      if (event.target.value) editor.querySelector('[data-edit="recipe"]').value = event.target.value;
+      checkForgeEditor(editor, account);
+      return;
+    }
     const field = event.target.dataset.forgeField;
-    if (!block || !field) return;
+    if (!field) return;
     sendCommand(block.dataset.forgeTarget, { type: 'forge-setting', field, value: Number(event.target.value) || 0 });
     event.target.blur();
     forgeBoardSent('已送出');
