@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.47
+// @version      3.48
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -4003,6 +4003,8 @@
     return '多開輪流：開啟';
   }
 
+  let scriptFetchActive = false;
+
   async function sendGameRequestNow(path, options = {}) {
     const token = currentGameToken();
     if (!token) throw new Error('還沒取得 token，請在遊戲裡點一下任一分頁再試');
@@ -4011,12 +4013,20 @@
     let response;
     let text;
     try {
-      response = await window.fetch(path, {
-        credentials: 'same-origin',
-        ...options,
-        signal: controller.signal,
-        headers: { ...(options.headers || {}), token },
-      });
+      // 標記這是腳本送的：攔截器才分得出哪些是玩家在遊戲畫面上自己按的
+      let pending;
+      scriptFetchActive = true;
+      try {
+        pending = window.fetch(path, {
+          credentials: 'same-origin',
+          ...options,
+          signal: controller.signal,
+          headers: { ...(options.headers || {}), token },
+        });
+      } finally {
+        scriptFetchActive = false;
+      }
+      response = await pending;
       text = await response.text();
     } catch (cause) {
       // 網路斷掉、逾時：過一下通常就好，呼叫的一方可以重試
@@ -4363,6 +4373,7 @@
   const HERO_LIST_PATTERN = /\/api\/heroes(?:[?#]|$)/;
   const EQUIPMENT_LIST_PATTERN = /\/api\/equipments(?:[?#]|$)/;
   const FORGE_START_PATTERN = /\/api\/forge(?:[?#]|$)/;
+  const MINING_ACTION_PATTERN = /\/api\/heroes\/(\d+)\/(completeAction|mining\/\d+|rest)(?:[?#]|$)/;
   const FORGE_COMPLETE_PATTERN = /\/api\/heroes\/(\d+)\/complete(?:Forge|Action)(?:[?#]|$)/;
   const ITEM_LIST_PATTERN = /\/api\/(?:items|mines)(?:[?#]|$)/;
   const ITEM_USE_PATTERN = /\/api\/items\/(\d+)\/use(?:[?#]|$)/;
@@ -8196,6 +8207,7 @@
   function installApiRecorder() {
     const originalFetch = window.fetch;
     window.fetch = function (...args) {
+      const fromScript = scriptFetchActive;
       // 關閉面板＝不掛機也不回報，但手動玩的升級還是要記，所以只留成長值紀錄
       const growthOnly = tabShutDown;
       if (growthOnly && !readSettingsFromPanel().growthEnabled) return originalFetch.apply(this, args);
@@ -8218,9 +8230,11 @@
       const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
       const isPlace = PLACE_API_PATTERN.test(url) && (method !== 'GET' || HUNT_INFO_PATTERN.test(url));
       const isMoney = !growthOnly && PLACE_API_PATTERN.test(url) && (method !== 'GET' || MONEY_API_PATTERN.test(url));
+      // 玩家自己在遊戲畫面收礦、派去挖礦、休息
+      const manualMiningMatch = !growthOnly && !fromScript && method === 'POST' ? url.match(MINING_ACTION_PATTERN) : null;
       const needsResponse = growthOnly
         ? isHunt || growthHeroId || isHeroList || isForgeData || isPlace
-        : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData || itemUseMatch || isPlace || isMoney || isCardMarket;
+        : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData || itemUseMatch || isPlace || isMoney || isCardMarket || manualMiningMatch;
       if (!needsResponse || STATIC_ASSET_PATTERN.test(url) || isOtherSite) {
         return originalFetch.apply(this, args);
       }
@@ -8242,6 +8256,7 @@
           const responseTextPromise = response.clone().text().catch(() => '[讀不到回應內容]');
           Promise.all([requestBodyPromise, responseTextPromise]).then(([requestBody, responseText]) => {
             if (response.ok && !growthOnly) captureHeroId(url, requestBody);
+            if (response.ok && manualMiningMatch) noteManualMining(Number(manualMiningMatch[1]), manualMiningMatch[2]);
             if (response.ok && growthHeroId && readSettingsFromPanel().growthEnabled) {
               try {
                 growthTracker.processHeroData(growthHeroId, JSON.parse(responseText));
@@ -12476,6 +12491,22 @@
   const GAME_ACTION_RESULTS_KEY = 'miningResults';
   const miningRunner = { running: false, runId: 0, timerId: null, failures: 0, collected: 0, stoppedReason: '' };
   const miningWatch = { busy: false };
+  // 玩家手動收礦、派出去、休息過的角色，這麼久之內自動挖礦不去動它，之後再跟大家一起收
+  const MINING_MANUAL_HOLD_MINUTES = 20;
+
+  function noteManualMining(heroId, action) {
+    const data = loadMining();
+    data.manualUntil = { ...(data.manualUntil || {}), [heroId]: Date.now() + MINING_MANUAL_HOLD_MINUTES * 60000 };
+    // 腳本記的開挖、休息紀錄已經不是現在這一趟了
+    delete data.active[heroId];
+    saveMining(data);
+    if (activeTab === 'mining') renderMiningHeroes();
+  }
+
+  function miningHeldUntil(data, heroId, now) {
+    const until = (data.manualUntil || {})[heroId] || 0;
+    return until > now ? until : 0;
+  }
   const miningNotified = new Set();
 
   function loadMining() {
@@ -12931,7 +12962,13 @@
         .map((id) => byId.get(id))
         .filter(Boolean);
       // 一起收：任一個到時間就照順序全部收（未滿 3 分鐘的下次再收），收完才出發，最後一個收的角色才真的是最後
-      const mining = ordered.filter((hero) => hero.actionState === 4);
+      // 剛被手動操作過的先跳過，時間到再看
+      ordered
+        .map((hero) => miningHeldUntil(data, hero.id, now))
+        .filter(Boolean)
+        .forEach((until) => waits.push(until));
+      const free = ordered.filter((hero) => !miningHeldUntil(data, hero.id, now));
+      const mining = free.filter((hero) => hero.actionState === 4);
       const due = mining.some((hero) => miningCollectAt(settings, hero, data, now) <= now);
       for (const hero of mining) {
         if (!due) {
@@ -12956,7 +12993,7 @@
       // 同一輪出發的挖一樣久，下次才會一起到時間
       const jitter = Math.min(50, Math.max(0, Number(settings.miningIntervalJitterPercent) || 0)) / 100;
       const roundHours = miningHours(settings) * (1 + (Math.random() * 2 - 1) * jitter);
-      for (const hero of ordered.map((item) => byId.get(item.id))) {
+      for (const hero of free.map((item) => byId.get(item.id))) {
         try {
           actions.push(...(await miningHeroStep(settings, hero, plans, data, now, waits, opened, roundHours)));
         } catch (error) {
@@ -13124,14 +13161,16 @@
               position < 0
                 ? ''
                 : `<span style="flex:none;white-space:nowrap">第 ${position + 1} 收 <button data-action="mining-order-up" data-hero="${hero.id}" ${position === 0 ? 'disabled' : ''}>↑</button><button data-action="mining-order-down" data-hero="${hero.id}" ${position === order.length - 1 ? 'disabled' : ''}>↓</button></span>`;
-            const blocked = inHuntTeam(hero) ? '狩獵隊伍' : queued.includes(hero.id) ? '鍛造佇列' : '';
+            const held = miningHeldUntil(data, hero.id, now);
+            const heldText = held ? `手動操作過，${new Date(held).toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit' })} 前不自動動它` : '';
+            const blocked = inHuntTeam(hero) ? '狩獵隊伍（不會被拿去挖）' : queued.includes(hero.id) ? '鍛造佇列（不會被拿去挖）' : heldText;
             const conditions = heroConditions(hero).map((condition) => `${condition.name}${condition.level}`);
             const options = [['', '不挖'], ...Object.entries(MINING_SITES)]
               .map(([value, name]) => `<option value="${value}" ${String(plans[hero.id] || '') === value ? 'selected' : ''}>${name}</option>`)
               .join('');
             return `<div class="row" style="margin:0;padding:3px 0;border-bottom:1px solid #2e2e34">
               <div style="flex:1;min-width:0"><b>${escapeHtml(hero.name)}</b> <span style="color:#a0a0aa">挖礦 ${hero.mining ?? '?'}</span>
-                <div style="color:${hero.actionState === 4 ? '#60a5fa' : '#a0a0aa'}">${escapeHtml(miningHeroText(hero, data, now, settings))}${conditions.length ? ` <span style="color:#fb923c">${escapeHtml(conditions.join('、'))}</span>` : ''}${blocked ? ` <span style="color:#f87171">${blocked}（不會被拿去挖）</span>` : ''}</div></div>
+                <div style="color:${hero.actionState === 4 ? '#60a5fa' : '#a0a0aa'}">${escapeHtml(miningHeroText(hero, data, now, settings))}${conditions.length ? ` <span style="color:#fb923c">${escapeHtml(conditions.join('、'))}</span>` : ''}${blocked ? ` <span style="color:#f87171">${blocked}</span>` : ''}</div></div>
               ${orderButtons}
               <select data-mining-hero="${hero.id}" style="flex:none;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px">${options}</select>
             </div>`;
