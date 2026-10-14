@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.38
+// @version      3.39
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -278,6 +278,8 @@
     forgeByApiCount: 0,
     // 挖礦：{ heroId: 地點 1～4 }（JSON）；每幾小時收一次（每次前後飄幾 %）；出發前喝勾選的體力藥水（都不勾＝任何體力道具）
     miningPlans: '{}',
+    // 收礦順序（heroId 陣列，JSON）；有的角色要最後收
+    miningOrder: '[]',
     miningConditionRest: true,
     miningIntervalHours: 6,
     miningIntervalJitterPercent: 15,
@@ -1072,8 +1074,9 @@
       <div class="hint">沒有藥水時，體力不到三成或 HP 不到一半會先休息再挖</div>
       <label class="row"><input data-field="miningConditionRest" type="checkbox" style="flex:none;width:auto"> 有異常狀態（中毒…）就不出發、正在挖的提早收，並跳出提醒</label>
       <div class="hint">異常狀態下挖礦可能會死。有異常的角色留在城裡不動，好了才再出發</div>
-      <input data-field="miningPlans" type="hidden">
+      <input data-field="miningPlans" type="hidden"><input data-field="miningOrder" type="hidden">
       <div class="subhead">角色（選地點＝要挖；沒在跑「開始挖礦」時每 5 分鐘讀一次）</div>
+      <div class="hint">要挖的角色一起出發、一起收：任一個時間到就照上面的順序（↑↓ 調整）全部收完，再一個一個出發</div>
       <div data-role="mining-heroes" style="font-size:12px"></div>
       <div class="subhead">最近收穫</div>
       <div data-role="mining-log" style="font-size:12px"></div>
@@ -7847,6 +7850,8 @@
     } else if (action === 'mining-stop') {
       if (miningRunner.running) stopMiningRunner('已停止挖礦');
       else miningLog('挖礦沒有在執行');
+    } else if (action === 'mining-order-up' || action === 'mining-order-down') {
+      moveMiningOrder(Number(event.target.dataset.hero), action === 'mining-order-up' ? -1 : 1);
     } else if (action === 'mining-potions') {
       loadMiningPotions();
     } else if (action === 'mining-refresh') {
@@ -12246,6 +12251,40 @@
     }
   }
 
+  function miningOrderedIds(settings, heroIds) {
+    let order = [];
+    try {
+      order = JSON.parse(settings.miningOrder || '[]').map(Number);
+    } catch {
+      order = [];
+    }
+    const rank = (id) => (order.includes(id) ? order.indexOf(id) : order.length + heroIds.indexOf(id));
+    return [...heroIds].sort((first, second) => rank(first) - rank(second));
+  }
+
+  function plannedMiningIds(settings) {
+    const plans = miningPlans(settings);
+    return Object.keys(plans)
+      .filter((id) => MINING_SITES[plans[id]])
+      .map(Number);
+  }
+
+  function moveMiningOrder(heroId, step) {
+    const settings = readSettingsFromPanel();
+    const ids = miningOrderedIds(settings, plannedMiningIds(settings));
+    const index = ids.indexOf(heroId);
+    const target = index + step;
+    if (index < 0 || target < 0 || target >= ids.length) return;
+    [ids[index], ids[target]] = [ids[target], ids[index]];
+    setPanelField('miningOrder', JSON.stringify(ids));
+    saveSettings(readSettingsFromPanel());
+    renderMiningHeroes();
+  }
+
+  function canCompleteNow(hero, now) {
+    return Boolean(hero.canComplete) || Date.parse(hero.actionCompleteTime) <= now;
+  }
+
   function miningLog(message) {
     setStatus(`［挖礦］${message}`);
   }
@@ -12512,20 +12551,11 @@
     return { hero: current, used, empty };
   }
 
-  async function miningHeroStep(settings, hero, plans, data, now, waits, opened = new Set()) {
+  async function miningHeroStep(settings, hero, plans, data, now, waits, opened, roundHours) {
     const record = data.active[hero.id];
     const done = [];
-    if (hero.actionState === 4) {
-      const at = miningCollectAt(settings, hero, data, now);
-      if (at > now) {
-        waits.push(at);
-        return done;
-      }
-      hero = await openGameHeroPage(hero, opened);
-      notifyMiningConditions(settings, hero);
-      hero = await completeMiningAction(settings, hero, data, 'mine');
-      done.push(`${hero.name} 收礦`);
-    } else if (hero.actionState === 2 && record && record.kind === 'rest') {
+    if (hero.actionState === 4) return done;
+    if (hero.actionState === 2 && record && record.kind === 'rest') {
       const at = Math.max(record.at + record.minutes * 60000, Date.parse(hero.actionCompleteTime) || 0);
       if (at > now) {
         waits.push(at);
@@ -12561,8 +12591,7 @@
     } else {
       const site = Number(plans[hero.id]);
       syncGameHeroAction(await requestGameApi(`${HEROES_API}/${hero.id}/mining/${site}`, { method: 'POST' }), 'mine');
-      const jitter = Math.min(50, Math.max(0, Number(settings.miningIntervalJitterPercent) || 0)) / 100;
-      const hours = miningHours(settings) * (1 + (Math.random() * 2 - 1) * jitter);
+      const hours = roundHours;
       data.active[hero.id] = { kind: 'mine', at: Date.now(), sp: hero.sp, hp: hero.hp, site, hours };
       done.push(`${hero.name} 去${MINING_SITES[site]}挖礦${hours ? `（約 ${hours.toFixed(1)} 小時後收）` : ''}`);
     }
@@ -12590,9 +12619,40 @@
       const now = Date.now();
       const actions = [];
       const waits = [];
-      for (const hero of heroes.filter((candidate) => heroIds.includes(candidate.id))) {
+      const opened = new Set();
+      const byId = new Map(heroes.map((hero) => [hero.id, hero]));
+      const ordered = miningOrderedIds(settings, heroIds)
+        .map((id) => byId.get(id))
+        .filter(Boolean);
+      // 一起收：任一個到時間就照順序全部收（未滿 3 分鐘的下次再收），收完才出發，最後一個收的角色才真的是最後
+      const mining = ordered.filter((hero) => hero.actionState === 4);
+      const due = mining.some((hero) => miningCollectAt(settings, hero, data, now) <= now);
+      for (const hero of mining) {
+        if (!due) {
+          waits.push(miningCollectAt(settings, hero, data, now));
+          continue;
+        }
+        if (!canCompleteNow(hero, now)) {
+          waits.push(Date.parse(hero.actionCompleteTime) || now + 60000);
+          continue;
+        }
         try {
-          actions.push(...(await miningHeroStep(settings, hero, plans, data, now, waits)));
+          const pageHero = await openGameHeroPage(hero, opened);
+          notifyMiningConditions(settings, pageHero);
+          byId.set(hero.id, await completeMiningAction(settings, pageHero, data, 'mine'));
+          actions.push(`${hero.name} 收礦`);
+        } catch (error) {
+          if (error.captchaRequired) throw error;
+          actions.push(`${hero.name}：${error.message}`);
+        }
+        if (cancelled()) return;
+      }
+      // 同一輪出發的挖一樣久，下次才會一起到時間
+      const jitter = Math.min(50, Math.max(0, Number(settings.miningIntervalJitterPercent) || 0)) / 100;
+      const roundHours = miningHours(settings) * (1 + (Math.random() * 2 - 1) * jitter);
+      for (const hero of ordered.map((item) => byId.get(item.id))) {
+        try {
+          actions.push(...(await miningHeroStep(settings, hero, plans, data, now, waits, opened, roundHours)));
         } catch (error) {
           if (error.captchaRequired) throw error;
           actions.push(`${hero.name}：${error.message}`);
@@ -12740,11 +12800,18 @@
     const plans = miningPlans(settings);
     const queued = forgeByApiHeroIds(settings);
     const now = Date.now();
+    const order = miningOrderedIds(settings, plannedMiningIds(settings));
+    const rank = (hero) => (order.includes(hero.id) ? order.indexOf(hero.id) : Infinity);
     box.innerHTML = data.heroes.length
       ? data.heroes
           .slice()
-          .sort((first, second) => Number(Boolean(plans[second.id])) - Number(Boolean(plans[first.id])) || Number(second.actionState === 4) - Number(first.actionState === 4) || (second.mining || 0) - (first.mining || 0))
+          .sort((first, second) => rank(first) - rank(second) || Number(second.actionState === 4) - Number(first.actionState === 4) || (second.mining || 0) - (first.mining || 0))
           .map((hero) => {
+            const position = order.indexOf(hero.id);
+            const orderButtons =
+              position < 0
+                ? ''
+                : `<span style="flex:none;white-space:nowrap">第 ${position + 1} 收 <button data-action="mining-order-up" data-hero="${hero.id}" ${position === 0 ? 'disabled' : ''}>↑</button><button data-action="mining-order-down" data-hero="${hero.id}" ${position === order.length - 1 ? 'disabled' : ''}>↓</button></span>`;
             const blocked = inHuntTeam(hero) ? '狩獵隊伍' : queued.includes(hero.id) ? '鍛造佇列' : '';
             const conditions = heroConditions(hero).map((condition) => `${condition.name}${condition.level}`);
             const options = [['', '不挖'], ...Object.entries(MINING_SITES)]
@@ -12753,6 +12820,7 @@
             return `<div class="row" style="margin:0;padding:3px 0;border-bottom:1px solid #2e2e34">
               <div style="flex:1;min-width:0"><b>${escapeHtml(hero.name)}</b> <span style="color:#a0a0aa">挖礦 ${hero.mining ?? '?'}</span>
                 <div style="color:${hero.actionState === 4 ? '#60a5fa' : '#a0a0aa'}">${escapeHtml(miningHeroText(hero, data, now, settings))}${conditions.length ? ` <span style="color:#fb923c">${escapeHtml(conditions.join('、'))}</span>` : ''}${blocked ? ` <span style="color:#f87171">${blocked}（不會被拿去挖）</span>` : ''}</div></div>
+              ${orderButtons}
               <select data-mining-hero="${hero.id}" style="flex:none;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px">${options}</select>
             </div>`;
           })
