@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.36
+// @version      3.37
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -6560,7 +6560,7 @@
       const data = await requestGameApi(move.path, { method: 'POST' });
       if (runId !== state.runId) return;
       state.apiHuntFailures = 0;
-      refreshGameView(HUNT_QUERY_KEYS);
+      syncGameMove(data, /moveForkPath/.test(move.path) ? 'fork' : 'move');
       rememberApiPlace(data && data.huntZone !== undefined ? data : data && data.huntInfo);
       if (move.path === '/api/move/0') state.apiDirectMoveFailed = false;
       forgetZoneUsers();
@@ -6597,7 +6597,7 @@
       const data = await requestGameApi('/api/move/complete', { method: 'POST' });
       if (runId !== state.runId) return;
       state.apiHuntFailures = 0;
-      refreshGameView(HUNT_QUERY_KEYS);
+      syncGameMove(data, 'complete');
       state.apiMoving = false;
       forgetZoneUsers();
       rememberApiPlace(data && data.huntZone !== undefined ? data : data && data.huntInfo);
@@ -6810,7 +6810,7 @@
       const data = await requestGameApi('/api/heroes/restAll', { method: 'POST' });
       if (runId !== state.runId) return;
       state.apiHuntFailures = 0;
-      refreshGameView(HUNT_QUERY_KEYS);
+      syncGameRestAll(data);
       state.apiResting = true;
       state.apiRestUntil = restUntilOf(data && data.heroes);
       if (data && data.huntZone !== undefined) state.huntInfo = data;
@@ -6834,7 +6834,7 @@
       const data = await requestGameApi('/api/heroes/restAll/complete', { method: 'POST' });
       if (runId !== state.runId) return;
       state.apiHuntFailures = 0;
-      refreshGameView(HUNT_QUERY_KEYS);
+      syncGameRestAll(data);
       state.apiResting = false;
       const info = data && data.huntInfo;
       if (info) {
@@ -11387,7 +11387,7 @@
   }
 
   // 檢查配方、名稱、材料庫存，組出 POST /api/forge 要送的內容；手動鍛造和 API 自動鍛造共用
-  async function buildForgeRequest(plan, heroId, target) {
+  async function buildForgeRequest(plan, heroId, target, preloadedItems = null) {
     const { type } = plan;
     const typeId = Object.keys(FORGE_TYPE_NAMES).find((id) => FORGE_TYPE_NAMES[id] === type);
     const name = String(plan.name || '').trim();
@@ -11399,7 +11399,7 @@
     const total = recipe.reduce((sum, [, quantity]) => sum + quantity, 0);
     if (total > MATERIAL_CAPS[type]) throw new Error(`${type}材料上限 ${MATERIAL_CAPS[type]}，配方共 ${total}`);
     // 材料要用道具 id 送，從目前的材料庫存查，順便確認數量夠
-    const items = await requestGameApi(ITEMS_API);
+    const items = preloadedItems || (await requestGameApi(ITEMS_API));
     rememberItemNames(items);
     const mines = new Map((items.mines || []).map((mine) => [mine.name || itemName(mine.id), mine]));
     const selectedMines = recipe.map(([materialName, quantity]) => {
@@ -11489,7 +11489,7 @@
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
-    refreshGameView(FORGE_QUERY_KEYS);
+    syncGameForge(result, body.heroId);
     return result;
   }
 
@@ -11579,6 +11579,118 @@
     if (queue) queue.dispatch(next);
   }
 
+  // 照遊戲前端每個按鈕成功後的做法更新畫面快取（從遊戲程式抄來的）：回應裡有的資料直接換上，
+  // 其餘只標成過期，畫面上正在顯示的才會重抓。全部標過期的話，畫面上的每個查詢都會重抓，多出玩家自己按不會有的讀取
+  function mirrorGameUpdate(fallbackKeys, update) {
+    try {
+      const client = findGameQueryClient();
+      if (client) {
+        update(client);
+        return;
+      }
+    } catch (error) {
+      console.error('更新遊戲畫面失敗', error);
+    }
+    refreshGameView(fallbackKeys);
+  }
+
+  function setGameHero(client, hero) {
+    if (!hero || hero.id === undefined) return;
+    client.cancelQueries({ queryKey: ['heroes', hero.id], exact: true });
+    client.cancelQueries({ queryKey: ['heroes', 'list'], exact: true });
+    client.setQueryData(['heroes', hero.id], hero);
+    client.setQueryData(['heroes', 'list'], (list) => list && list.map((item) => (item.id === hero.id ? hero : item)));
+  }
+
+  function setGameHuntInfo(client, huntInfo) {
+    if (!huntInfo) return;
+    client.cancelQueries({ queryKey: ['heroes', 'hunt'], exact: true });
+    client.setQueryData(['heroes', 'hunt'], huntInfo);
+  }
+
+  function setGameHeroList(client, heroes) {
+    if (!Array.isArray(heroes)) return;
+    client.cancelQueries({ queryKey: ['heroes', 'list'], exact: true });
+    client.setQueryData(['heroes', 'list'], heroes);
+  }
+
+  // 移動：move/{區域}、move/complete、moveForkPath 三個按鈕
+  function syncGameMove(data, kind) {
+    const huntInfo = data && data.heroes ? data : data && data.huntInfo;
+    mirrorGameUpdate(HUNT_QUERY_KEYS, (client) => {
+      setGameHuntInfo(client, huntInfo);
+      client.invalidateQueries({ queryKey: ['heroes', 'list'] });
+      if (kind !== 'move') client.invalidateQueries({ queryKey: ['zone', 'users'] });
+      ((huntInfo && huntInfo.heroes) || []).forEach((hero) =>
+        kind === 'complete' ? client.resetQueries({ queryKey: ['heroes', hero.id], exact: true }) : client.invalidateQueries({ queryKey: ['heroes', hero.id] })
+      );
+    });
+  }
+
+  // 全隊休息、全隊休息完成
+  function syncGameRestAll(data) {
+    const huntInfo = data && data.heroes ? data : data && data.huntInfo;
+    mirrorGameUpdate(HUNT_QUERY_KEYS, (client) => {
+      setGameHuntInfo(client, huntInfo);
+      client.invalidateQueries({ queryKey: ['heroes', 'list'] });
+      ((huntInfo && huntInfo.heroes) || []).forEach((hero) => client.invalidateQueries({ queryKey: ['heroes', hero.id] }));
+    });
+  }
+
+  // 開爐：回應帶全部角色和材料
+  function syncGameForge(data, heroId) {
+    mirrorGameUpdate(FORGE_QUERY_KEYS, (client) => {
+      client.invalidateQueries({ queryKey: ['heroes', heroId] });
+      setGameHeroList(client, data && data.heroes);
+      if (data && (data.items || data.mines)) client.setQueryData(['items'], { items: data.items, mines: data.mines });
+    });
+  }
+
+  function syncGameCompleteForge(data, heroId) {
+    mirrorGameUpdate(FORGE_QUERY_KEYS, (client) => {
+      client.invalidateQueries({ queryKey: ['equipments'] });
+      setGameHeroList(client, data && data.heroes);
+      client.resetQueries({ queryKey: ['heroes', heroId], exact: true });
+    });
+  }
+
+  // 完成行動（收礦、休息完）
+  function syncGameCompleteAction(data, heroId) {
+    mirrorGameUpdate(FORGE_QUERY_KEYS, (client) => {
+      if (data && data.actionResult && data.actionResult.action === 4) {
+        client.invalidateQueries({ queryKey: ['items'] });
+        client.invalidateQueries({ queryKey: ['tower'] });
+      }
+      setGameHero(client, data && data.hero);
+      client.invalidateQueries({ queryKey: ['heroes', 'collections'] });
+      client.invalidateQueries({ queryKey: ['heroes', heroId, 'statuses'] });
+      client.resetQueries({ queryKey: ['heroes', 'hunt'], exact: true });
+    });
+  }
+
+  // 開始挖礦、單人休息：回應就是英雄
+  function syncGameHeroAction(hero, kind) {
+    mirrorGameUpdate([['heroes']], (client) => {
+      setGameHero(client, hero);
+      if (kind === 'rest') client.resetQueries({ queryKey: ['heroes', 'hunt'], exact: true });
+    });
+  }
+
+  // 用道具：回應帶道具欄和英雄
+  function syncGameItemUse(data) {
+    mirrorGameUpdate([['items'], ['heroes']], (client) => {
+      if (data && data.items !== undefined) client.setQueryData(['items'], data.items);
+      const hero = data && data.hero;
+      if (!hero) return;
+      setGameHero(client, hero);
+      client.cancelQueries({ queryKey: ['heroes', 'hunt'], exact: true });
+      client.setQueryData(['heroes', 'hunt'], (info) =>
+        info && { ...info, heroes: info.heroes.map((item) => (item.id === hero.id ? { ...item, ...hero, statuses: data.heroStatuses ?? item.statuses } : item)) }
+      );
+      if (data.heroStatuses !== undefined) client.setQueryData(['heroes', hero.id, 'statuses'], data.heroStatuses);
+    });
+  }
+
   // 照遊戲自己按「原地掛機」後的做法更新畫面：隊伍狀態直接換成回應裡的，不另外重抓，伺服器看到的請求跟手動一樣
   function syncGameHuntView(data) {
     try {
@@ -11588,16 +11700,26 @@
         return;
       }
       if (data.report) pushHuntReportToView(data.report);
+      client.invalidateQueries({ queryKey: ['tower'] });
+      client.cancelQueries({ queryKey: ['profile'], exact: true });
       client.setQueryData(['profile'], (profile) => profile && { ...profile, money: data.money ?? profile.money, huntCount: data.huntCount ?? profile.huntCount });
+      client.invalidateQueries({ queryKey: ['heroes', 'collections'] });
+      if (Array.isArray(data.equipmentChanges) && data.equipmentChanges.length) client.invalidateQueries({ queryKey: ['equipments'] });
       if (data.huntInfo) {
         const before = client.getQueryData(['heroes', 'hunt']);
-        client.cancelQueries({ queryKey: ['heroes', 'hunt'], exact: true });
-        client.setQueryData(['heroes', 'hunt'], data.huntInfo);
         if (!before || before.huntZone !== data.huntInfo.huntZone || before.huntStage !== data.huntInfo.huntStage) {
           client.invalidateQueries({ queryKey: ['zone', 'users'] });
         }
+        client.invalidateQueries({ queryKey: ['heroes', 'list'] });
+        setGameHuntInfo(client, data.huntInfo);
+        (data.huntInfo.heroes || []).forEach((hero) => client.invalidateQueries({ queryKey: ['heroes', hero.id] }));
+      } else {
+        const before = client.getQueryData(['heroes', 'hunt']);
+        client.invalidateQueries({ queryKey: ['zone', 'users'] });
+        client.resetQueries({ queryKey: ['heroes', 'hunt'], exact: true });
+        client.invalidateQueries({ queryKey: ['heroes', 'list'] });
+        ((before && before.heroes) || []).forEach((hero) => client.invalidateQueries({ queryKey: ['heroes', hero.id] }));
       }
-      if (Array.isArray(data.equipmentChanges) && data.equipmentChanges.length) client.invalidateQueries({ queryKey: ['equipments'] });
     } catch (error) {
       console.error('更新狩獵畫面失敗', error);
       refreshGameView(HUNT_QUERY_KEYS);
@@ -11976,10 +12098,11 @@
       renderRecipeHeroes();
       const actions = [];
       for (const hero of heroes.filter((candidate) => heroIds.includes(candidate.id) && candidate.actionState === 5 && candidate.canComplete)) {
-        heroes = (await requestGameApi(`${HEROES_API}/${hero.id}/completeForge`, { method: 'POST' })).heroes || heroes;
+        const completed = await requestGameApi(`${HEROES_API}/${hero.id}/completeForge`, { method: 'POST' });
+        heroes = completed.heroes || heroes;
         if (cancelled()) return;
         actions.push(`${hero.name} 完成鍛造`);
-        refreshGameView(FORGE_QUERY_KEYS);
+        syncGameCompleteForge(completed, hero.id);
       }
       const forging = heroes.filter((hero) => hero.actionState === 5);
       const limit = settings.forgeByApiCount;
@@ -12025,11 +12148,13 @@
           return;
         }
         // 一個角色材料不夠、配方沒設好，換下一個角色；全部都開不了而且沒有在鍛造的才停
+        // 像人打開鍛造頁看一次材料，輪流看哪個角色的配方做得出來
+        const items = idleHeroes.length > 1 ? await requestGameApi(ITEMS_API) : null;
         for (const hero of idleHeroes) {
           try {
             const plan = forgeApiPlan(settings, hero.id);
             if (!plan.recipe) throw new Error('還沒設定配方');
-            request = await buildForgeRequest(plan, hero.id, freeShop);
+            request = await buildForgeRequest(plan, hero.id, freeShop, items);
             idle = hero;
             break;
           } catch (error) {
@@ -12139,17 +12264,21 @@
   }
 
   // 列表的角色不一定帶狀態效果；在挖礦或要挖的才另外讀，看得到中毒這類異常
-  async function readMiningHeroes(settings, options = {}) {
+  // 自動挖礦時不另外讀狀態：要動作前「打開英雄頁」才讀，跟人一樣（openGameHeroPage）
+  async function readMiningHeroes(settings, { statuses: withStatuses = true, ...options } = {}) {
     const heroes = (await requestGameApi(HEROES_API, options)).heroes || [];
     const plans = miningPlans(settings);
+    const data = loadMining();
+    const previous = new Map(data.heroes.map((hero) => [hero.id, hero.statuses]));
     for (const hero of heroes.filter((candidate) => !Array.isArray(candidate.statuses) && (candidate.actionState === 4 || plans[candidate.id]))) {
+      hero.statuses = previous.get(hero.id);
+      if (!withStatuses) continue;
       try {
         hero.statuses = (await requestGameApi(`${HEROES_API}/${hero.id}/statuses`, options)).statuses || [];
       } catch {
-        // 讀不到狀態就當沒有，下次再讀
+        // 讀不到狀態就沿用上次的，下次再讀
       }
     }
-    const data = loadMining();
     data.heroes = heroes.map(compactMiningHero);
     data.heroesAt = Date.now();
     saveMining(data);
@@ -12251,9 +12380,30 @@
     }
   }
 
+  // 玩家要先點進英雄頁（GET /api/heroes/{id}）才按得到完成行動、挖礦；同一輪只開一次
+  // 英雄頁一打開會讀英雄和狀態效果兩個
+  async function openGameHeroPage(hero, opened) {
+    if (opened.has(hero.id)) return hero;
+    opened.add(hero.id);
+    const detail = await requestGameApi(`${HEROES_API}/${hero.id}`);
+    let statuses = hero.statuses || [];
+    try {
+      statuses = (await requestGameApi(`${HEROES_API}/${hero.id}/statuses`)).statuses || [];
+    } catch {
+      // 讀不到狀態就沿用列表上的
+    }
+    mirrorGameUpdate([], (client) => {
+      client.setQueryData(['heroes', hero.id], detail);
+      client.setQueryData(['heroes', hero.id, 'statuses'], statuses);
+    });
+    await wait(randomGap(1500, 4000));
+    return { ...hero, ...detail, statuses };
+  }
+
   async function completeMiningAction(settings, hero, data, kind) {
     const record = data.active[hero.id];
     const reply = await requestGameApi(`${HEROES_API}/${hero.id}/completeAction`, { method: 'POST' });
+    syncGameCompleteAction(reply, hero.id);
     const after = { ...hero, ...(reply.hero || {}), actionState: reply.hero ? reply.hero.actionState : 0 };
     learnMiningRate(data, hero.id, record && record.kind === kind ? record : null, after);
     delete data.active[hero.id];
@@ -12270,8 +12420,7 @@
     });
     data.log.length = Math.min(data.log.length, MINING_LOG_LIMIT);
     saveMining(data);
-    refreshGameView(FORGE_QUERY_KEYS);
-    // 挖礦可能出事故：收完重讀狀態效果，下一步才知道要不要先休息
+    // 挖礦可能出事故：收完重讀狀態效果（遊戲收完也會重讀），下一步才知道要不要先休息
     try {
       after.statuses = (await requestGameApi(`${HEROES_API}/${hero.id}/statuses`)).statuses || [];
     } catch {
@@ -12323,6 +12472,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ quantity: 1, heroId: hero.id }),
       });
+      syncGameItemUse(result);
       item.available--;
       current = { ...current, ...(result.hero || { sp: Math.min(current.fullSp, current.sp + item.healSp) }), statuses: current.statuses };
       used.push(item.name);
@@ -12331,16 +12481,17 @@
     return { hero: current, used, empty };
   }
 
-  async function miningHeroStep(settings, hero, plans, data, now, waits) {
+  async function miningHeroStep(settings, hero, plans, data, now, waits, opened = new Set()) {
     const record = data.active[hero.id];
     const done = [];
-    notifyMiningConditions(settings, hero);
     if (hero.actionState === 4) {
       const at = miningCollectAt(settings, hero, data, now);
       if (at > now) {
         waits.push(at);
         return done;
       }
+      hero = await openGameHeroPage(hero, opened);
+      notifyMiningConditions(settings, hero);
       hero = await completeMiningAction(settings, hero, data, 'mine');
       done.push(`${hero.name} 收礦`);
     } else if (hero.actionState === 2 && record && record.kind === 'rest') {
@@ -12349,12 +12500,15 @@
         waits.push(at);
         return done;
       }
+      hero = await openGameHeroPage(hero, opened);
       hero = await completeMiningAction(settings, hero, data, 'rest');
       done.push(`${hero.name} 休息完`);
     }
     if (hero.actionState || hero.perished || hero.hp <= 0 || !inTownHero(hero) || inHuntTeam(hero) || forgeByApiHeroIds(settings).includes(hero.id)) return done;
+    hero = await openGameHeroPage(hero, opened);
+    notifyMiningConditions(settings, hero);
     if (settings.miningConditionRest && heroConditions(hero).length) {
-      waits.push(Date.now() + 10 * 60000);
+      waits.push(Date.now() + randomGap(10, 20) * 60000);
       return done;
     }
     if (settings.miningPotionEnabled) {
@@ -12369,13 +12523,13 @@
     }
     if (miningNeedsRest(settings, hero)) {
       const minutes = miningRestMinutes(settings, hero, data);
-      await requestGameApi(`${HEROES_API}/${hero.id}/rest`, { method: 'POST' });
+      syncGameHeroAction(await requestGameApi(`${HEROES_API}/${hero.id}/rest`, { method: 'POST' }), 'rest');
       data.active[hero.id] = { kind: 'rest', at: Date.now(), sp: hero.sp, hp: hero.hp, minutes };
       waits.push(Date.now() + minutes * 60000);
       done.push(`${hero.name} 先休息 ${minutes} 分鐘`);
     } else {
       const site = Number(plans[hero.id]);
-      await requestGameApi(`${HEROES_API}/${hero.id}/mining/${site}`, { method: 'POST' });
+      syncGameHeroAction(await requestGameApi(`${HEROES_API}/${hero.id}/mining/${site}`, { method: 'POST' }), 'mine');
       const baseHours = Number(settings.miningIntervalHours) || 0;
       const jitter = Math.min(50, Math.max(0, Number(settings.miningIntervalJitterPercent) || 0)) / 100;
       const hours = baseHours > 0 ? baseHours * (1 + (Math.random() * 2 - 1) * jitter) : 0;
@@ -12383,7 +12537,6 @@
       done.push(`${hero.name} 去${MINING_SITES[site]}挖礦${hours ? `（約 ${hours.toFixed(1)} 小時後收）` : ''}`);
     }
     saveMining(data);
-    refreshGameView([['heroes']]);
     return done;
   }
 
@@ -12401,7 +12554,7 @@
       return;
     }
     try {
-      const heroes = await readMiningHeroes(settings);
+      const heroes = await readMiningHeroes(settings, { statuses: false });
       if (cancelled()) return;
       const data = loadMining();
       const now = Date.now();
