@@ -261,6 +261,17 @@
     return `<div class="income">${part('近1小時', data.income.hour)}<br>${part('今天', data.income.today)}</div>`;
   }
 
+  // 誰在挖礦、挖多久、有沒有中毒；角色資料最多 5 分鐘讀一次，挖了多久是照開挖時間現算的
+  function miningHtml(data) {
+    const mining = data.mining;
+    if (!mining || !mining.heroes.length) return '';
+    const rows = mining.heroes
+      .map((hero) => `<div>${escapeHtml(hero.name)}：${escapeHtml(hero.text)}${hero.conditions.length ? ` <span style="color:#fb923c">${escapeHtml(hero.conditions.join('、'))}</span>` : ''}</div>`)
+      .join('');
+    const last = mining.last ? `<div class="muted">上次：${escapeHtml(mining.last.name)} ${escapeHtml(mining.last.text || '-')}</div>` : '';
+    return `<div class="income"><b>挖礦</b> <span class="muted">${Math.round((Date.now() - mining.at) / 60000)} 分鐘前讀取</span>${rows}${last}</div>`;
+  }
+
   // 今天戰報寫明是誰拿到的：每個角色一行，盜取放最前面
   function actorLootHtml(data) {
     if (!Array.isArray(data.actorLoot) || !data.actorLoot.length) return '';
@@ -402,6 +413,7 @@
       <div data-role="detail">
       ${body}
       ${incomeHtml(data)}
+      ${miningHtml(data)}
       ${actorLootHtml(data)}
       <div class="status">${escapeHtml(data.status)}</div>
       ${data.lastAction ? `<div class="status last-action ${data.lastAction.text.includes('⚠') ? 'stuck' : ''}">${escapeHtml(data.lastAction.text)}</div>` : ''}
@@ -424,6 +436,7 @@
     return `<div class="row mode">
       <span class="hunt-only">掛機</span><button class="hunt-only ${data.huntRunning ? 'on' : ''}" data-command="start">開</button><button class="hunt-only" data-command="stop-hunt">停</button>
       <span>鍛造</span><button class="${data.forgeRunning ? 'on' : ''}" data-command="forge">開</button><button data-command="stop-forge">停</button>
+      ${'miningRunning' in data ? `<span>挖礦</span><button class="${data.miningRunning ? 'on' : ''}" data-command="mine">開</button><button data-command="stop-mine">停</button>` : ''}
       ${queueText ? `<span class="muted">${escapeHtml(queueText)}</span>` : ''}
       <button class="${isMain ? 'on' : ''}" data-main="${escapeHtml(data.nickname)}" title="${isMain ? '再按一下取消主帳號' : '設成主帳號：其他帳號打怪變慢'}">${isMain ? '★主帳號' : mainAccountName ? '小號' : '設主帳號'}</button>
     </div>`;
@@ -500,7 +513,7 @@
         return;
       }
       const action = button.dataset.command;
-      if (['start', 'forge', 'stop', 'stop-hunt', 'stop-forge', 'resume', 'town'].includes(action)) {
+      if (['start', 'forge', 'stop', 'stop-hunt', 'stop-forge', 'mine', 'stop-mine', 'resume', 'town'].includes(action)) {
         sendCommand(accountId, { type: action });
       } else if (action === 'reload' || action === 'reload-start') {
         sendCommand(accountId, { type: 'reload', autoStart: action === 'reload-start' });

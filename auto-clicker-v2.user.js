@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.33
+// @version      3.34
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -47,6 +47,7 @@
     ['pause', '暫停'],
     ['forge', '自動鍛造'],
     ['recipe', '配方'],
+    ['mining', '挖礦'],
     ['material', '材料統計'],
     ['combat', '戰鬥'],
     ['huntStats', '樓層'],
@@ -65,7 +66,7 @@
   // 分頁太多，先選大類再選分頁；大類裡記住上次看的分頁
   const TAB_GROUPS = [
     ['hunt', '打怪', ['main', 'health', 'resource', 'move', 'equip', 'train', 'pause']],
-    ['forging', '鍛造', ['forge', 'recipe', 'material']],
+    ['forging', '鍛造', ['forge', 'recipe', 'material', 'mining']],
     ['stats', '統計', ['income', 'combat', 'huntStats', 'growth', 'draw']],
     ['other', '其他', ['pick', 'transfer', 'cardBuy', 'alert', 'cloud', 'log', 'api', 'backup']],
   ];
@@ -275,6 +276,14 @@
     // 每個角色自己的 { type, recipe, name }（JSON）；鍛造師數值不同，最好的配方也不同
     forgeByApiPlans: '{}',
     forgeByApiCount: 0,
+    // 挖礦：{ heroId: 地點 1～4 }（JSON）；體力估計剩幾 % 就收、最多挖幾分鐘；收完體力或 HP 低於幾 % 先休息
+    miningPlans: '{}',
+    miningStopSpPercent: 5,
+    miningMaxMinutes: 60,
+    miningRestSpPercent: 30,
+    miningRestHpPercent: 50,
+    miningRestMaxMinutes: 60,
+    miningConditionRest: true,
     // 這個帳號有幾個鍛造欄位；0＝從遊戲讀（基本 2 格＋擴建次數）
     forgeShopSlots: 0,
     // 名稱效果每天 00:00 換：過了 00:00 先不開新爐，每隔幾分鐘抓測名表，有六圍平均 ≥ 這個 % 的名稱就換上繼續
@@ -1053,6 +1062,19 @@
       <div data-role="material-summary" style="font-size:12px;max-height:380px;overflow:auto"></div>
     </div>
 
+    <div data-tab="mining">
+      <div class="row"><button data-action="mining-start" style="font-weight:bold">開始挖礦</button><button data-action="mining-stop">停止挖礦</button><button data-action="mining-refresh">重新讀取</button></div>
+      <div class="hint">選了地點的角色在城裡閒著就去挖（狩獵隊伍、鍛造佇列裡的角色不會被拿去）。挖礦一直耗體力：照這個角色上次挖的耗體力速度估，快用完就收（第一次不知道速度，挖滿上限才收）；遊戲規定至少挖 3 分鐘。可以跟掛機、鍛造同時跑</div>
+      <div class="row">體力估計剩 ${numberInput('miningStopSpPercent', 'min="0" max="100"')} % 就收，最多挖 ${numberInput('miningMaxMinutes', 'min="3"')} 分鐘</div>
+      <div class="row">收完體力低於 ${numberInput('miningRestSpPercent', 'min="0" max="100"')} % 或 HP 低於 ${numberInput('miningRestHpPercent', 'min="0" max="100"')} % 先休息（最多 ${numberInput('miningRestMaxMinutes', 'min="1"')} 分鐘）再挖</div>
+      <label class="row"><input data-field="miningConditionRest" type="checkbox" style="flex:none;width:auto"> 有異常狀態（中毒…）就提早收、先休息，並跳出提醒</label>
+      <input data-field="miningPlans" type="hidden">
+      <div class="subhead">角色（選地點＝要挖；沒在跑「開始挖礦」時每 5 分鐘讀一次）</div>
+      <div data-role="mining-heroes" style="font-size:12px"></div>
+      <div class="subhead">最近收穫</div>
+      <div data-role="mining-log" style="font-size:12px"></div>
+    </div>
+
     <div data-tab="recipe">
       <div class="hint">這頁是配方編輯器：①看推薦 ②勾材料 ③取名稱 ④按「加入」把角色排進自動鍛造，或只鍛一次</div>
       <div class="subhead">① 推薦配方</div>
@@ -1436,6 +1458,10 @@
       renderForgePlanOverview();
       if (Date.now() - mineStockAt > MINE_STOCK_FRESH_MILLISECONDS) refreshMineStock().then(renderForgePlanOverview).catch(() => {});
       refreshForgeHeroes().catch((error) => setStatus(`讀取角色失敗（${error.message}）`));
+    }
+    if (tabId === 'mining') {
+      renderMiningHeroes();
+      if (Date.now() - loadMining().heroesAt > 60000) readMiningHeroes(readSettingsFromPanel()).catch((error) => miningLog(`讀取角色失敗（${error.message}）`));
     }
     if (tabId === 'transfer') refreshTransferChoices(readSettingsFromPanel()).catch((error) => transferLog(`讀取帳號或角色失敗（${error.message}）`));
     panel.querySelectorAll('[data-tab]').forEach((section) => {
@@ -2182,7 +2208,7 @@
   // 吃藥、換裝這些非同步流程做到一半時不會走到這裡，重新整理不會把它們切斷
   // 重新整理後要接著跑哪些：打怪、鍛造（API 鍛造跟打怪可以同時）
   function resumeModes() {
-    return [state.running && !state.forgeMode ? 'hunt' : '', (state.running && state.forgeMode) || forgeRunner.running ? 'forge' : '']
+    return [state.running && !state.forgeMode ? 'hunt' : '', (state.running && state.forgeMode) || forgeRunner.running ? 'forge' : '', miningRunner.running ? 'mine' : '']
       .filter(Boolean)
       .join(',');
   }
@@ -2320,6 +2346,7 @@
     }
     if (state.running) releaseRunLock(state.forgeMode);
     if (forgeRunner.running) releaseRunLock(true);
+    if (miningRunner.running) releaseMiningLock();
   });
 
   // 畫面上讀不到位置（API 打怪不用停在狩獵頁、或沒設定關卡欄位）就用 API 拿到的位置
@@ -2351,6 +2378,8 @@
       huntRunning: state.running && !state.forgeMode,
       forgeRunning: (state.running && state.forgeMode) || forgeRunner.running,
       forgeQueue: forgeQueueReport(settings),
+      miningRunning: miningRunner.running,
+      mining: miningReport(settings),
       actorLoot: actorLootReport(),
       alert: dashboard.alert,
       status: statusElement.textContent,
@@ -3348,10 +3377,17 @@
       case 'stop':
         stop('總覽頁按了停止');
         stopForgeRunner('總覽頁按了停止');
+        stopMiningRunner('總覽頁按了停止');
         return '停止';
       case 'stop-hunt':
         if (state.running && !state.forgeMode) stop('總覽頁停止掛機');
         return '停止掛機';
+      case 'mine':
+        startMiningRunner();
+        return '開始挖礦';
+      case 'stop-mine':
+        if (miningRunner.running) stopMiningRunner('總覽頁停止挖礦');
+        return '停止挖礦';
       case 'stop-forge':
         if (forgeRunner.running) stopForgeRunner('總覽頁停止鍛造');
         if (state.running && state.forgeMode) stop('總覽頁停止鍛造');
@@ -3652,7 +3688,7 @@
   // 暫停是為了不跟你的操作撞在一起；你自己按面板上的按鈕（讀取角色、讀取材料…）就是要它現在送，
   // 所以按下後這一小段時間的請求不等暫停。開始類（會一直跑下去）和暫停按鈕本身不算
   const MANUAL_REQUEST_MILLISECONDS = 15000;
-  const NOT_MANUAL_ACTIONS = ['main-account-me', 'start', 'forge-start', 'recipe-auto-forge', 'quality-pick', 'global-run', 'global-temp', 'global-stop'];
+  const NOT_MANUAL_ACTIONS = ['main-account-me', 'mining-start', 'start', 'forge-start', 'recipe-auto-forge', 'quality-pick', 'global-run', 'global-temp', 'global-stop'];
   let manualRequestUntil = 0;
 
   function noteManualAction(event, action) {
@@ -6299,6 +6335,8 @@
     if (settings.equipApiEnabled) lines.push(equipMonitorText(settings));
     if (forgeRunner.running) lines.push(`API 鍛造：執行中（已開 ${forgeRunner.started} 爐${forgeRunner.failures ? `，重試中 ${forgeRunner.failures}/${FORGE_RETRY_LIMIT}` : ''}${forgeRunner.captchaWaiting ? '，等驗證' : ''}${forgeRunner.nameWaiting ? `，暫停開爐等好名稱：${forgeRunner.nameWaiting}` : ''}）`);
     else if (forgeRunner.stoppedReason) lines.push(`API 鍛造已停：${forgeRunner.stoppedReason}`);
+    if (miningRunner.running) lines.push(`挖礦：執行中（已收 ${miningRunner.collected} 次${miningRunner.failures ? `，重試中 ${miningRunner.failures}/${FORGE_RETRY_LIMIT}` : ''}）`);
+    else if (miningRunner.stoppedReason) lines.push(`挖礦已停：${miningRunner.stoppedReason}`);
     watchBattleLog(settings);
     const combatLine = settings.combatEnabled ? combatQuickText() : '';
     if (combatLine) lines.push(combatLine);
@@ -6324,6 +6362,8 @@
     checkCloudTransfers(settings);
     checkCardMarket(settings);
     keepRunLock();
+    keepMiningLock();
+    watchMining(settings);
     checkForgeCaptcha();
     if (!state.running) reloadForUpdateIfIdle();
     announceVerificationSolved(settings);
@@ -7797,6 +7837,13 @@
       setMainAccountToMe();
     } else if (action === 'global-run' || action === 'global-temp' || action === 'global-stop') {
       setGlobalPause(readSettingsFromPanel(), action.slice('global-'.length));
+    } else if (action === 'mining-start') {
+      startMiningRunner();
+    } else if (action === 'mining-stop') {
+      if (miningRunner.running) stopMiningRunner('已停止挖礦');
+      else miningLog('挖礦沒有在執行');
+    } else if (action === 'mining-refresh') {
+      readMiningHeroes(readSettingsFromPanel()).catch((error) => miningLog(`讀取角色失敗（${error.message}）`));
     } else if (action === 'forge-start') {
       start(true);
     } else if (action === 'forge-stop') {
@@ -12002,6 +12049,444 @@
     }
   }
 
+  // 挖礦：選了地點的角色在城裡閒著就去挖，體力估計快用完（照上一次挖的耗體力速度）就收；
+  // 收完體力或 HP 太低先休息再挖。遊戲規定至少挖 3 分鐘、休息 1 分鐘才能收，時間到也不會自己停
+  const MINING_SITES = { 1: '砂石場', 2: '森林區', 3: '鐵礦山', 4: '阿嬤寶山' };
+  const MINING_KEY = 'autoClickerV2Mining';
+  const MINING_LOCK_KEY = `${RUN_LOCK_PREFIX}mine`;
+  const MINING_WATCH_MILLISECONDS = 5 * 60000;
+  const MINING_MIN_MINUTES = 3;
+  const MINING_DEFAULT_REST_MINUTES = 30;
+  const MINING_LOG_LIMIT = 30;
+  // 遊戲角色頁「行動紀錄」讀這個；API 收的也寫進去，遊戲裡看得到
+  const GAME_ACTION_RESULTS_KEY = 'miningResults';
+  const miningRunner = { running: false, runId: 0, timerId: null, failures: 0, collected: 0, stoppedReason: '' };
+  const miningWatch = { busy: false };
+  const miningNotified = new Set();
+
+  function loadMining() {
+    const saved = readJsonStorage(MINING_KEY, null);
+    return { rates: {}, active: {}, log: [], heroes: [], heroesAt: 0, ...(saved || {}) };
+  }
+
+  function saveMining(data) {
+    writeJsonStorage(MINING_KEY, data);
+  }
+
+  function miningPlans(settings) {
+    try {
+      const plans = JSON.parse(settings.miningPlans || '{}');
+      return plans && typeof plans === 'object' ? plans : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function miningLog(message) {
+    setStatus(`［挖礦］${message}`);
+  }
+
+  function inTownHero(hero) {
+    return !Number(hero.huntZone) && !Number(hero.huntStage);
+  }
+
+  function actionMinutes(hero, now) {
+    const start = Date.parse(hero.actionStart);
+    return Number.isFinite(start) ? Math.max(0, (now - start) / 60000) : 0;
+  }
+
+  function durationText(minutes) {
+    const whole = Math.floor(minutes);
+    return whole >= 60 ? `${Math.floor(whole / 60)} 小時 ${whole % 60} 分` : `${whole} 分`;
+  }
+
+  // 列表的角色不一定帶狀態效果；在挖礦或要挖的才另外讀，看得到中毒這類異常
+  async function readMiningHeroes(settings, options = {}) {
+    const heroes = (await requestGameApi(HEROES_API, options)).heroes || [];
+    const plans = miningPlans(settings);
+    for (const hero of heroes.filter((candidate) => !Array.isArray(candidate.statuses) && (candidate.actionState === 4 || plans[candidate.id]))) {
+      try {
+        hero.statuses = (await requestGameApi(`${HEROES_API}/${hero.id}/statuses`, options)).statuses || [];
+      } catch {
+        // 讀不到狀態就當沒有，下次再讀
+      }
+    }
+    const data = loadMining();
+    data.heroes = heroes.map(compactMiningHero);
+    data.heroesAt = Date.now();
+    saveMining(data);
+    if (activeTab === 'mining') renderMiningHeroes();
+    return heroes;
+  }
+
+  function compactMiningHero(hero) {
+    const { id, name, actionState, actionTarget, actionStart, actionCompleteTime, canComplete, sp, fullSp, hp, fullHp, mining, perished, huntZone, huntStage, selected } = hero;
+    return { id, name, actionState, actionTarget, actionStart, actionCompleteTime, canComplete, sp, fullSp, hp, fullHp, mining, perished, huntZone, huntStage, selected, statuses: hero.statuses };
+  }
+
+  // 挖礦中角色的體力是開挖時的值；知道耗體力速度就估現在剩多少
+  function estimatedMiningSp(hero, data, now) {
+    const rate = (data.rates[hero.id] || {}).mineSp;
+    const record = data.active[hero.id];
+    const startSp = record && record.kind === 'mine' ? record.sp : hero.sp;
+    if (!(rate > 0)) return null;
+    return Math.max(0, startSp - rate * actionMinutes(hero, now));
+  }
+
+  function miningCollectAt(settings, hero, data, now) {
+    const start = Date.parse(hero.actionStart) || now;
+    const earliest = Date.parse(hero.actionCompleteTime) || start + MINING_MIN_MINUTES * 60000;
+    let at = start + Math.max(MINING_MIN_MINUTES, Number(settings.miningMaxMinutes) || 60) * 60000;
+    const rate = (data.rates[hero.id] || {}).mineSp;
+    if (rate > 0 && Number(hero.fullSp) > 0) {
+      const record = data.active[hero.id];
+      const startSp = record && record.kind === 'mine' ? record.sp : hero.sp;
+      const usable = startSp - (hero.fullSp * (Number(settings.miningStopSpPercent) || 0)) / 100;
+      at = Math.min(at, start + Math.max(0, usable / rate) * 60000);
+    }
+    if (settings.miningConditionRest && heroConditions(hero).length) at = now;
+    return Math.max(at, earliest);
+  }
+
+  function miningNeedsRest(settings, hero) {
+    const percent = (value, full) => (Number(full) > 0 ? (value / full) * 100 : 100);
+    return (
+      hero.sp <= 0 ||
+      percent(hero.sp, hero.fullSp) < (Number(settings.miningRestSpPercent) || 0) ||
+      percent(hero.hp, hero.fullHp) < (Number(settings.miningRestHpPercent) || 0) ||
+      (settings.miningConditionRest && heroConditions(hero).length > 0)
+    );
+  }
+
+  // 休息多久：照上次休息回復的速度算到滿；還不知道速度就先休息 30 分鐘
+  function miningRestMinutes(settings, hero, data) {
+    const rates = data.rates[hero.id] || {};
+    const needs = [];
+    if (rates.restSp > 0) needs.push((hero.fullSp - hero.sp) / rates.restSp);
+    if (rates.restHp > 0) needs.push((hero.fullHp - hero.hp) / rates.restHp);
+    const minutes = needs.length ? Math.max(...needs) : MINING_DEFAULT_REST_MINUTES;
+    return Math.min(Math.max(1, Math.ceil(minutes)), Math.max(1, Number(settings.miningRestMaxMinutes) || 60));
+  }
+
+  // 體力用光（或休息到滿）時只知道真正的速度至少這麼快：往上多估一點，下次早點收，才量得到真正的速度
+  function learnMiningRate(data, heroId, record, after) {
+    if (!record || !after) return;
+    const minutes = (Date.now() - record.at) / 60000;
+    if (minutes < 1) return;
+    const rates = data.rates[heroId] || (data.rates[heroId] = {});
+    const blend = (old, sample, capped) => (capped ? Math.max(old || 0, sample) * 1.15 : old ? old * 0.5 + sample * 0.5 : sample);
+    if (record.kind === 'mine') {
+      const used = record.sp - after.sp;
+      if (used > 0) rates.mineSp = blend(rates.mineSp, used / minutes, after.sp <= 0);
+    } else {
+      const spGain = after.sp - record.sp;
+      const hpGain = after.hp - record.hp;
+      if (spGain > 0) rates.restSp = blend(rates.restSp, spGain / minutes, after.sp >= after.fullSp);
+      if (hpGain > 0) rates.restHp = blend(rates.restHp, hpGain / minutes, after.hp >= after.fullHp);
+    }
+  }
+
+  function rememberGameActionResult(heroId, result) {
+    if (!result || !Array.isArray(result.messages)) return;
+    try {
+      const saved = JSON.parse(localStorage.getItem(GAME_ACTION_RESULTS_KEY) || '{}');
+      saved[heroId] = [{ time: Date.now(), messages: result.messages }, ...(saved[heroId] || [])].slice(0, 5);
+      localStorage.setItem(GAME_ACTION_RESULTS_KEY, JSON.stringify(saved));
+      window.dispatchEvent(new Event('action-results-changed'));
+    } catch {
+      // 遊戲的行動紀錄寫不進去不影響收礦
+    }
+  }
+
+  async function completeMiningAction(settings, hero, data, kind) {
+    const record = data.active[hero.id];
+    const reply = await requestGameApi(`${HEROES_API}/${hero.id}/completeAction`, { method: 'POST' });
+    const after = { ...hero, ...(reply.hero || {}), actionState: reply.hero ? reply.hero.actionState : 0 };
+    learnMiningRate(data, hero.id, record && record.kind === kind ? record : null, after);
+    delete data.active[hero.id];
+    const messages = (reply.actionResult && reply.actionResult.messages) || [];
+    rememberGameActionResult(hero.id, reply.actionResult);
+    data.log.unshift({
+      t: Date.now(),
+      name: hero.name,
+      kind,
+      site: kind === 'mine' ? MINING_SITES[(record && record.site) || hero.actionTarget] || '' : '',
+      minutes: Math.round(actionMinutes(hero, Date.now())),
+      text: messages.map((message) => message.m).filter(Boolean).join('，'),
+      accident: messages.some((message) => ['dmg', 'status', 'death'].includes(message.s)),
+    });
+    data.log.length = Math.min(data.log.length, MINING_LOG_LIMIT);
+    saveMining(data);
+    refreshGameView(FORGE_QUERY_KEYS);
+    // 挖礦可能出事故：收完重讀狀態效果，下一步才知道要不要先休息
+    try {
+      after.statuses = (await requestGameApi(`${HEROES_API}/${hero.id}/statuses`)).statuses || [];
+    } catch {
+      after.statuses = hero.statuses;
+    }
+    if (kind === 'mine') miningRunner.collected++;
+    return after;
+  }
+
+  function notifyMiningConditions(settings, hero) {
+    if (!settings.miningConditionRest) return;
+    heroConditions(hero).forEach((condition) => {
+      const key = `${hero.id}:${condition.name}:${condition.level}`;
+      if (miningNotified.has(key)) return;
+      miningNotified.add(key);
+      showToast(`挖礦：${hero.name} ${condition.name}${condition.level}，先休息`);
+    });
+  }
+
+  async function miningHeroStep(settings, hero, plans, data, now, waits) {
+    const record = data.active[hero.id];
+    const done = [];
+    notifyMiningConditions(settings, hero);
+    if (hero.actionState === 4) {
+      const at = miningCollectAt(settings, hero, data, now);
+      if (at > now) {
+        waits.push(at);
+        return done;
+      }
+      hero = await completeMiningAction(settings, hero, data, 'mine');
+      done.push(`${hero.name} 收礦`);
+    } else if (hero.actionState === 2 && record && record.kind === 'rest') {
+      const at = Math.max(record.at + record.minutes * 60000, Date.parse(hero.actionCompleteTime) || 0);
+      if (at > now) {
+        waits.push(at);
+        return done;
+      }
+      hero = await completeMiningAction(settings, hero, data, 'rest');
+      done.push(`${hero.name} 休息完`);
+    }
+    if (hero.actionState || hero.perished || hero.hp <= 0 || !inTownHero(hero) || inHuntTeam(hero) || forgeByApiHeroIds(settings).includes(hero.id)) return done;
+    if (miningNeedsRest(settings, hero)) {
+      const minutes = miningRestMinutes(settings, hero, data);
+      await requestGameApi(`${HEROES_API}/${hero.id}/rest`, { method: 'POST' });
+      data.active[hero.id] = { kind: 'rest', at: Date.now(), sp: hero.sp, hp: hero.hp, minutes };
+      waits.push(Date.now() + minutes * 60000);
+      done.push(`${hero.name} 先休息 ${minutes} 分鐘`);
+    } else {
+      const site = Number(plans[hero.id]);
+      await requestGameApi(`${HEROES_API}/${hero.id}/mining/${site}`, { method: 'POST' });
+      data.active[hero.id] = { kind: 'mine', at: Date.now(), sp: hero.sp, hp: hero.hp, site };
+      done.push(`${hero.name} 去${MINING_SITES[site]}挖礦`);
+    }
+    saveMining(data);
+    refreshGameView([['heroes']]);
+    return done;
+  }
+
+  async function miningTick() {
+    if (!miningRunner.running) return;
+    const settings = readSettingsFromPanel();
+    const runId = miningRunner.runId;
+    const cancelled = () => runId !== miningRunner.runId;
+    const plans = miningPlans(settings);
+    const heroIds = Object.keys(plans)
+      .filter((id) => MINING_SITES[plans[id]])
+      .map(Number);
+    if (!heroIds.length) {
+      stopMiningRunner('還沒選要挖礦的角色（挖礦頁每個角色選地點）');
+      return;
+    }
+    try {
+      const heroes = await readMiningHeroes(settings);
+      if (cancelled()) return;
+      const data = loadMining();
+      const now = Date.now();
+      const actions = [];
+      const waits = [];
+      for (const hero of heroes.filter((candidate) => heroIds.includes(candidate.id))) {
+        try {
+          actions.push(...(await miningHeroStep(settings, hero, plans, data, now, waits)));
+        } catch (error) {
+          if (error.captchaRequired) throw error;
+          actions.push(`${hero.name}：${error.message}`);
+        }
+        if (cancelled()) return;
+      }
+      miningRunner.failures = 0;
+      // 有動作就很快再讀一次，看清楚新的狀態再排下一次；沒事就睡到最早該收的時間
+      const next = waits.length ? Math.min(...waits) : now + MINING_WATCH_MILLISECONDS;
+      const delay = actions.length ? randomGap(5000, 15000) : Math.min(Math.max(next - Date.now(), 0) + randomGap(3000, 20000), 15 * 60000);
+      miningLog(`${actions.join('、') || '都在挖或休息'}（${Math.round(delay / 1000)} 秒後再看）`);
+      scheduleMiningRunner(delay);
+    } catch (error) {
+      if (cancelled()) return;
+      if ((error.captchaRequired || error.transient || error.status) && miningRunner.failures < FORGE_RETRY_LIMIT) {
+        miningRunner.failures++;
+        const delay = error.captchaRequired ? randomGap(120000, 180000) : randomGap(30000, 60000);
+        miningLog(`${error.captchaRequired ? '要活人驗證' : `出錯（${error.message}）`}，${Math.round(delay / 1000)} 秒後重試（第 ${miningRunner.failures}/${FORGE_RETRY_LIMIT} 次）`);
+        scheduleMiningRunner(delay);
+        return;
+      }
+      stopMiningRunner(`出錯停下：${error.message}`);
+      dashboard.alert = `挖礦：${error.message}`;
+      alertUser(`挖礦：${error.message}`, { paused: true });
+    }
+  }
+
+  function scheduleMiningRunner(delay) {
+    const settings = readSettingsFromPanel();
+    delay = lowProfileDelay(settings, delay);
+    backgroundTimer.clearTimeout(miningRunner.timerId);
+    const runId = miningRunner.runId;
+    miningRunner.timerId = backgroundTimer.setTimeout(() => {
+      if (runId === miningRunner.runId) miningTick();
+    }, delay);
+  }
+
+  function otherTabMining() {
+    const lock = readJsonStorage(MINING_LOCK_KEY, null);
+    return lock && lock.tab !== tabKey && Date.now() - lock.at < RUN_LOCK_STALE_MILLISECONDS;
+  }
+
+  function startMiningRunner() {
+    if (miningRunner.running) {
+      miningLog('已經在挖礦了');
+      return;
+    }
+    if (otherTabMining()) {
+      miningLog('同一個帳號的另一個分頁正在挖礦，這個分頁不啟動');
+      return;
+    }
+    saveSettings(readSettingsFromPanel());
+    Object.assign(miningRunner, { running: true, failures: 0, collected: 0, stoppedReason: '' });
+    miningRunner.runId++;
+    writeJsonStorage(MINING_LOCK_KEY, { tab: tabKey, at: Date.now() });
+    miningLog('開始挖礦');
+    miningTick();
+  }
+
+  function stopMiningRunner(message) {
+    if (!miningRunner.running) return;
+    miningRunner.running = false;
+    miningRunner.runId++;
+    miningRunner.stoppedReason = `${new Date().toLocaleTimeString('zh-TW', { hour12: false })} ${message || '已停止'}`;
+    backgroundTimer.clearTimeout(miningRunner.timerId);
+    releaseMiningLock();
+    if (message) miningLog(message);
+  }
+
+  function releaseMiningLock() {
+    const lock = readJsonStorage(MINING_LOCK_KEY, null);
+    if (!lock || lock.tab !== tabKey) return;
+    try {
+      localStorage.removeItem(MINING_LOCK_KEY);
+    } catch {
+      // 移不掉的話 20 秒後也會過期
+    }
+  }
+
+  function keepMiningLock() {
+    if (!miningRunner.running) return;
+    if (otherTabMining()) stopMiningRunner('同一個帳號的另一個分頁也在挖礦，這個分頁先停下');
+    else writeJsonStorage(MINING_LOCK_KEY, { tab: tabKey, at: Date.now() });
+  }
+
+  // 沒在跑挖礦也定時讀角色，總覽頁、挖礦頁看得到誰在挖、挖多久、有沒有中毒；同一個帳號的分頁共用一份，不會一起讀
+  function watchMining(settings) {
+    if (miningRunner.running || miningWatch.busy || !dashboard.profile) return;
+    if (!settings.dashboardEnabled && activeTab !== 'mining') return;
+    if (lowProfile.sleepUntil > Date.now()) return;
+    const data = loadMining();
+    if (Date.now() - data.heroesAt < MINING_WATCH_MILLISECONDS) return;
+    data.heroesAt = Date.now();
+    saveMining(data);
+    miningWatch.busy = true;
+    readMiningHeroes(settings, { background: true })
+      .catch(() => {})
+      .finally(() => {
+        miningWatch.busy = false;
+      });
+  }
+
+  function miningHeroText(hero, data, now) {
+    if (hero.perished) return '死透了';
+    if (hero.hp <= 0) return '死亡';
+    const spText = (sp) => `體 ${Math.round(sp)}/${hero.fullSp}`;
+    if (hero.actionState === 4) {
+      const estimate = estimatedMiningSp(hero, data, now);
+      const ready = Boolean(hero.canComplete) || Date.parse(hero.actionCompleteTime) <= now;
+      return `${MINING_SITES[hero.actionTarget] || '挖礦'}挖了 ${durationText(actionMinutes(hero, now))}${ready ? '' : '（未滿 3 分）'}・${estimate === null ? `開挖時${spText(hero.sp)}` : `約${spText(estimate)}`}`;
+    }
+    const hpText = `HP ${hero.hp}/${hero.fullHp}`;
+    if (hero.actionState === 2) return `休息了 ${durationText(actionMinutes(hero, now))}・${hpText}`;
+    if (hero.actionState) return `${HERO_ACTION_NAMES[hero.actionState] || '移動'}中`;
+    if (!inTownHero(hero)) return '在城外';
+    return `閒置・${spText(hero.sp)}・${hpText}`;
+  }
+
+  function miningReport(settings) {
+    const data = loadMining();
+    if (!data.heroesAt) return null;
+    const plans = miningPlans(settings);
+    const now = Date.now();
+    return {
+      at: data.heroesAt,
+      heroes: data.heroes
+        .filter((hero) => hero.actionState === 4 || plans[hero.id])
+        .map((hero) => ({
+          name: hero.name,
+          planned: Boolean(plans[hero.id]),
+          text: miningHeroText(hero, data, now),
+          conditions: heroConditions(hero).map((condition) => `${condition.name}${condition.level}`),
+        })),
+      last: data.log[0] || null,
+    };
+  }
+
+  function renderMiningHeroes() {
+    const box = panel.querySelector('[data-role="mining-heroes"]');
+    if (!box) return;
+    const settings = readSettingsFromPanel();
+    const data = loadMining();
+    const plans = miningPlans(settings);
+    const queued = forgeByApiHeroIds(settings);
+    const now = Date.now();
+    box.innerHTML = data.heroes.length
+      ? data.heroes
+          .slice()
+          .sort((first, second) => Number(Boolean(plans[second.id])) - Number(Boolean(plans[first.id])) || Number(second.actionState === 4) - Number(first.actionState === 4) || (second.mining || 0) - (first.mining || 0))
+          .map((hero) => {
+            const blocked = inHuntTeam(hero) ? '狩獵隊伍' : queued.includes(hero.id) ? '鍛造佇列' : '';
+            const conditions = heroConditions(hero).map((condition) => `${condition.name}${condition.level}`);
+            const options = [['', '不挖'], ...Object.entries(MINING_SITES)]
+              .map(([value, name]) => `<option value="${value}" ${String(plans[hero.id] || '') === value ? 'selected' : ''}>${name}</option>`)
+              .join('');
+            return `<div class="row" style="margin:0;padding:3px 0;border-bottom:1px solid #2e2e34">
+              <div style="flex:1;min-width:0"><b>${escapeHtml(hero.name)}</b> <span style="color:#a0a0aa">挖礦 ${hero.mining ?? '?'}</span>
+                <div style="color:${hero.actionState === 4 ? '#60a5fa' : '#a0a0aa'}">${escapeHtml(miningHeroText(hero, data, now))}${conditions.length ? ` <span style="color:#fb923c">${escapeHtml(conditions.join('、'))}</span>` : ''}${blocked ? ` <span style="color:#f87171">${blocked}（不會被拿去挖）</span>` : ''}</div></div>
+              <select data-mining-hero="${hero.id}" style="flex:none;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px">${options}</select>
+            </div>`;
+          })
+          .join('')
+      : '<div class="hint">讀取角色中…（沒出現就按「重新讀取」）</div>';
+    const logBox = panel.querySelector('[data-role="mining-log"]');
+    if (!logBox) return;
+    logBox.innerHTML =
+      data.log
+        .slice(0, 10)
+        .map((entry) => {
+          const time = new Date(entry.t).toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit' });
+          const what = entry.kind === 'mine' ? `${entry.site}挖 ${entry.minutes} 分` : `休息 ${entry.minutes} 分`;
+          return `<div${entry.accident ? ' style="color:#fb923c"' : ''}>${time} ${escapeHtml(entry.name)} ${what}：${escapeHtml(entry.text || '-')}</div>`;
+        })
+        .join('') || '<div class="hint">還沒有</div>';
+  }
+
+  panel.addEventListener('change', (event) => {
+    const heroId = event.target.dataset && event.target.dataset.miningHero;
+    if (!heroId) return;
+    const plans = miningPlans(readSettingsFromPanel());
+    if (event.target.value) plans[heroId] = Number(event.target.value);
+    else delete plans[heroId];
+    setPanelField('miningPlans', JSON.stringify(plans));
+    saveSettings(readSettingsFromPanel());
+    renderMiningHeroes();
+  });
+
   // 收益：每 10 分鐘一格記狩獵場數、隊伍拿到的經驗、撿到的道具；遊戲幣用帳號餘額的變化（含花掉的，是淨變化）。
   // 存在這個瀏覽器，同一個帳號的分頁共用；保留 8 天
   const INCOME_KEY = 'autoClickerV2Income';
@@ -12988,6 +13473,7 @@
       const modes = resumeAfterReload.split(',');
       if (modes.includes('hunt')) start(false);
       if (modes.includes('forge')) start(true);
+      if (modes.includes('mine')) startMiningRunner();
     }, 5000);
   }
   // 每秒檢查血條、驗證框；同樣用背景計時器，分頁在背景時才不會變成一分鐘才檢查一次
