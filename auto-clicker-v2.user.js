@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.32
+// @version      3.33
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -204,6 +204,9 @@
     lowProfileForgeCheckin: true,
     // 多開輪流：同一台電腦的幾個帳號透過中繼站排隊，一次只有一個分頁打遊戲 API
     turnTakingEnabled: false,
+    // 主帳號照常打；其他帳號（小號）打怪頻率只有主帳號的幾 %
+    mainAccountName: '',
+    sideHuntPercent: 50,
     // 三個帳號同步＝當成同一個人：共用設定經中繼站同步，低調模式的玩／休息／睡覺時間表也一樣
     syncAccountsEnabled: true,
     // 全體暫時暫停幾分鐘後自動開始
@@ -812,6 +815,9 @@
       <div class="hint">開了之後掛機、API 鍛造每一步多等 1～8 秒（多數短、偶爾長），偶爾分心停 0.5～2 分鐘，要補給、換裝時晚幾秒才反應，動作之間的間隔也拉長；玩一陣子就整個停下休息，晚上睡覺。休息、睡覺時不會打怪、開爐，也不會躲紅名（血量、活人驗證照常監控）。反應變慢，補給門檻設高一點比較安全</div>
       <div class="hint" data-role="low-profile-personality"></div>
       <label class="row"><input data-field="turnTakingEnabled" type="checkbox" style="flex:none;width:auto"> <b>多開輪流</b>（同一台電腦的帳號一次只有一個送出請求）</label>
+      <div class="row"><b>主帳號</b> <input data-field="mainAccountName" placeholder="留空＝沒有" style="width:110px;flex:none"> <button data-action="main-account-me" style="flex:none">設成這個帳號</button></div>
+      <div class="row">小號打怪頻率是主帳號的 ${numberInput('sideHuntPercent', 'min="10" max="100" step="5"')} %</div>
+      <div class="hint">填帳號名稱。主帳號照常打；其他帳號每次打怪後多等一段（每次長短不一），50% 約兩輪打一次，讓出來的時間給主帳號。只影響 API 打怪，鍛造照常。三個帳號自動同步</div>
       <label class="row"><input data-field="syncAccountsEnabled" type="checkbox" style="flex:none;width:auto"> <b>三個帳號同步</b>（當成同一個人）</label>
       <div class="hint">要開中繼站。低調模式、多開輪流、轉移模式的設定在任一個帳號改了，其他帳號約 10 秒內跟著改；低調模式的玩／休息／睡覺時間表三個帳號一樣，一起停下來休息（手速、分心還是各帳號自己的）</div>
       <div class="hint" data-role="sync-accounts-status"></div>
@@ -3463,6 +3469,8 @@
     'lowProfileCheckinMaxHunts',
     'lowProfileForgeCheckin',
     'turnTakingEnabled',
+    'mainAccountName',
+    'sideHuntPercent',
     'transferTurnMode',
     'huntReactMinSeconds',
     'huntReactMaxSeconds',
@@ -3644,7 +3652,7 @@
   // 暫停是為了不跟你的操作撞在一起；你自己按面板上的按鈕（讀取角色、讀取材料…）就是要它現在送，
   // 所以按下後這一小段時間的請求不等暫停。開始類（會一直跑下去）和暫停按鈕本身不算
   const MANUAL_REQUEST_MILLISECONDS = 15000;
-  const NOT_MANUAL_ACTIONS = ['start', 'forge-start', 'recipe-auto-forge', 'quality-pick', 'global-run', 'global-temp', 'global-stop'];
+  const NOT_MANUAL_ACTIONS = ['main-account-me', 'start', 'forge-start', 'recipe-auto-forge', 'quality-pick', 'global-run', 'global-temp', 'global-stop'];
   let manualRequestUntil = 0;
 
   function noteManualAction(event, action) {
@@ -6559,10 +6567,40 @@
   function scheduleApiHunt(settings, huntInfo) {
     if (reloadForUpdateIfIdle()) return;
     const availableAt = huntInfo && huntInfo.huntAvailableAt ? Date.parse(huntInfo.huntAvailableAt) : 0;
-    const delay = lowProfileDelay(settings, Math.max(0, (availableAt || 0) - Date.now()) + huntReactGap(settings));
+    const cooldown = Math.max(0, (availableAt || 0) - Date.now());
+    const sideWait = sideAccountWait(settings, cooldown);
+    const delay = lowProfileDelay(settings, cooldown + huntReactGap(settings)) + sideWait;
     state.timerId = planTick(() => tick(settings), delay);
-    statusElement.textContent += `（${(delay / 1000).toFixed(1)} 秒後下一步）`;
+    statusElement.textContent += `（${(delay / 1000).toFixed(1)} 秒後下一步${sideWait ? '，小號慢一點' : ''}）`;
     bookHuntSlot(settings, Date.now() + delay);
+  }
+
+  function isMainAccount(settings) {
+    const main = String(settings.mainAccountName || '').trim();
+    const profile = dashboard.profile;
+    return !main || (profile && (main === profile.nickname || main === String(profile.id)));
+  }
+
+  // 小號每輪多等一段，平均下來頻率是主帳號的 sideHuntPercent %；長短不一，不會變成固定節奏
+  const SIDE_ROUND_MIN_MILLISECONDS = 10000;
+
+  function sideAccountWait(settings, cooldown) {
+    if (isMainAccount(settings)) return 0;
+    const percent = Math.min(100, Math.max(10, Number(settings.sideHuntPercent) || 50));
+    const round = Math.max(cooldown, SIDE_ROUND_MIN_MILLISECONDS) + ((Number(settings.huntReactMinSeconds) || 0) + (Number(settings.huntReactMaxSeconds) || 0)) * 500;
+    return Math.round(round * (100 / percent - 1) * (0.6 + Math.random() * 0.8));
+  }
+
+  function setMainAccountToMe() {
+    if (!dashboard.profile) {
+      setStatus('還沒讀到這個帳號的名稱，稍等再按');
+      return;
+    }
+    setPanelField('mainAccountName', dashboard.profile.nickname);
+    const settings = readSettingsFromPanel();
+    saveSettings(settings);
+    if (settings.syncAccountsEnabled) pushSharedSettings(settings);
+    setStatus(`主帳號：${dashboard.profile.nickname}${settings.syncAccountsEnabled ? '（其他帳號 10 秒內變小號）' : '（其他帳號也要填一樣的名稱）'}`);
   }
 
   function huntReactGap(settings) {
@@ -7755,6 +7793,8 @@
       start();
     } else if (action === 'low-mode') {
       setLowMode(event.target.dataset.lowMode);
+    } else if (action === 'main-account-me') {
+      setMainAccountToMe();
     } else if (action === 'global-run' || action === 'global-temp' || action === 'global-stop') {
       setGlobalPause(readSettingsFromPanel(), action.slice('global-'.length));
     } else if (action === 'forge-start') {
