@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.50
+// @version      3.51
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -2405,6 +2405,16 @@
     return location && location.area ? location.text : apiText || (location ? location.text : '');
   }
 
+  // 附加的區塊出錯只少那一塊，不能讓整份回報（和跟著回報拿的指令）一起失敗
+  function optionalReport(label, build) {
+    try {
+      return build();
+    } catch (error) {
+      console.error(`總覽回報「${label}」失敗`, error);
+      return null;
+    }
+  }
+
   function dashboardReport(settings) {
     return {
       accountId: dashboard.profile.id,
@@ -2416,11 +2426,11 @@
       forgeMode: state.forgeMode,
       huntRunning: state.running && !state.forgeMode,
       forgeRunning: (state.running && state.forgeMode) || forgeRunner.running,
-      forgeQueue: forgeQueueReport(settings),
-      forgeBoard: forgeBoardReport(settings),
+      forgeQueue: optionalReport('鍛造佇列', () => forgeQueueReport(settings)),
+      forgeBoard: optionalReport('鍛造管理', () => forgeBoardReport(settings)),
       miningRunning: miningRunner.running,
-      mining: miningReport(settings),
-      actorLoot: actorLootReport(),
+      mining: optionalReport('挖礦', () => miningReport(settings)),
+      actorLoot: optionalReport('誰拿到什麼', actorLootReport),
       alert: dashboard.alert,
       status: statusElement.textContent,
       location: dashboardLocationText(settings),
@@ -3577,7 +3587,10 @@
           : 'monitor-server.ps1 是舊版，收不到遠端指令，請關掉重開';
       if (reply && Array.isArray(reply.commands) && reply.commands.length) await runDashboardCommands(reply.commands);
     } catch (error) {
-      dashboard.sendError = `連不上 ${settings.dashboardUrl}（${error.message}），monitor-server.ps1 有在跑嗎？`;
+      // 連線失敗才是中繼站的問題；其他是腳本自己算回報時出錯
+      dashboard.sendError = /fetch|network|NetworkError|Load failed/i.test(error.message)
+        ? `連不上 ${settings.dashboardUrl}（${error.message}），monitor-server.ps1 有在跑嗎？`
+        : `回報時腳本出錯（${error.message}），請把這行貼給開發者`;
     } finally {
       dashboard.sending = false;
     }
@@ -12249,8 +12262,8 @@
     const weights = settings.recipeNameAdjust ? loadNameWeights() || { days: {} } : null;
     recipeOptionsCache.value = Object.fromEntries(
       Object.values(FORGE_TYPE_NAMES).map((type) => {
-        const weights = nameWeightsFor(settings, type);
-        const goal = weights ? NAME_STAT_GOALS[weights.pairs[0][0]] : 'total';
+        const typeWeights = nameWeightsFor(settings, type);
+        const goal = typeWeights ? NAME_STAT_GOALS[typeWeights.pairs[0][0]] : 'total';
         const recipes = recommendRecipes(type, goal, '', weights)
           .slice(0, 5)
           .map((recipe) => ({ key: recipe.key, count: recipe.count, score: Math.round(goal === 'wgt' ? -recipe.score : recipe.score), goal: RECIPE_GOALS[goal] }));
