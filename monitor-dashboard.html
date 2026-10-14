@@ -92,6 +92,7 @@
     <button data-low="off">關</button><button data-low="serious">認真</button><button data-low="casual">休閒</button><button data-low="auto" title="認真時段（遊戲面板設定，預設 20-24 點）認真玩，其他時間休閒">自動</button>
     休閒每小時 <input id="low-casual-minutes" type="number" min="0" max="60" style="width:48px"> 分鐘
     自動：<input id="low-serious-hours" placeholder="20-24" style="width:90px" title="這些時段認真玩，其他時間休閒；可寫多段 12-13,20-24"> 點認真
+    完全休息 <input id="low-off-hours" placeholder="留空＝沒有" style="width:90px" title="這些時段完全不動，跟睡覺一樣；可寫多段 9-12,14-17"> 點
     <span class="muted" id="low-text"></span></span>
 </header>
 <div class="queue" id="queue"></div>
@@ -628,6 +629,8 @@
     if (document.activeElement !== minutes && Date.now() > lowMinutesHoldUntil) minutes.value = values.lowProfileCasualMinutes ?? 20;
     const hours = document.getElementById('low-serious-hours');
     if (document.activeElement !== hours && Date.now() > lowMinutesHoldUntil) hours.value = values.lowProfileSeriousHours ?? '20-24';
+    const off = document.getElementById('low-off-hours');
+    if (document.activeElement !== off && Date.now() > lowMinutesHoldUntil) off.value = values.lowProfileOffHours ?? '';
     if (!known) document.getElementById('low-text').textContent = '還沒有帳號送過同步設定';
     else if (Date.now() > lowTextHoldUntil) document.getElementById('low-text').textContent = '';
   }
@@ -647,6 +650,10 @@
       changeLow(mode === 'off' ? { lowProfileEnabled: false } : { lowProfileEnabled: true, lowProfileStyle: mode });
     })
   );
+  document.getElementById('low-off-hours').addEventListener('change', (event) => {
+    lowMinutesHoldUntil = Date.now() + 15000;
+    changeLow({ lowProfileOffHours: event.target.value.trim() });
+  });
   document.getElementById('low-serious-hours').addEventListener('change', (event) => {
     lowMinutesHoldUntil = Date.now() + 15000;
     changeLow({ lowProfileSeriousHours: event.target.value.trim() });

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.31
+// @version      3.32
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -190,6 +190,8 @@
     lowProfileBreakMinMinutes: 5,
     lowProfileBreakMaxMinutes: 20,
     lowProfileSleepHours: '2-9',
+    // 完全休息的時段（上班、出門…）：跟睡覺一樣完全不動
+    lowProfileOffHours: '',
     // 玩法：serious＝認真玩（一段一段長時間玩）；casual＝休閒（每小時玩一點，離開時偶爾回來點幾下）
     lowProfileStyle: 'serious',
     // 自動玩法：這些時段認真玩，其他時間休閒
@@ -805,6 +807,8 @@
       <div class="row">休閒離開時每 ${numberInput('lowProfileCheckinMinMinutes', 'min="1"')}～${numberInput('lowProfileCheckinMaxMinutes', 'min="1"')} 分鐘回來點 ${numberInput('lowProfileCheckinMinHunts', 'min="1"')}～${numberInput('lowProfileCheckinMaxHunts', 'min="1"')} 下狩獵</div>
       <label class="row"><input data-field="lowProfileForgeCheckin" type="checkbox" style="flex:none;width:auto"> 休閒離開時鍛造好了就回來收（晚 1～8 分鐘），順便點幾下狩獵</label>
       <div class="row">每天 <input data-field="lowProfileSleepHours" placeholder="留空＝不睡" style="width:70px;flex:none"> 點睡覺（例：2-9；每天前後飄 1 小時，偶爾多睡）</div>
+      <div class="row">每天 <input data-field="lowProfileOffHours" placeholder="留空＝沒有" style="width:110px;flex:none"> 點完全休息（例：9-12,14-17；前後飄 15 分鐘）</div>
+      <div class="hint">完全休息跟睡覺一樣：不打怪、不開爐、不收鍛造，休閒的「回來看一下」也不會有。不管哪種玩法都照這個時段停</div>
       <div class="hint">開了之後掛機、API 鍛造每一步多等 1～8 秒（多數短、偶爾長），偶爾分心停 0.5～2 分鐘，要補給、換裝時晚幾秒才反應，動作之間的間隔也拉長；玩一陣子就整個停下休息，晚上睡覺。休息、睡覺時不會打怪、開爐，也不會躲紅名（血量、活人驗證照常監控）。反應變慢，補給門檻設高一點比較安全</div>
       <div class="hint" data-role="low-profile-personality"></div>
       <label class="row"><input data-field="turnTakingEnabled" type="checkbox" style="flex:none;width:auto"> <b>多開輪流</b>（同一台電腦的帳號一次只有一個送出請求）</label>
@@ -3449,6 +3453,7 @@
     'lowProfileBreakMinMinutes',
     'lowProfileBreakMaxMinutes',
     'lowProfileSleepHours',
+    'lowProfileOffHours',
     'lowProfileStyle',
     'lowProfileSeriousHours',
     'lowProfileCasualMinutes',
@@ -5320,10 +5325,20 @@
 
   // 「20-24」「12-13,20-24」＝這些時段認真玩；每天邊界前後飄 30 分鐘，三個帳號同步時一起飄
   function seriousRanges(settings, now) {
+    return hourRanges(settings.lowProfileSeriousHours, 'serious', 30, settings, now);
+  }
+
+  // 「9-12,14-17」完全休息：時段內回傳結束時間，否則 0
+  function offHoursEndAt(settings, now) {
+    const range = hourRanges(settings.lowProfileOffHours, 'off', 15, settings, now).find(([start, end]) => now >= start && now < end);
+    return range ? range[1] : 0;
+  }
+
+  function hourRanges(text, seedName, jitterMinutes, settings, now) {
     const profile = dashboard.profile || {};
     const who = settings.syncAccountsEnabled ? 'shared' : profile.nickname || profile.id || '';
     const ranges = [];
-    String(settings.lowProfileSeriousHours || '')
+    String(text || '')
       .split(/[,，、\s]+/)
       .filter(Boolean)
       .forEach((part, index) => {
@@ -5335,9 +5350,10 @@
           const day = new Date(now);
           day.setDate(day.getDate() + dayOffset);
           day.setHours(0, 0, 0, 0);
-          const random = seededRandom(`serious:${who}:${index}:${day.toDateString()}`);
-          const start = day.getTime() + (from * 60 + random() * 60 - 30) * 60000;
-          const end = day.getTime() + ((to <= from ? to + 24 : to) * 60 + random() * 60 - 30) * 60000;
+          const random = seededRandom(`${seedName}:${who}:${index}:${day.toDateString()}`);
+          const jitter = () => (random() * 2 - 1) * jitterMinutes;
+          const start = day.getTime() + (from * 60 + jitter()) * 60000;
+          const end = day.getTime() + ((to <= from ? to + 24 : to) * 60 + jitter()) * 60000;
           ranges.push([start, end]);
         }
       });
@@ -5538,6 +5554,14 @@
       const wake = new Date(wakeAt);
       setStatus(`低調模式：睡覺中，${wake.getHours()}:${String(wake.getMinutes()).padStart(2, '0')} 起床`);
       return wakeAt - now;
+    }
+    // 跟睡覺一樣記在 sleepUntil：休閒的回來看、鍛造好了回來收都不會發生
+    const offEnd = offHoursEndAt(settings, now);
+    if (offEnd) {
+      lowProfile.sleepUntil = offEnd;
+      const back = new Date(offEnd);
+      setStatus(`低調模式：完全休息中，${back.getHours()}:${String(back.getMinutes()).padStart(2, '0')} 回來`);
+      return offEnd - now;
     }
     if (style === 'casual') return casualBreakLeft(settings, now);
     if (settings.syncAccountsEnabled) {
@@ -12810,7 +12834,7 @@
       renderRecipeHeroes();
     }
     if (event.target.dataset.field === 'forgeShopSlots') renderForgePlanOverview();
-    if (['lowProfileEnabled', 'lowProfileStyle', 'lowProfileCasualMinutes', 'lowProfileSeriousHours'].includes(event.target.dataset.field)) resetLowProfileRhythm();
+    if (['lowProfileEnabled', 'lowProfileStyle', 'lowProfileCasualMinutes', 'lowProfileSeriousHours', 'lowProfileOffHours', 'lowProfileSleepHours'].includes(event.target.dataset.field)) resetLowProfileRhythm();
     if (event.target.dataset.trainChoice) updateTrainFromChoices();
     if (event.target.dataset.cardRule) updateCardRulesFromRows();
     if (event.target.dataset.field === 'trainEnabled') renderTrainStatus();
