@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.29
+// @version      3.30
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1078,6 +1078,9 @@
       <label class="row"><input data-field="huntStatsEnabled" type="checkbox" style="flex:none;width:auto"> 記錄每層的經驗、耗損、前進與掉落</label>
       <div class="row"><select data-role="hunt-stats-place" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select><button data-action="hunt-stats-clear">清除統計</button></div>
       <div data-role="hunt-stats" style="font-size:12px"></div>
+      <div class="subhead">誰拿到什麼（戰報有寫是誰的）</div>
+      <div class="row"><select data-role="actor-loot-period" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">今天</option><option value="7">近 7 天</option><option value="14">近 14 天</option></select></div>
+      <div data-role="actor-loot" style="font-size:12px"></div>
     </div>
 
     <div data-tab="cloud">
@@ -1413,7 +1416,10 @@
       renderRecipeHeroes();
       refreshForgeHeroes().catch((error) => setStatus(`讀取角色失敗（${error.message}）`));
     }
-    if (tabId === 'huntStats') renderHuntStats();
+    if (tabId === 'huntStats') {
+      renderHuntStats();
+      renderActorLoot();
+    }
     if (tabId === 'income') renderIncome();
     if (tabId === 'draw') renderDrawStats();
     if (tabId === 'forge') {
@@ -4324,6 +4330,7 @@
     if (Array.isArray(heroes) && !state.forgeMode) checkHeroConditions(heroes, settings);
     if (settings.combatEnabled) recordBattleFromApi(data.report);
     if (settings.huntStatsEnabled) recordHuntStats(data, requestBody, settings, url);
+    recordActorLoot(data);
     if (settings.incomeEnabled) {
       recordIncome(data);
       if (activeTab === 'income') renderIncome();
@@ -12372,6 +12379,107 @@
     if (activeTab === 'huntStats') renderHuntStats();
   }
 
+  // 戰報裡寫了是誰拿到的（「盜寶哥布林盜取了 173 元」「盜寶哥布林盜取了體力藥水 小」）：照角色另外記，
+  // 看得出誰在幫你賺。沒寫是誰的（「獲得了兔皮 × 4」）只算在上面的掉落
+  const ACTOR_LOOT_KEY = 'autoClickerV2ActorLoot';
+  const ACTOR_LOOT_DAYS = 14;
+  const ACTOR_LOOT_RECENT = 100;
+  const ACTOR_LINE_PATTERN = /^(.+?)(盜取了|獲得了|拾獲了?|撿到了?|挖到了?|收到了)\s*(.+?)(?:\s*[×xX*＊]\s*([\d,]+))?\s*$/;
+  const ACTOR_MONEY_PATTERN = /^([\d,]+)\s*(元|租金|金幣)$/;
+  // 句子開頭不是名字的（「每位英雄獲得了…」「戰鬥結束，獲得了…」）不算
+  const NOT_ACTOR_PATTERN = /^(?:每位|全隊|你)|[，,。！!：:]/;
+
+  function parseActorLoot(messages) {
+    return (messages || [])
+      .map((message) => String(message.m || '').trim())
+      .filter((text) => text && !/經驗|\d\s*點/.test(text))
+      .map((text) => ACTOR_LINE_PATTERN.exec(text))
+      .filter((match) => match && match[1].trim() && !NOT_ACTOR_PATTERN.test(match[1].trim()))
+      .map((match) => {
+        const actor = match[1].trim();
+        const verb = match[2].replace(/了$/, '');
+        const what = match[3].trim();
+        const money = ACTOR_MONEY_PATTERN.exec(what);
+        return money
+          ? { actor, verb, money: messageNumber(money[1]), unit: money[2] }
+          : { actor, verb, item: what, quantity: messageNumber(match[4]) || 1 };
+      });
+  }
+
+  function loadActorLoot() {
+    const saved = readJsonStorage(ACTOR_LOOT_KEY, null);
+    return saved && saved.days ? saved : { days: {}, recent: [] };
+  }
+
+  function recordActorLoot(data) {
+    const report = data && data.report;
+    if (!report || !Array.isArray(report.messages)) return;
+    const found = parseActorLoot(report.messages);
+    if (!found.length) return;
+    // report.a 是我方；不在裡面的（例如敵人偷你的東西）另外標
+    const ours = new Set((Array.isArray(report.a) ? report.a : []).map((hero) => hero && hero.name));
+    const saved = loadActorLoot();
+    const now = Date.now();
+    const day = saved.days[localDayKey(now)] || (saved.days[localDayKey(now)] = {});
+    found.forEach((entry) => {
+      const actor = day[entry.actor] || (day[entry.actor] = { ours: false, money: {}, items: {} });
+      actor.ours = actor.ours || ours.has(entry.actor);
+      if ('money' in entry) actor.money[entry.verb] = (actor.money[entry.verb] || 0) + entry.money;
+      else actor.items[`${entry.verb} ${entry.item}`] = (actor.items[`${entry.verb} ${entry.item}`] || 0) + entry.quantity;
+      saved.recent.unshift({ t: now, ...entry });
+    });
+    saved.recent.length = Math.min(saved.recent.length, ACTOR_LOOT_RECENT);
+    Object.keys(saved.days)
+      .sort()
+      .slice(0, -ACTOR_LOOT_DAYS)
+      .forEach((key) => delete saved.days[key]);
+    writeJsonStorage(ACTOR_LOOT_KEY, saved);
+    if (activeTab === 'huntStats') renderActorLoot();
+  }
+
+  function renderActorLoot() {
+    const box = panel.querySelector('[data-role="actor-loot"]');
+    if (!box) return;
+    const days = Number(panel.querySelector('[data-role="actor-loot-period"]').value) || 1;
+    const saved = loadActorLoot();
+    const totals = {};
+    Array.from({ length: days }, (_, index) => localDayKey(Date.now() - index * 86400000)).forEach((key) => {
+      Object.entries(saved.days[key] || {}).forEach(([name, actor]) => {
+        const total = totals[name] || (totals[name] = { ours: false, money: {}, items: {} });
+        total.ours = total.ours || actor.ours;
+        Object.entries(actor.money).forEach(([verb, amount]) => (total.money[verb] = (total.money[verb] || 0) + amount));
+        Object.entries(actor.items).forEach(([item, quantity]) => (total.items[item] = (total.items[item] || 0) + quantity));
+      });
+    });
+    const moneySum = (actor) => Object.values(actor.money).reduce((sum, amount) => sum + amount, 0);
+    const names = Object.keys(totals).sort((first, second) => moneySum(totals[second]) - moneySum(totals[first]));
+    if (!names.length) {
+      box.innerHTML = '<div class="hint">還沒有：戰報寫「某某盜取了…」「某某撿到了…」這種有名字的才會記在這裡</div>';
+      return;
+    }
+    const rows = names
+      .map((name) => {
+        const actor = totals[name];
+        const money = Object.entries(actor.money).map(([verb, amount]) => `${escapeHtml(verb)} $${amount.toLocaleString()}`).join('<br>');
+        const items = Object.entries(actor.items)
+          .sort(([, first], [, second]) => second - first)
+          .map(([item, quantity]) => `${escapeHtml(item)}×${quantity}`)
+          .join('、');
+        return `<tr><td>${escapeHtml(name)}${actor.ours ? '' : '<div style="color:#f87171">不是我方</div>'}</td><td>${money || '-'}</td><td style="white-space:normal">${items || '-'}</td></tr>`;
+      })
+      .join('');
+    const recent = saved.recent
+      .slice(0, 10)
+      .map((entry) => {
+        const time = new Date(entry.t).toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit' });
+        const what = 'money' in entry ? `${entry.money.toLocaleString()} ${entry.unit || '元'}` : `${entry.item}${entry.quantity > 1 ? ` ×${entry.quantity}` : ''}`;
+        return `<div>${time} ${escapeHtml(entry.actor)} ${escapeHtml(entry.verb)} ${escapeHtml(what)}</div>`;
+      })
+      .join('');
+    box.innerHTML = `<table class="combat"><tr><th>誰</th><th>錢</th><th>道具</th></tr>${rows}</table>
+      <div class="hint" style="margin-top:4px">最近 10 筆</div>${recent}`;
+  }
+
   // 名稱有包含就算（「英雄券」也會對到「高級英雄券」）；只提醒時用右下角小提示，不打斷
   function alertRareLoot(loot, place, settings) {
     const rareNames = rareLootNames(settings);
@@ -12589,6 +12697,7 @@
   panel.querySelector('[data-role="material-mode"]').addEventListener('change', renderMaterialSummary);
   panel.querySelector('[data-role="hunt-stats-place"]').addEventListener('change', renderHuntStats);
   panel.querySelector('[data-role="income-period"]').addEventListener('change', renderIncome);
+  panel.querySelector('[data-role="actor-loot-period"]').addEventListener('change', renderActorLoot);
   panel.querySelector('[data-field="forgeRecipeType"]').addEventListener('change', renderRecipes);
   panel.querySelector('[data-role="recipe-forger"]').addEventListener('change', renderRecipes);
   panel.querySelector('[data-field="forgeRecipe"]').addEventListener('change', renderRecipePicker);
