@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.42
+// @version      3.43
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -8244,6 +8244,11 @@
               }
               if (method === 'POST' && FORGE_START_PATTERN.test(url)) rememberForgeStart(requestBody, data);
               if (completeMatch) rememberForgeComplete(completeMatch[1], data).catch((error) => console.error('鍛造材料紀錄失敗', error));
+              // 收爐、開爐的回應帶全部角色
+              if (method === 'POST' && data && Array.isArray(data.heroes)) {
+                noticeHeroList(data);
+                wakeForgeRunner();
+              }
             }
             if (response.ok && isPlace) learnPlace(parseJsonText(responseText));
             if (growthOnly) return;
@@ -12091,7 +12096,24 @@
     return Math.min(Math.max(next - Date.now(), 0) + randomGap(3000, 12000), 15 * 60000);
   }
 
+  // 同一時間只跑一輪：手動收爐叫醒鍛造時，不會跟正在跑的那輪一起開爐
   async function forgeApiTick(initialSettings) {
+    if (forgeRunner.ticking) return;
+    forgeRunner.ticking = true;
+    try {
+      await forgeApiTickOnce(initialSettings);
+    } finally {
+      forgeRunner.ticking = false;
+    }
+  }
+
+  // 遊戲畫面上手動收爐、開爐（或角色列表變了）：鍛造還在睡就 5～15 秒後起來看，像人看到畫面變了
+  function wakeForgeRunner() {
+    if (!forgeRunner.running || forgeRunner.ticking || forgeRunner.captchaWaiting) return;
+    if (nextTickAt.forge - Date.now() > 20000) scheduleForgeRunner(randomGap(5000, 15000));
+  }
+
+  async function forgeApiTickOnce(initialSettings) {
     // 中途可能換了名稱，要重讀設定
     let settings = initialSettings;
     if (!forgeRunner.running || forgeRunner.captchaWaiting) return;
@@ -12111,7 +12133,17 @@
       renderRecipeHeroes();
       const actions = [];
       for (const hero of heroes.filter((candidate) => heroIds.includes(candidate.id) && candidate.actionState === 5 && candidate.canComplete)) {
-        const completed = await requestGameApi(`${HEROES_API}/${hero.id}/completeForge`, { method: 'POST' });
+        let completed;
+        try {
+          completed = await requestGameApi(`${HEROES_API}/${hero.id}/completeForge`, { method: 'POST' });
+        } catch (error) {
+          // 讀完列表到送出之間被手動收走了：重讀一次角色，不算出錯
+          if (error.status !== 400) throw error;
+          heroes = (await requestGameApi(HEROES_API)).heroes || heroes;
+          if (cancelled()) return;
+          actions.push(`${hero.name} 已經被收走了`);
+          continue;
+        }
         heroes = completed.heroes || heroes;
         if (cancelled()) return;
         actions.push(`${hero.name} 完成鍛造`);
@@ -12346,6 +12378,11 @@
     data.heroesAt = Date.now();
     saveMining(data);
     if (activeTab === 'mining') renderMiningHeroes();
+    // 鍛造佇列、配方頁的角色狀態也一起換，手動收爐後不會一直顯示「已完成待收」
+    forgeHeroes = reply.heroes;
+    forgeHeroesAt = Date.now();
+    if (activeTab === 'forge') renderForgePlanOverview();
+    if (activeTab === 'recipe') renderRecipeHeroes();
   }
 
   // 抽到新卡：下次打開挖礦頁或定時讀取時重讀角色
