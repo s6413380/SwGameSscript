@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.34
+// @version      3.35
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -11851,6 +11851,14 @@
     return null;
   }
 
+  // 同樣的原因只提醒一次，換了原因（例如另一個角色也沒材料了）才再提醒
+  function noteForgeSkipped(skipped) {
+    const text = skipped.join('；');
+    if (forgeRunner.skippedText === text) return;
+    forgeRunner.skippedText = text;
+    showToast(`鍛造：先跳過 ${text}，其他角色照常鍛造`);
+  }
+
   function forgeLog(message) {
     setStatus(`［鍛造］${message}`);
   }
@@ -11989,12 +11997,15 @@
         settings = readSettingsFromPanel();
       }
       forgeRunner.nameWaiting = '';
-      const idle = heroes.find((hero) => heroIds.includes(hero.id) && canStartForge(hero));
+      const idleHeroes = heroes.filter((hero) => heroIds.includes(hero.id) && canStartForge(hero));
+      let idle = null;
+      let request = null;
+      const skipped = [];
       const busyShops = new Set(forging.map((hero) => Number(hero.actionTarget)));
       const shopCount = await forgeShopCount();
       if (cancelled()) return;
       const freeShop = Array.from({ length: shopCount }, (_, index) => index + 1).find((shop) => !busyShops.has(shop));
-      if (idle && freeShop) {
+      if (idleHeroes.length && freeShop) {
         // 開工後就不能吃體力藥，所以要在開工之前補；只用 API 補給，人不在鍛造頁也能補
         heroes.forEach((hero) => state.heroStats.set(hero.id, hero));
         state.heroStatsAt = Date.now();
@@ -12003,16 +12014,32 @@
           useItem(settings, supplyTarget, { isCancelled: cancelled, onDone: () => scheduleForgeRunner(randomGap(1500, 3000)) });
           return;
         }
-        const plan = forgeApiPlan(settings, idle.id);
-        if (!plan.recipe) throw new Error(`${idle.name} 還沒設定配方`);
-        const { body, summary, forgesLeft } = await buildForgeRequest(plan, idle.id, freeShop).catch((error) => {
-          throw Object.assign(new Error(`${idle.name}：${error.message}`), {
-            captchaRequired: error.captchaRequired,
-            transient: error.transient,
-            status: error.status,
-          });
-        });
+        // 一個角色材料不夠、配方沒設好，換下一個角色；全部都開不了而且沒有在鍛造的才停
+        for (const hero of idleHeroes) {
+          try {
+            const plan = forgeApiPlan(settings, hero.id);
+            if (!plan.recipe) throw new Error('還沒設定配方');
+            request = await buildForgeRequest(plan, hero.id, freeShop);
+            idle = hero;
+            break;
+          } catch (error) {
+            if (error.captchaRequired || error.transient || error.status) {
+              throw Object.assign(new Error(`${hero.name}：${error.message}`), {
+                captchaRequired: error.captchaRequired,
+                transient: error.transient,
+                status: error.status,
+              });
+            }
+            skipped.push(`${hero.name}：${error.message}`);
+          }
+          if (cancelled()) return;
+        }
         if (cancelled()) return;
+        if (!idle && !forging.some((hero) => heroIds.includes(hero.id))) throw new Error(skipped.join('；'));
+        if (skipped.length) noteForgeSkipped(skipped);
+      }
+      if (idle) {
+        const { body, summary, forgesLeft } = request;
         await sendForge(body);
         forgeRunner.started++;
         actions.push(`${idle.name} 在鍛造坊 ${freeShop} 開始鍛造 ${summary}${forgesLeft === null ? '' : `，材料還夠 ${forgesLeft} 爐`}`);
@@ -12020,11 +12047,12 @@
       forgeRunner.failures = 0;
       forgeHeroes = heroes;
       if (activeTab === 'forge') {
-        if (idle && freeShop) await refreshMineStock().catch(() => {});
+        if (idle) await refreshMineStock().catch(() => {});
         renderForgePlanOverview();
       }
-      const delay = nextForgeDelay(heroes, heroIds, Boolean(idle && freeShop));
-      forgeLog(`${actions.join('、') || (idle ? `${shopCount} 間鍛造坊都有人在用` : '角色都在鍛造中')}（已開 ${progress()} 爐，${Math.round(delay / 1000)} 秒後再看）`);
+      const delay = nextForgeDelay(heroes, heroIds, Boolean(idle));
+      if (skipped.length) actions.push(`跳過 ${skipped.join('；')}`);
+      forgeLog(`${actions.join('、') || (idleHeroes.length ? `${shopCount} 間鍛造坊都有人在用` : '角色都在鍛造中')}（已開 ${progress()} 爐，${Math.round(delay / 1000)} 秒後再看）`);
       scheduleForgeRunner(delay);
     } catch (error) {
       if (cancelled()) return;
