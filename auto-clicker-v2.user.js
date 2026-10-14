@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.46
+// @version      3.47
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -12564,7 +12564,7 @@
         // 讀不到狀態就沿用上次的，下次再讀
       }
     }
-    data.heroes = heroes.map(compactMiningHero);
+    data.heroes = mergeMiningHeroes(data.heroes, heroes);
     data.heroesAt = Date.now();
     saveMining(data);
     if (activeTab === 'mining') renderMiningHeroes();
@@ -12576,7 +12576,7 @@
     if (!reply || !Array.isArray(reply.heroes)) return;
     const data = loadMining();
     const previous = new Map(data.heroes.map((hero) => [hero.id, hero.statuses]));
-    data.heroes = reply.heroes.map((hero) => compactMiningHero({ ...hero, statuses: Array.isArray(hero.statuses) ? hero.statuses : previous.get(hero.id) }));
+    data.heroes = mergeMiningHeroes(data.heroes, reply.heroes.map((hero) => ({ ...hero, statuses: Array.isArray(hero.statuses) ? hero.statuses : previous.get(hero.id) })));
     data.heroesAt = Date.now();
     saveMining(data);
     if (activeTab === 'mining') renderMiningHeroes();
@@ -12593,6 +12593,19 @@
     data.heroesAt = 0;
     saveMining(data);
     if (activeTab === 'mining') readMiningHeroes(readSettingsFromPanel()).catch(() => {});
+  }
+
+  // 有些回應的角色缺欄位（例如沒帶挖礦能力）：缺的沿用上次讀到的，不會變成「?」
+  function mergeMiningHeroes(previousHeroes, heroes) {
+    const previous = new Map(previousHeroes.map((hero) => [hero.id, hero]));
+    return heroes.map((hero) => {
+      const merged = compactMiningHero(hero);
+      const old = previous.get(hero.id) || {};
+      Object.keys(merged).forEach((key) => {
+        if (merged[key] === undefined && old[key] !== undefined) merged[key] = old[key];
+      });
+      return merged;
+    });
   }
 
   function compactMiningHero(hero) {
@@ -13088,6 +13101,12 @@
   function renderMiningHeroes() {
     const box = panel.querySelector('[data-role="mining-heroes"]');
     if (!box) return;
+    // 正在選地點時不重畫：角色列表每次打怪後都會更新，重畫會把打開的下拉選單關掉
+    if (box.contains(document.activeElement) && document.activeElement.tagName === 'SELECT') {
+      miningRenderPending = true;
+      return;
+    }
+    miningRenderPending = false;
     const settings = readSettingsFromPanel();
     const data = loadMining();
     const plans = miningPlans(settings);
@@ -13140,6 +13159,11 @@
     saveSettings(readSettingsFromPanel());
   });
 
+  let miningRenderPending = false;
+  panel.addEventListener('focusout', (event) => {
+    if (miningRenderPending && event.target.dataset && event.target.dataset.miningHero) setTimeout(renderMiningHeroes, 0);
+  });
+
   panel.addEventListener('change', (event) => {
     const heroId = event.target.dataset && event.target.dataset.miningHero;
     if (!heroId) return;
@@ -13148,6 +13172,7 @@
     else delete plans[heroId];
     setPanelField('miningPlans', JSON.stringify(plans));
     saveSettings(readSettingsFromPanel());
+    event.target.blur();
     renderMiningHeroes();
   });
 
