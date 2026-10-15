@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.68
+// @version      3.69
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -346,6 +346,8 @@
     cardBuyRules: '',
     // 刮刮樂中的道具值多少錢（名稱=價格），算進損益
     scratchItemValues: '英雄券=35000, 寵物券=5000',
+    // 沒自己估價的道具照拍賣場目前最低單價算
+    scratchUseMarket: true,
     // 0＝不買：花的是真錢，一定要自己設上限
     cardBuyBudget: 0,
     cardBuyMaxCount: 1,
@@ -1211,6 +1213,7 @@
 
     <div data-tab="scratch">
       <div class="hint">在遊戲賭場刮刮樂時自動記下花多少、中什麼。清除只清自己這邊、從零開始算；開了雲端同步會上傳，也能看大家的</div>
+      <label class="row"><input data-field="scratchUseMarket" type="checkbox" style="flex:none;width:auto"> 沒估價的道具照拍賣場目前最低單價算（10 分鐘更新一次）</label>
       <div class="row">道具估價<input data-field="scratchItemValues" placeholder="英雄券=35000, 寵物券=5000" style="flex:1;min-width:0" title="名稱=價格，用逗號分開；獎項文字裡有這個名稱就照這個價格算進損益，改了連以前的紀錄一起重算"></div>
       <div class="row"><select data-role="scratch-scope" style="flex:none;max-width:120px;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select><select data-role="scratch-card" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="">全部刮刮樂</option><option value="regular">200 元</option><option value="premium">1,600 元</option></select><button data-action="scratch-clear">清除紀錄</button></div>
       <div data-role="scratch-stats"></div>
@@ -10110,12 +10113,59 @@
       .sort((first, second) => second[0].length - first[0].length);
   }
 
-  // 獎項文字裡的數量（× 3、x3）；沒寫就是 1 個
+  // 拍賣場目前最低單價（道具＋礦物），刮刮樂中的道具沒自己估價時用；跟市價不同步的舊紀錄也照現在的價格重算
+  const SCRATCH_MARKET_FRESH_MILLISECONDS = 10 * 60000;
+  const scratchMarket = { at: 0, loading: false, byName: new Map() };
+
+  function scratchMarketPrices() {
+    const byName = new Map();
+    ['items', 'mines'].forEach((kind) =>
+      ((sellPrice.trades[kind] || {}).list || []).forEach((trade) => {
+        const unit = Number(trade.price) / Number(trade.quantity);
+        if (trade.name && Number.isFinite(unit) && unit > 0 && !(byName.get(trade.name) <= unit)) byName.set(trade.name, unit);
+      })
+    );
+    return byName;
+  }
+
+  // 排在打怪空檔順便抓，抓到就重畫
+  function refreshScratchMarket(settings) {
+    scratchMarket.byName = scratchMarketPrices();
+    if (!settings.scratchUseMarket || scratchMarket.loading || Date.now() - scratchMarket.at < SCRATCH_MARKET_FRESH_MILLISECONDS) return;
+    scratchMarket.loading = true;
+    Promise.all(
+      ['items', 'mines'].map((kind) =>
+        requestGameApi(`/api/trades?type=${kind}`, { background: true })
+          .then((data) => noticeMarketGoods(kind, data))
+          .catch(() => {})
+      )
+    ).finally(() => {
+      Object.assign(scratchMarket, { at: Date.now(), loading: false, byName: scratchMarketPrices() });
+      if (activeTab === 'scratch') renderScratchStats();
+    });
+  }
+
+  // 「獲得 蜂蜜 × 3」→ ['蜂蜜', 3]
+  function scratchPrizeItem(message) {
+    const quantity = message.match(/[×xX]\s*(\d+)\s*$/);
+    const name = message
+      .replace(/[×xX]\s*\d+\s*$/, '')
+      .replace(/^.*?(?:獲得了?|得到了?|抽中了?|中了?|刮中了?)\s*/, '')
+      .trim();
+    return [name, quantity ? Number(quantity[1]) : 1];
+  }
+
+  // 先看自己估的價（名稱有出現就算），沒有再看拍賣場同名道具；回傳 [金額, 來源]
+  function scratchPrizeValueOf(rules, message) {
+    const [name, quantity] = scratchPrizeItem(message);
+    const rule = rules.find(([ruleName]) => message.includes(ruleName));
+    if (rule) return [rule[1] * quantity, '自估'];
+    const market = rules.market && rules.market.get(name);
+    return market ? [Math.round(market * quantity), '市價'] : [0, ''];
+  }
+
   function scratchPrizeValue(rules, message) {
-    const rule = rules.find(([name]) => message.includes(name));
-    if (!rule) return 0;
-    const quantity = message.match(/[×xX]\s*(\d+)/);
-    return rule[1] * (quantity ? Number(quantity[1]) : 1);
+    return scratchPrizeValueOf(rules, message)[0];
   }
 
   function scratchTotals(plays, rules) {
@@ -10144,7 +10194,9 @@
 
   function renderScratchStats() {
     const settings = readSettingsFromPanel();
+    refreshScratchMarket(settings);
     const rules = scratchItemValueRules(settings);
+    if (settings.scratchUseMarket) rules.market = scratchMarket.byName;
     const select = panel.querySelector('[data-role="scratch-card"]');
     const all = statsRecords('scratch', ownCloudScratches(), readJsonStorage(CLOUD_SCRATCH_KEY, []), (play) => play.key);
     const plays = select.value ? all.filter((play) => play.card === select.value) : all;
@@ -10202,9 +10254,10 @@
       .sort((first, second) => second[1] - first[1])
       .map(([key, times]) => {
         const [kind, message] = key.split('\u0000');
-        const value = kind === 'money' ? 0 : scratchPrizeValue(rules, message);
+        const [value, source] = kind === 'money' ? [0, ''] : scratchPrizeValueOf(rules, message);
         const isItem = kind === 'item' || value;
-        return `<tr><td style="text-align:left;white-space:normal;${isItem ? 'color:#fbbf24' : ''}">${escapeHtml(message)}</td><td>${times}</td><td>${((times / totals.count) * 100).toFixed(1)}%</td><td>${value ? scratchMoney(value) : isItem ? '<span style="color:#a0a0aa">未估</span>' : ''}</td></tr>`;
+        const valueText = value ? `${scratchMoney(value)}<div style="color:#a0a0aa;font-size:10px">${source}</div>` : isItem ? '<span style="color:#a0a0aa">未估</span>' : '';
+        return `<tr><td style="text-align:left;white-space:normal;${isItem ? 'color:#fbbf24' : ''}">${escapeHtml(message)}</td><td>${times}</td><td>${((times / totals.count) * 100).toFixed(1)}%</td><td>${valueText}</td></tr>`;
       })
       .join('');
 
@@ -15317,7 +15370,7 @@
     if (event.target.dataset.field === 'forgeShopSlots') renderForgePlanOverview();
     // 自動換名稱的門檻改了：鍛造正在等好名稱的話馬上再看一次，不用等下一輪
     if (['forgeAutoNamePercent', 'forgeAutoNameEnabled'].includes(event.target.dataset.field)) wakeForgeRunner();
-    if (event.target.dataset.field === 'scratchItemValues' && activeTab === 'scratch') renderScratchStats();
+    if (['scratchItemValues', 'scratchUseMarket'].includes(event.target.dataset.field) && activeTab === 'scratch') renderScratchStats();
     if (['forgeNameWeightMode', 'forgeNamePriorities'].includes(event.target.dataset.field)) {
       renderNameWeightTable();
       recipeOptionsCache.at = 0;
