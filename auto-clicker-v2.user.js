@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.63
+// @version      3.64
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -14158,7 +14158,7 @@
   const LAST_MONEY_KEY = 'autoClickerV2LastMoney';
   // 太久沒看到餘額（例如關機一晚）中間發生什麼分不出來，那段差額就不歸類
   const MONEY_GAP_LIMIT_MILLISECONDS = 30 * 60000;
-  const HUNT_MONEY_PATTERN = /(收到了|盜取了|獲得了|撿到了?)\s*([\d,]+)\s*(元|租金|金幣)\s*$/;
+  const HUNT_MONEY_PATTERN = /(收到了|盜取了|掠奪到?了|獲得了|撿到了?)\s*([\d,]+)\s*(元|租金|金幣)\s*$/;
   const MARKET_API_PATTERN = /\/api\/(?:trades|market|releasedHeroMarket)/;
   const MONEY_API_PATTERN = /\/api\/profile(?:[?#]|$)/;
 
@@ -14167,7 +14167,7 @@
     (messages || []).forEach((message) => {
       const match = HUNT_MONEY_PATTERN.exec(String(message.m || '').trim());
       if (!match) return;
-      const label = match[3] === '租金' ? '租金' : match[1] === '盜取了' ? '盜取' : '撿到錢';
+      const label = match[3] === '租金' ? '租金' : match[1] === '盜取了' ? '盜取' : match[1].startsWith('掠奪') ? '掠奪' : '撿到錢';
       parts[label] = (parts[label] || 0) + messageNumber(match[2]);
     });
     return parts;
@@ -14424,7 +14424,7 @@
   // 兩場之間隔太久（停下來、換地圖、補給很久）就不算進每場秒數
   const HUNT_GAP_LIMIT_MILLISECONDS = 180000;
   // 「獲得了兔皮 × 4」「獲得了兔皮」（沒寫數量＝1 個）「盜寶哥布林盜取了體力藥水 小」都算；偷到錢、收租金不算道具
-  const LOOT_LINE_PATTERN = /(?:獲得了|拾獲了?|撿到了?|挖到了?|掉落了?|盜取了)\s*(.+?)(?:\s*[×xX*＊]\s*([\d,]+))?\s*$/;
+  const LOOT_LINE_PATTERN = /(?:獲得了|拾獲了?|撿到了?|挖到了?|掉落了?|盜取了|掠奪到?了)\s*(.+?)(?:\s*[×xX*＊]\s*([\d,]+))?\s*$/;
   // 「獲得了 N 點…」這類數值句也不是道具
   const LOOT_NOT_ITEM_PATTERN = /經驗|\d\s*(?:元|租金)\s*$|\d\s*點/;
   const HUNT_EXP_PATTERN = /^(.+?)獲得了\s*([\d,]+)\s*點經驗值/;
@@ -14511,12 +14511,12 @@
     if (activeTab === 'huntStats') renderHuntStats();
   }
 
-  // 戰報裡寫了是誰拿到的（「盜寶哥布林盜取了 173 元」「盜寶哥布林盜取了體力藥水 小」）：照角色另外記，
+  // 戰報裡寫了是誰拿到的（「盜寶哥布林盜取了 173 元」「盜寶哥布林盜取了體力藥水 小」「愛德華·蒂奇掠奪到了體力藥水 中」）：照角色另外記，
   // 看得出誰在幫你賺。沒寫是誰的（「獲得了兔皮 × 4」）只算在上面的掉落
   const ACTOR_LOOT_KEY = 'autoClickerV2ActorLoot';
   const ACTOR_LOOT_DAYS = 14;
   const ACTOR_LOOT_RECENT = 100;
-  const ACTOR_LINE_PATTERN = /^(.+?)(盜取了|獲得了|拾獲了?|撿到了?|挖到了?|收到了)\s*(.+?)(?:\s*[×xX*＊]\s*([\d,]+))?\s*$/;
+  const ACTOR_LINE_PATTERN = /^(.+?)(盜取了|掠奪到?了|獲得了|拾獲了?|撿到了?|挖到了?|收到了)\s*(.+?)(?:\s*[×xX*＊]\s*([\d,]+))?\s*$/;
   const ACTOR_MONEY_PATTERN = /^([\d,]+)\s*(元|租金|金幣)$/;
   // 句子開頭不是名字的（「每位英雄獲得了…」「戰鬥結束，獲得了…」）不算
   const NOT_ACTOR_PATTERN = /^(?:每位|全隊|你)|[，,。！!：:]/;
@@ -14529,7 +14529,7 @@
       .filter((match) => match && match[1].trim() && !NOT_ACTOR_PATTERN.test(match[1].trim()))
       .map((match) => {
         const actor = match[1].trim();
-        const verb = match[2].replace(/了$/, '');
+        const verb = match[2].replace(/了$/, '').replace(/^掠奪到$/, '掠奪');
         const what = match[3].trim();
         const money = ACTOR_MONEY_PATTERN.exec(what);
         return money
