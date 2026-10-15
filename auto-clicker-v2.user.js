@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.56
+// @version      3.57
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1130,7 +1130,7 @@
       <datalist id="autoClickerTodayNames"></datalist>
       <div data-role="name-suggest" style="font-size:12px;max-height:180px;overflow:auto"></div>
       <div class="subhead">④ 給誰用（按「加入」就排進自動鍛造佇列）</div>
-      <div data-role="recipe-heroes" style="font-size:12px;max-height:240px;overflow:auto"></div>
+      <div data-role="recipe-heroes" style="font-size:12px;max-height:300px;overflow:auto"></div>
       <div class="row"><button data-action="recipe-heroes">重新讀取角色</button></div>
       <div class="row">開 ${numberInput('forgeRecipeRepeat', 'min="0"')} 爐（0＝不限）<button data-action="recipe-auto-forge" style="font-weight:bold">開始自動鍛造</button></div>
       <div class="hint">「加入」：這個角色以後都用上面的類型與配方（名稱沒填的用上面的名稱），閒著就開爐，鍛造欄位自動找空的；佇列在「自動鍛造」頁。「鍛一次」：只用它鍛一爐，送出前再確認。狩獵隊伍的角色不會被拿去鍛造</div>
@@ -11898,17 +11898,21 @@
     const list = recipeFavorites(settings).filter((item) => item.type === type);
     const others = recipeFavorites(settings).length - list.length;
     const queued = queuedHeroesOfType(settings, type);
+    const small = 'padding:1px 7px;font-size:12px';
     box.innerHTML =
       (list.length
-        ? `<table class="combat">${list
+        ? list
             .map((item) => {
               const using = normalizeRecipe(item.recipe) === current;
-              return `<tr style="${using ? 'background:#16261c' : ''}"><td style="white-space:normal">${escapeHtml(item.recipe)}</td><td>${recipeStockCell(item.recipe)}</td>
-                <td style="white-space:nowrap">${using ? '<span style="color:#4ade80">使用中</span>' : `<button data-action="recipe-use" data-recipe="${escapeHtml(item.recipe)}">用</button>`}
-                ${queued.length ? `<button data-action="recipe-fav-apply" data-type="${escapeHtml(type)}" data-recipe="${escapeHtml(item.recipe)}" title="佇列裡做${escapeHtml(type)}的角色全部改用這個配方（名稱不變）">套用到佇列 ${queued.length} 人</button>` : ''}
-                <button data-action="recipe-fav" data-type="${escapeHtml(type)}" data-recipe="${escapeHtml(item.recipe)}" title="從我的最愛拿掉">★</button></td></tr>`;
+              return `<div style="padding:4px 6px;margin-bottom:3px;border:1px solid ${using ? '#2f6b45' : '#34343c'};border-radius:5px;background:${using ? '#16261c' : '#222228'}">
+                <div style="display:flex;gap:6px;align-items:baseline"><span style="flex:1;min-width:0;word-break:break-all">${escapeHtml(item.recipe)}</span><span title="照目前庫存夠鍛幾爐" style="flex:none">夠 ${recipeStockCell(item.recipe)}</span></div>
+                <div style="display:flex;gap:4px;justify-content:flex-end;align-items:center;margin-top:2px">
+                  ${using ? '<span style="color:#4ade80;margin-right:auto">✓ 使用中</span>' : `<button data-action="recipe-use" data-recipe="${escapeHtml(item.recipe)}" style="${small};margin-right:auto">用這個</button>`}
+                  ${queued.length ? `<button data-action="recipe-fav-apply" data-type="${escapeHtml(type)}" data-recipe="${escapeHtml(item.recipe)}" title="佇列裡做${escapeHtml(type)}的角色全部改用這個配方（名稱不變）" style="${small}">套用佇列 ${queued.length} 人</button>` : ''}
+                  <button data-action="recipe-fav" data-type="${escapeHtml(type)}" data-recipe="${escapeHtml(item.recipe)}" title="從我的最愛拿掉" style="${small};color:#facc15">★</button>
+                </div></div>`;
             })
-            .join('')}</table>`
+            .join('')
         : `<div class="hint">${escapeHtml(type)}還沒有最愛：在下面「歷史配方」按 ☆，或把目前的配方加進來</div>`) +
       `<div class="row" style="margin-top:4px"><button data-action="recipe-fav-current">☆ 把目前的配方加進最愛</button>${others ? `<span style="color:#a0a0aa">其他裝備還有 ${others} 個最愛</span>` : ''}</div>`;
   }
@@ -12412,11 +12416,15 @@
         if (hero.actionState === 5) tags.push(`<span style="color:#60a5fa">第 ${hero.actionTarget} 欄鍛造中</span>`);
         else if (hero.actionState) tags.push('<span style="color:#a0a0aa">忙別的事</span>');
         const unavailable = hero.actionState || inHuntTeam(hero);
-        return `<div class="row" style="margin:0;padding:3px 0;border-bottom:1px solid #2e2e34">
-          <div style="flex:1;min-width:0"><b>${escapeHtml(hero.name)}</b> <span style="color:#a0a0aa">鍛 ${hero.forge ?? '?'}／裁 ${hero.tailor ?? '?'}／工 ${hero.craft ?? '?'}</span>${tags.length ? `<div>${tags.join('・')}</div>` : ''}</div>
-          ${sameRecipe ? '<span style="color:#4ade80;white-space:nowrap">✓ 用這個配方</span>' : `<button data-action="recipe-queue" data-hero="${hero.id}" style="font-weight:bold">${inQueue ? '改用這個配方' : '加入'}</button>`}
-          ${inQueue ? `<button data-action="forge-unqueue" data-hero="${hero.id}">移出</button>` : ''}
-          <button data-action="recipe-forge-once" data-hero="${hero.id}" ${unavailable ? 'disabled' : ''}>鍛一次</button>
+        const small = 'flex:none;padding:1px 7px;font-size:12px';
+        return `<div style="padding:4px 2px;border-bottom:1px solid #2e2e34">
+          <div style="display:flex;gap:4px;align-items:center">
+            <b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(hero.name)}">${escapeHtml(hero.name)}</b>
+            ${sameRecipe ? '<span style="flex:none;color:#4ade80">✓ 使用中</span>' : `<button data-action="recipe-queue" data-hero="${hero.id}" style="${small};font-weight:bold" title="${inQueue ? '改用上面的配方' : '排進自動鍛造佇列，用上面的配方'}">${inQueue ? '改用' : '加入'}</button>`}
+            ${inQueue ? `<button data-action="forge-unqueue" data-hero="${hero.id}" style="${small}">移出</button>` : ''}
+            <button data-action="recipe-forge-once" data-hero="${hero.id}" style="${small}" ${unavailable ? 'disabled' : ''}>鍛一次</button>
+          </div>
+          <div style="color:#a0a0aa">鍛 ${hero.forge ?? '?'}・裁 ${hero.tailor ?? '?'}・工 ${hero.craft ?? '?'}${tags.length ? `・${tags.join('・')}` : ''}</div>
         </div>`;
       })
       .join('');
