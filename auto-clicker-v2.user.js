@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.59
+// @version      3.60
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -284,6 +284,9 @@
     miningConditionRest: true,
     // 挖礦時不理會的異常狀態名稱（、分隔）：有這些也照常出發、不提早收
     miningIgnoreConditions: '',
+    // 有異常就送去休息這麼久，休息完看好了沒，沒好再休息
+    miningConditionRestCure: true,
+    miningConditionRestMinutes: 60,
     miningIntervalHours: 6,
     miningIntervalJitterPercent: 15,
     miningPotionEnabled: true,
@@ -1102,6 +1105,7 @@
       <div class="hint">沒有道具時，體力不到三成或 HP 不到一半會先休息再挖</div>
       <label class="row"><input data-field="miningConditionRest" type="checkbox" style="flex:none;width:auto"> 有異常狀態（中毒…）就不出發、正在挖的提早收，並跳出提醒</label>
       <div class="hint">異常狀態下挖礦可能會死。有異常的角色留在城裡不動，好了才再出發</div>
+      <label class="row"><input data-field="miningConditionRestCure" type="checkbox" style="flex:none;width:auto"> 有異常就去休息 ${numberInput('miningConditionRestMinutes', 'min="10"')} 分鐘，休息完看好了沒，沒好繼續休息</label>
       <input data-field="miningIgnoreConditions" type="hidden">
       <div style="font-size:12px">不理會這些異常（勾了照常挖）：<span data-role="mining-ignore"></span></div>
       <div class="row"><input data-role="mining-ignore-name" placeholder="沒看過的異常名稱，手動加" style="flex:1;min-width:0"><button data-action="mining-ignore-add">加入</button></div>
@@ -13464,7 +13468,7 @@
       const key = `${hero.id}:${condition.name}:${condition.level}`;
       if (miningNotified.has(key)) return;
       miningNotified.add(key);
-      alertUser(`挖礦：${hero.name} ${condition.name}${condition.level}，${hero.actionState === 4 ? '提早收礦，' : ''}好了之前不出發挖礦`);
+      alertUser(`挖礦：${hero.name} ${condition.name}${condition.level}，${hero.actionState === 4 ? '提早收礦，' : ''}${settings.miningConditionRestCure ? '先去休息，好了才再挖礦' : '好了之前不出發挖礦'}`);
     });
   }
 
@@ -13582,7 +13586,18 @@
     if (hero.actionState || hero.perished || hero.hp <= 0 || !inTownHero(hero) || inHuntTeam(hero) || forgeByApiHeroIds(settings).includes(hero.id)) return done;
     hero = await openGameHeroPage(hero, opened);
     notifyMiningConditions(settings, hero);
-    if (settings.miningConditionRest && miningConditions(settings, hero).length) {
+    const conditions = settings.miningConditionRest ? miningConditions(settings, hero) : [];
+    if (conditions.length && settings.miningConditionRestCure) {
+      // 休息完回到上面「休息完」那段收掉，再重讀狀態：還有異常就再休息一輪
+      const minutes = Math.max(10, Number(settings.miningConditionRestMinutes) || 60);
+      syncGameHeroAction(await requestGameApi(`${HEROES_API}/${hero.id}/rest`, { method: 'POST' }), 'rest');
+      data.active[hero.id] = { kind: 'rest', at: Date.now(), sp: hero.sp, hp: hero.hp, minutes, condition: true };
+      waits.push(Date.now() + minutes * 60000);
+      done.push(`${hero.name} ${conditions.map((condition) => `${condition.name}${condition.level}`).join('、')}，先休息 ${minutes} 分鐘`);
+      saveMining(data);
+      return done;
+    }
+    if (conditions.length) {
       waits.push(Date.now() + randomGap(10, 20) * 60000);
       return done;
     }
