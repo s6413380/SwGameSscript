@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.62
+// @version      3.63
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -12151,16 +12151,20 @@
   }
 
   // 「泥土×4、楊木×2」→ [['泥土', 4], ['楊木', 2]]
+  // 同一種材料寫兩次就合併：送出去同一個 itemId 出現兩筆，遊戲會回 400「材料參數有誤」
   function parseRecipe(text) {
-    return String(text || '')
+    const merged = new Map();
+    String(text || '')
       .split(/[、,，\n]/)
       .map((part) => part.trim())
       .filter(Boolean)
-      .map((part) => {
+      .forEach((part) => {
         const match = /^(.+?)\s*[×xX*＊]\s*(\d+)$/.exec(part);
         if (!match) throw new Error(`看不懂「${part}」，要寫成 名稱×數量`);
-        return [match[1].trim(), Number(match[2])];
+        const name = match[1].trim();
+        merged.set(name, (merged.get(name) || 0) + Number(match[2]));
       });
+    return [...merged];
   }
 
   async function forgeWithRecipe(settings, heroId) {
