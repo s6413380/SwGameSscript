@@ -290,6 +290,13 @@
     return `<div class="income">${part('近1小時', data.income.hour)}<br>${part('今天', data.income.today)}</div>`;
   }
 
+  const MINING_SITE_NAMES = { 1: '砂石場', 2: '森林區', 3: '鐵礦山', 4: '阿嬤寶山' };
+  // 主動收礦要不要先派工頭：卡片每幾秒重畫，勾選記在這裡
+  let collectWithForeman = true;
+  document.addEventListener('change', (event) => {
+    if (event.target.matches && event.target.matches('[data-collect-foreman]')) collectWithForeman = event.target.checked;
+  });
+
   // 誰在挖礦、挖多久、有沒有中毒；角色資料最多 5 分鐘讀一次，挖了多久是照開挖時間現算的
   function miningHtml(data) {
     const mining = data.mining;
@@ -305,7 +312,14 @@
           .map((name) => `<button class="small ${ignored.includes(name) ? 'on' : ''}" data-command="mining-ignore" data-name="${escapeHtml(name)}" data-ignore="${ignored.includes(name) ? '' : '1'}" title="${ignored.includes(name) ? '目前不理會，按一下改回會擋' : '目前會擋（不出發、提早收），按一下改成不理會'}">${escapeHtml(name)}</button>`)
           .join('')}</div>`
       : '';
-    return `<div class="income"><b>挖礦</b> <span class="muted">${Math.round((Date.now() - mining.at) / 60000)} 分鐘前讀取</span>${rows}${last}${ignore}</div>`;
+    // 主動收礦：有人在挖的地點各一個按鈕；有工頭才給「先派工頭」
+    const sites = [...new Set(mining.heroes.map((hero) => hero.site).filter(Boolean))].sort();
+    const collect = sites.length
+      ? `<div class="muted">收礦：${[0, ...sites]
+          .map((site) => `<button class="small" data-command="mining-collect" data-site="${site}">${site ? MINING_SITE_NAMES[site] || site : '全部'}</button>`)
+          .join('')}${mining.foreman ? ` <label><input type="checkbox" data-collect-foreman ${collectWithForeman ? 'checked' : ''}> 先派工頭（${escapeHtml(mining.foreman)}）</label>` : ''}${mining.busy ? ` <span style="color:#facc15">${escapeHtml(mining.busy)}中…</span>` : ''}</div>`
+      : '';
+    return `<div class="income"><b>挖礦</b> <span class="muted">${Math.round((Date.now() - mining.at) / 60000)} 分鐘前讀取</span>${rows}${last}${collect}${ignore}</div>`;
   }
 
   // 今天戰報寫明是誰拿到的：每個角色一行，盜取放最前面
@@ -775,6 +789,8 @@
       const action = button.dataset.command;
       if (['start', 'forge', 'stop', 'stop-hunt', 'stop-forge', 'mine', 'stop-mine', 'resume', 'town'].includes(action)) {
         sendCommand(accountId, { type: action });
+      } else if (action === 'mining-collect') {
+        sendCommand(accountId, { type: 'mining-collect', site: Number(button.dataset.site) || 0, foreman: collectWithForeman });
       } else if (action === 'mining-ignore') {
         sendCommand(accountId, { type: 'mining-ignore', name: button.dataset.name, ignore: Boolean(button.dataset.ignore) });
       } else if (action === 'reload' || action === 'reload-start') {

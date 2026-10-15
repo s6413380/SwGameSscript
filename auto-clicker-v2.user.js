@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.65
+// @version      3.66
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1097,6 +1097,9 @@
 
     <div data-tab="mining">
       <div class="row"><button data-action="mining-start" style="font-weight:bold">開始挖礦</button><button data-action="mining-stop">停止挖礦</button><button data-action="mining-refresh">重新讀取</button></div>
+      <div class="row">立即收礦 <select data-role="mining-collect-site" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">全部地點</option><option value="1">砂石場</option><option value="2">森林區</option><option value="3">鐵礦山</option><option value="4">阿嬤寶山</option></select>
+        <label style="flex:none"><input data-role="mining-collect-foreman" type="checkbox" checked style="width:auto"> 先派工頭</label><button data-action="mining-collect">收礦</button></div>
+      <div class="hint">馬上收這個地點正在挖的角色（未滿 3 分鐘的收不了）；勾「先派工頭」又有設工頭的話，先讓工頭進場 3 分鐘再收，收完收回工頭。有在跑「開始挖礦」的話，收完會照設定再出發</div>
       <div class="hint">選了地點的角色在城裡閒著就去挖（狩獵隊伍、鍛造佇列裡的角色不會被拿去），時間到收礦再出發；遊戲規定至少挖 3 分鐘。可以跟掛機、鍛造同時跑</div>
       <div class="row">挖 ${numberInput('miningIntervalHours', 'min="0.1" step="0.5"')} 小時收一次再挖（每次前後飄 ${numberInput('miningIntervalJitterPercent', 'min="0" max="50"')} %）</div>
       <div class="row"><button data-action="mining-potions">重新讀取道具</button><span style="color:#a0a0aa">都不勾＝任何這類道具；補到差不到半瓶就滿為止</span></div>
@@ -3576,6 +3579,8 @@
       case 'stop-mine':
         if (miningRunner.running) stopMiningRunner('總覽頁停止挖礦');
         return '停止挖礦';
+      case 'mining-collect':
+        return startManualMiningCollect({ site: Number(command.site) || 0, foreman: command.foreman !== false });
       case 'mining-ignore': {
         const name = String(command.name || '').trim();
         if (!name) throw new Error('異常名稱是空的');
@@ -8132,6 +8137,11 @@
       else miningLog('挖礦沒有在執行');
     } else if (action === 'mining-order-up' || action === 'mining-order-down') {
       moveMiningOrder(Number(event.target.dataset.hero), action === 'mining-order-up' ? -1 : 1);
+    } else if (action === 'mining-collect') {
+      startManualMiningCollect({
+        site: Number(panel.querySelector('[data-role="mining-collect-site"]').value) || 0,
+        foreman: panel.querySelector('[data-role="mining-collect-foreman"]').checked,
+      });
     } else if (action === 'mining-ignore-add') {
       const input = panel.querySelector('[data-role="mining-ignore-name"]');
       const name = input.value.trim();
@@ -13363,6 +13373,81 @@
     return after;
   }
 
+  // 主動收礦：指定地點（0＝全部），可選先派工頭。跑的時候自動挖礦先讓開，免得兩邊一起收
+  async function manualMiningCollect({ site = 0, foreman: withForeman = true } = {}) {
+    if (miningRunner.manualBusy) throw new Error('上一次主動收礦還在進行');
+    if (otherTabMining()) throw new Error('同一個帳號的另一個分頁在跑挖礦，到那個分頁收');
+    const settings = readSettingsFromPanel();
+    const siteName = site ? MINING_SITES[site] : '全部地點';
+    miningRunner.manualBusy = `主動收礦（${siteName}）`;
+    let sentForeman = null;
+    const data = loadMining();
+    const opened = new Set();
+    const done = [];
+    try {
+      // 自動挖礦正在跑那一輪就等它跑完
+      for (let tries = 0; miningRunner.ticking && tries < 60; tries++) await wait(1000);
+      const heroes = await readMiningHeroes(settings, { statuses: false });
+      const foremanId = miningForemanId(settings);
+      const order = miningOrderedIds(settings, plannedMiningIds(settings));
+      const rank = (hero) => (order.includes(hero.id) ? order.indexOf(hero.id) : order.length);
+      const now = Date.now();
+      const targets = heroes
+        .filter((hero) => hero.actionState === 4 && hero.id !== foremanId && (!site || Number(hero.actionTarget) === Number(site)))
+        .sort((first, second) => rank(first) - rank(second));
+      const ready = targets.filter((hero) => canCompleteNow(hero, now));
+      if (!ready.length) return targets.length ? `${siteName}的角色都還沒滿 3 分鐘，收不了` : `${siteName}沒有人在挖`;
+      const foreman = withForeman && foremanId ? heroes.find((hero) => hero.id === foremanId) : null;
+      if (foreman && foreman.actionState === 0) {
+        miningLog(`主動收礦：先派工頭 ${foreman.name}`);
+        if (await sendForeman(settings, foreman, data, opened)) {
+          sentForeman = foreman;
+          done.push(`工頭 ${foreman.name} 進${MINING_SITES[data.foreman.site]}`);
+          miningLog(`主動收礦：工頭 ${foreman.name} 已進場，3 分鐘後收${siteName}`);
+          await wait(3 * 60000 + randomGap(5000, 20000));
+        } else {
+          done.push(`工頭 ${foreman.name} 現在不能進場，直接收`);
+        }
+      } else if (foreman && foreman.actionState === 4 && data.foreman && data.foreman.heroId === foreman.id) {
+        sentForeman = foreman;
+      }
+      for (const hero of ready) {
+        try {
+          const pageHero = await openGameHeroPage(hero, opened);
+          notifyMiningConditions(settings, pageHero);
+          await completeMiningAction(settings, pageHero, data, 'mine');
+          done.push(`${hero.name} 收礦`);
+        } catch (error) {
+          if (error.captchaRequired) throw error;
+          done.push(`${hero.name}：${error.message}`);
+        }
+      }
+      return `主動收礦（${siteName}）：${done.join('、')}`;
+    } finally {
+      // 工頭放太久會死：不管中間有沒有出錯都收回來
+      if (sentForeman) {
+        try {
+          if (Date.now() - ((loadMining().foreman || {}).at || 0) < 3 * 60000) await wait(3 * 60000 + randomGap(5000, 20000));
+          await collectForeman(settings, sentForeman, loadMining(), opened);
+          done.push(`收回工頭 ${sentForeman.name}`);
+        } catch (error) {
+          alertUser(`挖礦：工頭 ${sentForeman.name} 收不回來（${error.message}），請手動收，放太久會死`);
+        }
+      }
+      miningRunner.manualBusy = '';
+      miningLog(`主動收礦（${siteName}）完成：${done.join('、') || '沒有動作'}`);
+      if (activeTab === 'mining') renderMiningHeroes();
+      wakeMiningRunner();
+    }
+  }
+
+  function startManualMiningCollect(options) {
+    manualMiningCollect(options)
+      .then((message) => miningLog(message))
+      .catch((error) => miningLog(`主動收礦失敗（${error.message}）`));
+    return `開始主動收礦（${options.site ? MINING_SITES[options.site] : '全部地點'}${options.foreman ? '，先派工頭' : ''}）`;
+  }
+
   function canCompleteNow(hero, now) {
     return Boolean(hero.canComplete) || Date.parse(hero.actionCompleteTime) <= now;
   }
@@ -13806,6 +13891,10 @@
 
   async function miningTick() {
     if (!miningRunner.running) return;
+    if (miningRunner.manualBusy) {
+      scheduleMiningRunner(randomGap(30000, 60000));
+      return;
+    }
     const settings = readSettingsFromPanel();
     const runId = miningRunner.runId;
     const cancelled = () => runId !== miningRunner.runId;
@@ -14044,7 +14133,10 @@
           planned: Boolean(plans[hero.id]),
           text: miningHeroText(hero, data, now, settings),
           conditions: heroConditions(hero).map((condition) => `${condition.name}${condition.level}${miningIgnoredConditions(settings).includes(condition.name) ? '（不理會）' : ''}`),
+          site: hero.actionState === 4 ? Number(hero.actionTarget) || 0 : 0,
         })),
+      foreman: ((data.heroes || []).find((hero) => hero.id === miningForemanId(settings)) || {}).name || '',
+      busy: miningRunner.manualBusy || '',
       last: data.log[0] || null,
       conditionNames: knownConditionNames(settings),
       ignoredConditions: miningIgnoredConditions(settings),
