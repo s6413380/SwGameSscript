@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.70
+// @version      3.71
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -348,6 +348,8 @@
     scratchItemValues: '英雄券=35000, 寵物券=5000',
     // 名稱有這些字的道具照拍賣場目前最低單價算（、分隔；留空＝都不用市價）
     scratchMarketNames: '密技',
+    // 腳本沒在掛機、你自己在遊戲裡打怪時，每打一下看血量、體力，低於「補血」「補體力」頁的門檻就用 API 吃藥
+    manualSupplyEnabled: true,
     // 0＝不買：花的是真錢，一定要自己設上限
     cardBuyBudget: 0,
     cardBuyMaxCount: 1,
@@ -895,7 +897,14 @@
     </div>
 
     ${SUPPLY_GROUPS.filter((group) => !group.forgeOnly)
-      .map((group) => `<div data-tab="${group.id}">${supplyGroupHtml(group)}</div>`)
+      .map(
+        (group) => `<div data-tab="${group.id}">${
+          group.id === 'health'
+            ? `<label class="row"><input data-field="manualSupplyEnabled" type="checkbox" style="flex:none;width:auto"> <b>我手動打怪時也自動吃藥</b></label>
+              <div class="hint">腳本沒在掛機、你自己在遊戲裡按打怪時，每打完一下看隊伍的血量、體力，低於這頁和「補體力」頁的門檻就直接用 API 吃藥（不用勾「用 API 補給」、不會去點畫面）</div>`
+            : ''
+        }${supplyGroupHtml(group)}</div>`
+      )
       .join('')}
 
     <div data-tab="forge">
@@ -4598,6 +4607,7 @@
         return;
       }
       if (cancelled()) return;
+      syncGameItemUse(result);
       used.push(`${item.name}×${quantity}`);
       const beforeValue = hero[group.heroField];
       // 回應帶回最新的物品欄與角色數值，直接拿來算下一次；萬一沒帶就自己估
@@ -4628,6 +4638,48 @@
     setStatus(`${label}：${outcome}（${summary}）`);
     logItemUse(`${who} ＝ ${outcome}（${summary}）`);
     finish();
+  }
+
+  // 手動打怪自動吃藥：遊戲自己送的打怪回應帶隊伍最新血量、體力（handleHuntResponse 已經存進 heroStats），
+  // 照補血、補體力的門檻挑出要補的人，用 API 吃；不看「用 API 補給」有沒有勾，也不點畫面
+  const manualSupply = { busy: false };
+  const MANUAL_SUPPLY_MAX_ROUNDS = 8;
+
+  function manualSupplyTarget(settings) {
+    for (const group of SUPPLY_GROUPS.filter((candidate) => !candidate.forgeOnly && candidate.healField)) {
+      const threshold = settings[groupKey(group.id, 'ThresholdPercent')];
+      for (let index = 0; index < SLOT_COUNT; index++) {
+        const hero = state.heroStats.get(heroIdForSlot(settings, group.id, index));
+        if (!hero || !(hero[group.fullField] > 0) || hero.perished || hero.hp <= 0) continue;
+        const percent = (hero[group.heroField] / hero[group.fullField]) * 100;
+        if (percent < threshold && !state.itemUsedSlots.has(`${group.id}:${index}`)) return { group, index };
+      }
+    }
+    return null;
+  }
+
+  async function manualSupplyAfterHunt() {
+    const settings = readSettingsFromPanel();
+    if (!settings.manualSupplyEnabled || tabShutDown || manualSupply.busy) return;
+    if (state.running && !state.forgeMode) return;
+    manualSupply.busy = true;
+    state.itemUsedSlots.clear();
+    const scriptHunting = () => state.running && !state.forgeMode;
+    try {
+      for (let round = 0; round < MANUAL_SUPPLY_MAX_ROUNDS; round++) {
+        const target = manualSupplyTarget(settings);
+        if (!target || scriptHunting()) break;
+        // 人看到血少了才去按，晚一兩秒
+        await wait(randomGap(800, 2500));
+        // 中途換腳本掛機的話不會回呼，最多等 90 秒，免得之後都不再補
+        await Promise.race([
+          new Promise((resolve) => useItemByApi(settings, target, { onDone: resolve, isCancelled: scriptHunting }).catch(resolve)),
+          wait(90000),
+        ]);
+      }
+    } finally {
+      manualSupply.busy = false;
+    }
   }
 
   const HUNT_API_PATTERN = /\/api\/hunt(?:\?|$)/;
@@ -8658,6 +8710,7 @@
               } catch {
                 // 回應格式不對就照舊讀畫面
               }
+              if (!fromScript && method === 'POST') manualSupplyAfterHunt().catch(() => {});
             }
             recordApi([
               `fetch ${method} ${url}`,
