@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.69
+// @version      3.70
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -346,8 +346,8 @@
     cardBuyRules: '',
     // 刮刮樂中的道具值多少錢（名稱=價格），算進損益
     scratchItemValues: '英雄券=35000, 寵物券=5000',
-    // 沒自己估價的道具照拍賣場目前最低單價算
-    scratchUseMarket: true,
+    // 名稱有這些字的道具照拍賣場目前最低單價算（、分隔；留空＝都不用市價）
+    scratchMarketNames: '密技',
     // 0＝不買：花的是真錢，一定要自己設上限
     cardBuyBudget: 0,
     cardBuyMaxCount: 1,
@@ -1213,7 +1213,7 @@
 
     <div data-tab="scratch">
       <div class="hint">在遊戲賭場刮刮樂時自動記下花多少、中什麼。清除只清自己這邊、從零開始算；開了雲端同步會上傳，也能看大家的</div>
-      <label class="row"><input data-field="scratchUseMarket" type="checkbox" style="flex:none;width:auto"> 沒估價的道具照拍賣場目前最低單價算（10 分鐘更新一次）</label>
+      <div class="row">照市價算<input data-field="scratchMarketNames" placeholder="密技" style="flex:1;min-width:0" title="名稱有這些字的道具，照拍賣場目前最低單價算（10 分鐘更新一次）；用、分開，留空＝都不用市價"></div>
       <div class="row">道具估價<input data-field="scratchItemValues" placeholder="英雄券=35000, 寵物券=5000" style="flex:1;min-width:0" title="名稱=價格，用逗號分開；獎項文字裡有這個名稱就照這個價格算進損益，改了連以前的紀錄一起重算"></div>
       <div class="row"><select data-role="scratch-scope" style="flex:none;max-width:120px;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select><select data-role="scratch-card" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="">全部刮刮樂</option><option value="regular">200 元</option><option value="premium">1,600 元</option></select><button data-action="scratch-clear">清除紀錄</button></div>
       <div data-role="scratch-stats"></div>
@@ -10113,13 +10113,13 @@
       .sort((first, second) => second[0].length - first[0].length);
   }
 
-  // 拍賣場目前最低單價（道具＋礦物），刮刮樂中的道具沒自己估價時用；跟市價不同步的舊紀錄也照現在的價格重算
+  // 拍賣場目前最低單價，刮刮樂中的「密技」這類道具用；舊紀錄也照現在的價格重算
   const SCRATCH_MARKET_FRESH_MILLISECONDS = 10 * 60000;
   const scratchMarket = { at: 0, loading: false, byName: new Map() };
 
   function scratchMarketPrices() {
     const byName = new Map();
-    ['items', 'mines'].forEach((kind) =>
+    ['items'].forEach((kind) =>
       ((sellPrice.trades[kind] || {}).list || []).forEach((trade) => {
         const unit = Number(trade.price) / Number(trade.quantity);
         if (trade.name && Number.isFinite(unit) && unit > 0 && !(byName.get(trade.name) <= unit)) byName.set(trade.name, unit);
@@ -10131,10 +10131,10 @@
   // 排在打怪空檔順便抓，抓到就重畫
   function refreshScratchMarket(settings) {
     scratchMarket.byName = scratchMarketPrices();
-    if (!settings.scratchUseMarket || scratchMarket.loading || Date.now() - scratchMarket.at < SCRATCH_MARKET_FRESH_MILLISECONDS) return;
+    if (!scratchMarketKeywords(settings).length || scratchMarket.loading || Date.now() - scratchMarket.at < SCRATCH_MARKET_FRESH_MILLISECONDS) return;
     scratchMarket.loading = true;
     Promise.all(
-      ['items', 'mines'].map((kind) =>
+      ['items'].map((kind) =>
         requestGameApi(`/api/trades?type=${kind}`, { background: true })
           .then((data) => noticeMarketGoods(kind, data))
           .catch(() => {})
@@ -10145,7 +10145,11 @@
     });
   }
 
-  // 「獲得 蜂蜜 × 3」→ ['蜂蜜', 3]
+  function scratchMarketKeywords(settings) {
+    return String(settings.scratchMarketNames || '').split(/[、,，\s]+/).map((word) => word.trim()).filter(Boolean);
+  }
+
+  // 「獲得 火球密技 × 3」→ ['火球密技', 3]
   function scratchPrizeItem(message) {
     const quantity = message.match(/[×xX]\s*(\d+)\s*$/);
     const name = message
@@ -10160,7 +10164,7 @@
     const [name, quantity] = scratchPrizeItem(message);
     const rule = rules.find(([ruleName]) => message.includes(ruleName));
     if (rule) return [rule[1] * quantity, '自估'];
-    const market = rules.market && rules.market.get(name);
+    const market = rules.market && (rules.marketKeywords || []).some((word) => name.includes(word)) && rules.market.get(name);
     return market ? [Math.round(market * quantity), '市價'] : [0, ''];
   }
 
@@ -10196,7 +10200,8 @@
     const settings = readSettingsFromPanel();
     refreshScratchMarket(settings);
     const rules = scratchItemValueRules(settings);
-    if (settings.scratchUseMarket) rules.market = scratchMarket.byName;
+    rules.market = scratchMarket.byName;
+    rules.marketKeywords = scratchMarketKeywords(settings);
     const select = panel.querySelector('[data-role="scratch-card"]');
     const all = statsRecords('scratch', ownCloudScratches(), readJsonStorage(CLOUD_SCRATCH_KEY, []), (play) => play.key);
     const plays = select.value ? all.filter((play) => play.card === select.value) : all;
@@ -15370,7 +15375,7 @@
     if (event.target.dataset.field === 'forgeShopSlots') renderForgePlanOverview();
     // 自動換名稱的門檻改了：鍛造正在等好名稱的話馬上再看一次，不用等下一輪
     if (['forgeAutoNamePercent', 'forgeAutoNameEnabled'].includes(event.target.dataset.field)) wakeForgeRunner();
-    if (['scratchItemValues', 'scratchUseMarket'].includes(event.target.dataset.field) && activeTab === 'scratch') renderScratchStats();
+    if (['scratchItemValues', 'scratchMarketNames'].includes(event.target.dataset.field) && activeTab === 'scratch') renderScratchStats();
     if (['forgeNameWeightMode', 'forgeNamePriorities'].includes(event.target.dataset.field)) {
       renderNameWeightTable();
       recipeOptionsCache.at = 0;
