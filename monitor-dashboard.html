@@ -298,7 +298,14 @@
       .map((hero) => `<div>${escapeHtml(hero.name)}：${escapeHtml(hero.text)}${hero.conditions.length ? ` <span style="color:#fb923c">${escapeHtml(hero.conditions.join('、'))}</span>` : ''}</div>`)
       .join('');
     const last = mining.last ? `<div class="muted">上次：${escapeHtml(mining.last.name)} ${escapeHtml(mining.last.text || '-')}</div>` : '';
-    return `<div class="income"><b>挖礦</b> <span class="muted">${Math.round((Date.now() - mining.at) / 60000)} 分鐘前讀取</span>${rows}${last}</div>`;
+    // 點一下切換：亮的＝不理會，有這個異常也照常挖
+    const ignored = mining.ignoredConditions || [];
+    const ignore = (mining.conditionNames || []).length
+      ? `<div class="muted">不理會的異常：${mining.conditionNames
+          .map((name) => `<button class="small ${ignored.includes(name) ? 'on' : ''}" data-command="mining-ignore" data-name="${escapeHtml(name)}" data-ignore="${ignored.includes(name) ? '' : '1'}" title="${ignored.includes(name) ? '目前不理會，按一下改回會擋' : '目前會擋（不出發、提早收），按一下改成不理會'}">${escapeHtml(name)}</button>`)
+          .join('')}</div>`
+      : '';
+    return `<div class="income"><b>挖礦</b> <span class="muted">${Math.round((Date.now() - mining.at) / 60000)} 分鐘前讀取</span>${rows}${last}${ignore}</div>`;
   }
 
   // 今天戰報寫明是誰拿到的：每個角色一行，盜取放最前面
@@ -768,6 +775,8 @@
       const action = button.dataset.command;
       if (['start', 'forge', 'stop', 'stop-hunt', 'stop-forge', 'mine', 'stop-mine', 'resume', 'town'].includes(action)) {
         sendCommand(accountId, { type: action });
+      } else if (action === 'mining-ignore') {
+        sendCommand(accountId, { type: 'mining-ignore', name: button.dataset.name, ignore: Boolean(button.dataset.ignore) });
       } else if (action === 'reload' || action === 'reload-start') {
         sendCommand(accountId, { type: 'reload', autoStart: action === 'reload-start' });
       } else if (action === 'target') {

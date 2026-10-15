@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.58
+// @version      3.59
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -282,6 +282,8 @@
     // 收礦順序（heroId 陣列，JSON）；有的角色要最後收
     miningOrder: '[]',
     miningConditionRest: true,
+    // 挖礦時不理會的異常狀態名稱（、分隔）：有這些也照常出發、不提早收
+    miningIgnoreConditions: '',
     miningIntervalHours: 6,
     miningIntervalJitterPercent: 15,
     miningPotionEnabled: true,
@@ -1100,6 +1102,9 @@
       <div class="hint">沒有道具時，體力不到三成或 HP 不到一半會先休息再挖</div>
       <label class="row"><input data-field="miningConditionRest" type="checkbox" style="flex:none;width:auto"> 有異常狀態（中毒…）就不出發、正在挖的提早收，並跳出提醒</label>
       <div class="hint">異常狀態下挖礦可能會死。有異常的角色留在城裡不動，好了才再出發</div>
+      <input data-field="miningIgnoreConditions" type="hidden">
+      <div style="font-size:12px">不理會這些異常（勾了照常挖）：<span data-role="mining-ignore"></span></div>
+      <div class="row"><input data-role="mining-ignore-name" placeholder="沒看過的異常名稱，手動加" style="flex:1;min-width:0"><button data-action="mining-ignore-add">加入</button></div>
       <input data-field="miningPlans" type="hidden"><input data-field="miningOrder" type="hidden">
       <div class="subhead">角色（選地點＝要挖；沒在跑「開始挖礦」時每 5 分鐘讀一次）</div>
       <div class="hint">要挖的角色一起出發、一起收：任一個時間到就照上面的順序（↑↓ 調整）全部收完，再一個一個出發</div>
@@ -1510,6 +1515,7 @@
     }
     if (tabId === 'mining') {
       renderMiningHeroes();
+      renderMiningIgnore();
       if (!miningPotionItems) loadMiningPotions();
       if (Date.now() - loadMining().heroesAt > 60000) readMiningHeroes(readSettingsFromPanel()).catch((error) => miningLog(`讀取角色失敗（${error.message}）`));
     }
@@ -3557,6 +3563,13 @@
       case 'stop-mine':
         if (miningRunner.running) stopMiningRunner('總覽頁停止挖礦');
         return '停止挖礦';
+      case 'mining-ignore': {
+        const name = String(command.name || '').trim();
+        if (!name) throw new Error('異常名稱是空的');
+        setMiningConditionIgnored(name, Boolean(command.ignore));
+        wakeMiningRunner();
+        return `挖礦${command.ignore ? '不理會' : '會注意'}「${name}」`;
+      }
       case 'forge-queue':
         return queueHeroFromDashboard(Number(command.heroId), Number(command.fromId) || 0);
       case 'forge-plan':
@@ -8106,6 +8119,14 @@
       else miningLog('挖礦沒有在執行');
     } else if (action === 'mining-order-up' || action === 'mining-order-down') {
       moveMiningOrder(Number(event.target.dataset.hero), action === 'mining-order-up' ? -1 : 1);
+    } else if (action === 'mining-ignore-add') {
+      const input = panel.querySelector('[data-role="mining-ignore-name"]');
+      const name = input.value.trim();
+      if (name) {
+        setMiningConditionIgnored(name, true);
+        input.value = '';
+        wakeMiningRunner();
+      }
     } else if (action === 'mining-potions') {
       loadMiningPotions();
     } else if (action === 'mining-refresh') {
@@ -13270,7 +13291,7 @@
     const record = data.active[hero.id];
     // 每輪開挖時抽好這輪挖多久，之後每次巡都用同一個
     let at = start + (record && record.kind === 'mine' && record.hours ? record.hours : miningHours(settings)) * 3600000;
-    if (settings.miningConditionRest && heroConditions(hero).length) at = now;
+    if (settings.miningConditionRest && miningConditions(settings, hero).length) at = now;
     return Math.max(at, earliest);
   }
 
@@ -13436,7 +13457,7 @@
   // 同一個角色同一種異常只通知一次；好了之後再中才會再通知
   function notifyMiningConditions(settings, hero) {
     if (!settings.miningConditionRest) return;
-    const conditions = heroConditions(hero);
+    const conditions = miningConditions(settings, hero);
     const current = new Set(conditions.map((condition) => `${hero.id}:${condition.name}:${condition.level}`));
     [...miningNotified].filter((key) => key.startsWith(`${hero.id}:`) && !key.includes(':potion') && !current.has(key)).forEach((key) => miningNotified.delete(key));
     conditions.forEach((condition) => {
@@ -13445,6 +13466,58 @@
       miningNotified.add(key);
       alertUser(`挖礦：${hero.name} ${condition.name}${condition.level}，${hero.actionState === 4 ? '提早收礦，' : ''}好了之前不出發挖礦`);
     });
+  }
+
+  // 看過的異常名稱都記下來，給「不理會」勾選
+  const KNOWN_CONDITIONS_KEY = 'autoClickerV2KnownConditions';
+
+  function miningIgnoredConditions(settings) {
+    return String(settings.miningIgnoreConditions || '').split(/[、,，]+/).map((name) => name.trim()).filter(Boolean);
+  }
+
+  function rememberConditionNames(names) {
+    const known = readJsonStorage(KNOWN_CONDITIONS_KEY, []);
+    const fresh = names.filter((name) => !known.includes(name));
+    if (!fresh.length) return;
+    writeJsonStorage(KNOWN_CONDITIONS_KEY, [...known, ...fresh]);
+    if (activeTab === 'mining') renderMiningIgnore();
+  }
+
+  function knownConditionNames(settings) {
+    const current = (loadMining().heroes || []).flatMap((hero) => heroConditions(hero).map((condition) => condition.name));
+    return [...new Set([...readJsonStorage(KNOWN_CONDITIONS_KEY, []), ...current, ...miningIgnoredConditions(settings)])];
+  }
+
+  // 會擋挖礦的異常：扣掉勾了不理會的
+  function miningConditions(settings, hero) {
+    const conditions = heroConditions(hero);
+    rememberConditionNames(conditions.map((condition) => condition.name));
+    const ignored = miningIgnoredConditions(settings);
+    return conditions.filter((condition) => !ignored.includes(condition.name));
+  }
+
+  function setMiningConditionIgnored(name, ignore) {
+    const settings = readSettingsFromPanel();
+    const names = miningIgnoredConditions(settings).filter((item) => item !== name);
+    if (ignore) names.push(name);
+    rememberConditionNames([name]);
+    setPanelField('miningIgnoreConditions', names.join('、'));
+    saveSettings(readSettingsFromPanel());
+    renderMiningIgnore();
+    renderMiningHeroes();
+  }
+
+  function renderMiningIgnore() {
+    const box = panel.querySelector('[data-role="mining-ignore"]');
+    if (!box) return;
+    const settings = readSettingsFromPanel();
+    const ignored = miningIgnoredConditions(settings);
+    const names = knownConditionNames(settings);
+    box.innerHTML = names.length
+      ? names
+          .map((name) => `<label style="display:inline-block;margin-right:8px;white-space:nowrap"><input type="checkbox" data-mining-ignore="${escapeHtml(name)}" ${ignored.includes(name) ? 'checked' : ''} style="width:auto;flex:none"> ${escapeHtml(name)}</label>`)
+          .join('')
+      : '<span style="color:#a0a0aa">還沒看過異常（角色中過的會自動列在這裡）</span>';
   }
 
   const MINING_POTION_MAX_USES = 10;
@@ -13509,7 +13582,7 @@
     if (hero.actionState || hero.perished || hero.hp <= 0 || !inTownHero(hero) || inHuntTeam(hero) || forgeByApiHeroIds(settings).includes(hero.id)) return done;
     hero = await openGameHeroPage(hero, opened);
     notifyMiningConditions(settings, hero);
-    if (settings.miningConditionRest && heroConditions(hero).length) {
+    if (settings.miningConditionRest && miningConditions(settings, hero).length) {
       waits.push(Date.now() + randomGap(10, 20) * 60000);
       return done;
     }
@@ -13638,8 +13711,18 @@
     backgroundTimer.clearTimeout(miningRunner.timerId);
     const runId = miningRunner.runId;
     miningRunner.timerId = backgroundTimer.setTimeout(() => {
-      if (runId === miningRunner.runId) miningTick();
+      if (runId !== miningRunner.runId) return;
+      miningRunner.ticking = true;
+      Promise.resolve(miningTick()).finally(() => {
+        miningRunner.ticking = false;
+      });
     }, delay);
+  }
+
+  // 改了設定馬上重看一次；正在跑的那輪跑完自己會排下一次，不插隊免得兩輪一起動
+  function wakeMiningRunner() {
+    if (!miningRunner.running || miningRunner.ticking) return;
+    scheduleMiningRunner(randomGap(2000, 6000));
   }
 
   function otherTabMining() {
@@ -13738,9 +13821,11 @@
           name: hero.name,
           planned: Boolean(plans[hero.id]),
           text: miningHeroText(hero, data, now, settings),
-          conditions: heroConditions(hero).map((condition) => `${condition.name}${condition.level}`),
+          conditions: heroConditions(hero).map((condition) => `${condition.name}${condition.level}${miningIgnoredConditions(settings).includes(condition.name) ? '（不理會）' : ''}`),
         })),
       last: data.log[0] || null,
+      conditionNames: knownConditionNames(settings),
+      ignoredConditions: miningIgnoredConditions(settings),
     };
   }
 
@@ -13773,7 +13858,8 @@
             const held = miningHeldUntil(data, hero.id, now);
             const heldText = held ? `手動操作過，${new Date(held).toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit' })} 前不自動動它` : '';
             const blocked = inHuntTeam(hero) ? '狩獵隊伍（不會被拿去挖）' : queued.includes(hero.id) ? '鍛造佇列（不會被拿去挖）' : heldText;
-            const conditions = heroConditions(hero).map((condition) => `${condition.name}${condition.level}`);
+            const ignored = miningIgnoredConditions(settings);
+            const conditions = heroConditions(hero).map((condition) => `${condition.name}${condition.level}${ignored.includes(condition.name) ? '（不理會）' : ''}`);
             const options = [['', '不挖'], ...Object.entries(MINING_SITES)]
               .map(([value, name]) => `<option value="${value}" ${String(plans[hero.id] || '') === value ? 'selected' : ''}>${name}</option>`)
               .join('');
@@ -13803,6 +13889,12 @@
     const heroId = event.target.dataset && event.target.dataset.forgeFav;
     if (!heroId || !event.target.value) return;
     applyRecipeToHeroes([Number(heroId)], event.target.dataset.type, event.target.value);
+  });
+
+  panel.addEventListener('change', (event) => {
+    if (!event.target.dataset || event.target.dataset.miningIgnore === undefined) return;
+    setMiningConditionIgnored(event.target.dataset.miningIgnore, event.target.checked);
+    wakeMiningRunner();
   });
 
   panel.addEventListener('change', (event) => {
