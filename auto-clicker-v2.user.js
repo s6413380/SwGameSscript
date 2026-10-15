@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.67
+// @version      3.68
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1140,7 +1140,8 @@
       <fieldset class="group" data-fold="closed">
         <legend>② 自己勾材料</legend>
         <div class="row"><button data-action="mines-refresh">讀取材料庫存</button><input data-role="recipe-filter" placeholder="篩選材料名稱" style="flex:1;min-width:0"></div>
-        <div data-role="recipe-picker" style="font-size:12px;max-height:220px;overflow:auto"></div>
+        <div class="hint">同種類（金屬、木材、石材…，照名稱猜的）放一起，種類裡市價高的排前面；市價是拍賣場最便宜的單價，滑鼠移到材料上看遊戲的說明</div>
+        <div data-role="recipe-picker" style="font-size:12px;max-height:260px;overflow:auto"></div>
       </fieldset>
       <div class="subhead">③ 名稱</div>
       <div class="row">名稱<input data-field="forgeRecipeName" list="autoClickerTodayNames" placeholder="名稱每天影響數值，自己取"><button data-action="name-sheet-refresh">更新測名表</button></div>
@@ -3873,7 +3874,7 @@
   const TURN_ID = `${tabKey}-${Math.random().toString(36).slice(2, 6)}`;
   const TURN_RELAY_TIMEOUT_MILLISECONDS = 2000;
   const TURN_GIVE_UP_MILLISECONDS = 180000;
-  const turnTaking = { chain: Promise.resolve(), downUntil: 0, error: '', waitingSince: 0, background: [], transferWaiting: false, held: false, lingerTimer: null, linger: true };
+  const turnTaking = { chain: Promise.resolve(), downUntil: 0, error: '', waitingSince: 0, background: [], transferWaiting: false, held: false, lingerTimer: null, linger: true, pending: 0, heldSince: 0, keepUntil: 0, forgeRiding: false };
   // 轉移的請求用另一個 id、另一條隊伍：自己分頁的掛機請求正卡在等轉移結束時，轉移不能排在它後面
   const TRANSFER_TURN_ID = `${TURN_ID}-t`;
   let transferTurnChain = Promise.resolve();
@@ -4127,22 +4128,70 @@
   // 送出動作（POST）或這麼久沒下一個請求才交給別的帳號
   const TURN_LINGER_MILLISECONDS = 3000;
 
+  // 打怪輪到這個帳號時，鍛造也快到了（1 分鐘內）就趁同一次操作權一起處理完，不用之後再排一次隊
+  const FORGE_PIGGYBACK_MILLISECONDS = 60000;
+  // 一次操作權最多連著用這麼久，別的帳號才不會等太久
+  const TURN_HOLD_LIMIT_MILLISECONDS = 90000;
+  const HUNT_ACTION_PATTERN = /\/api\/hunt(?:[?#]|$)/;
+
+  function piggybackForge(path) {
+    if (!HUNT_ACTION_PATTERN.test(path) || !forgeRunner.running || forgeRunner.ticking || forgeRunner.captchaWaiting) return false;
+    if (nextTickAt.forge - Date.now() > FORGE_PIGGYBACK_MILLISECONDS) return false;
+    backgroundTimer.clearTimeout(forgeRunner.timerId);
+    nextTickAt.forge = Date.now();
+    const runId = forgeRunner.runId;
+    backgroundTimer.setTimeout(() => {
+      if (runId === forgeRunner.runId) forgeApiTick(readSettingsFromPanel());
+    }, 0);
+    return true;
+  }
+
+  // 還有自己的請求在後面排、剛叫鍛造順便做、或順便做的鍛造還沒做完，就先不交出操作權
+  function keepTurn() {
+    if (!turnTaking.held || Date.now() - turnTaking.heldSince > TURN_HOLD_LIMIT_MILLISECONDS) return false;
+    return turnTaking.pending > 1 || Date.now() < turnTaking.keepUntil || (turnTaking.forgeRiding && forgeRunner.ticking);
+  }
+
+  // 留著操作權等下一個請求；時間到還在順便做鍛造就再等一下，做完（或連著用太久）才交出去
+  function armTurnRelease(settings) {
+    turnTaking.lingerTimer = backgroundTimer.setTimeout(() => {
+      turnTaking.chain = turnTaking.chain.then(() => {
+        if (!turnTaking.held) return null;
+        if (keepTurn()) return armTurnRelease(settings);
+        return releaseTurn(settings);
+      });
+    }, Math.max(TURN_LINGER_MILLISECONDS, turnTaking.keepUntil - Date.now()));
+  }
+
   function releaseTurn(settings) {
     turnTaking.held = false;
+    turnTaking.forgeRiding = false;
+    turnTaking.keepUntil = 0;
     return askTurnRelay(settings, 'turn/release', 'POST').catch(() => {});
   }
 
   function sendInTurn(settings, path, options, { noLinger = false } = {}) {
     // 同一個分頁也一次一個：掛機和鍛造的 GET 不排隊，不串起來就會疊在一起送
+    turnTaking.pending++;
     const next = turnTaking.chain.then(async () => {
       backgroundTimer.clearTimeout(turnTaking.lingerTimer);
-      if (!turnTaking.held) turnTaking.held = await takeTurn(settings);
+      if (!turnTaking.held) {
+        turnTaking.held = await takeTurn(settings);
+        turnTaking.heldSince = Date.now();
+      }
       const isRead = String(options.method || 'GET').toUpperCase() === 'GET';
       try {
         return await sendGameRequestNow(path, options);
       } finally {
         await runBackgroundRequests();
-        if (turnTaking.held && (!isRead || noLinger || !turnTaking.linger)) await releaseTurn(settings);
+        if (!isRead && turnTaking.held && piggybackForge(path)) {
+          turnTaking.forgeRiding = true;
+          turnTaking.keepUntil = Date.now() + 5000;
+        }
+        const keep = keepTurn();
+        turnTaking.pending--;
+        if (keep) armTurnRelease(settings);
+        else if (turnTaking.held && (!isRead || noLinger || !turnTaking.linger)) await releaseTurn(settings);
         else if (turnTaking.held) {
           // 交出去也排進同一條隊伍，才不會在下一個請求送到一半時放掉
           turnTaking.lingerTimer = backgroundTimer.setTimeout(() => {
@@ -11472,8 +11521,54 @@
       id: mine.id,
       name: mine.name || itemName(mine.id),
       have: Number(mine.available ?? mine.quantity) || 0,
+      desc: mine.desc || '',
     }));
     mineStockAt = Date.now();
+  }
+
+  // 遊戲的材料只有名稱、數量、說明，沒有種類和等級；種類照名稱、說明的字猜，寶石要比石材先比
+  const MINE_KINDS = [
+    ['寶石', /寶石|水晶|晶石|玉|鑽|珍珠|瑪瑙|翡翠|琥珀|石英/],
+    ['木材', /木|樹|竹|枝|藤/],
+    ['皮革', /皮|毛|鱗|革/],
+    ['布料', /布|絲|棉|麻|線|紗/],
+    ['石材', /石|砂|礫|土|岩|泥/],
+    ['金屬', /鐵|銅|銀|金|錫|鎳|鎂|鉍|鋅|鉛|鋼|鋁|鈦|鈷|鉑|汞|礦/],
+  ];
+
+  function mineKind(mine) {
+    const found = MINE_KINDS.find(([, pattern]) => pattern.test(mine.name)) || MINE_KINDS.find(([, pattern]) => pattern.test(mine.desc || ''));
+    return found ? found[0] : '其他';
+  }
+
+  // 等級看市場：同名材料拍賣場上最便宜的單價，越貴通常越高級。清單最多 10 分鐘抓一次，排在打怪的空檔順便抓
+  const MINE_PRICE_FRESH_MILLISECONDS = 10 * 60000;
+  const minePrices = { at: 0, loading: false, byName: new Map() };
+
+  function updateMinePrices(trades) {
+    const byName = new Map();
+    (trades || []).forEach((trade) => {
+      const unit = Number(trade.price) / Number(trade.quantity);
+      if (trade.name && Number.isFinite(unit) && unit > 0 && !(byName.get(trade.name) <= unit)) byName.set(trade.name, unit);
+    });
+    Object.assign(minePrices, { at: Date.now(), byName });
+  }
+
+  function refreshMinePrices() {
+    const cached = sellPrice.trades.mines;
+    if (cached && cached.at > minePrices.at) updateMinePrices(cached.list);
+    if (minePrices.loading || Date.now() - minePrices.at < MINE_PRICE_FRESH_MILLISECONDS) return;
+    minePrices.loading = true;
+    requestGameApi('/api/trades?type=mines', { background: true })
+      .then((data) => {
+        noticeMarketGoods('mines', data);
+        updateMinePrices(data && data.mines);
+        if (activeTab === 'recipe') renderRecipePicker();
+      })
+      .catch(() => {})
+      .finally(() => {
+        minePrices.loading = false;
+      });
   }
 
   async function refreshMineStock() {
@@ -11508,14 +11603,23 @@
     recipe.forEach(([name]) => {
       if (!stock.some((mine) => mine.name === name)) stock.push({ name, have: 0 });
     });
-    const rows = stock
+    refreshMinePrices();
+    const price = (mine) => minePrices.byName.get(mine.name) || 0;
+    const kindOrder = [...MINE_KINDS.map(([kind]) => kind), '其他'];
+    // 同種類放一起，種類裡市價高的（通常比較高級）排前面，沒人賣的照庫存
+    const shown = stock
       .filter((mine) => chosen.has(mine.name) || !filter || mine.name.includes(filter))
-      .sort((first, second) => Number(chosen.has(second.name)) - Number(chosen.has(first.name)) || second.have - first.have)
-      .map((mine) => {
+      .map((mine) => ({ ...mine, kind: mineKind(mine) }))
+      .sort((first, second) => kindOrder.indexOf(first.kind) - kindOrder.indexOf(second.kind) || price(second) - price(first) || second.have - first.have);
+    const rows = shown
+      .map((mine, index) => {
         const quantity = chosen.get(mine.name);
         const short = quantity > mine.have;
-        return `<div class="row" style="margin:1px 0"><label style="flex:1;min-width:0"><input type="checkbox" data-recipe-mine="${escapeHtml(mine.name)}" ${quantity ? 'checked' : ''} style="width:auto;flex:none">
-          ${escapeHtml(mine.name)} <span style="color:${short ? '#ef4444' : '#a0a0aa'}">剩 ${mine.have}</span></label>
+        const header = index === 0 || shown[index - 1].kind !== mine.kind
+          ? `<div style="margin:4px 0 1px;color:#93c5fd;border-bottom:1px solid #2e2e34">${mine.kind}</div>`
+          : '';
+        return `${header}<div class="row" style="margin:1px 0"><label style="flex:1;min-width:0" title="${escapeHtml(mine.desc || '')}"><input type="checkbox" data-recipe-mine="${escapeHtml(mine.name)}" ${quantity ? 'checked' : ''} style="width:auto;flex:none">
+          ${escapeHtml(mine.name)} <span style="color:${short ? '#ef4444' : '#a0a0aa'}">剩 ${mine.have}</span>${price(mine) ? ` <span style="color:#fbbf24">市價 ${unitPriceText(price(mine))}</span>` : ''}</label>
           <input type="number" min="1" data-recipe-qty="${escapeHtml(mine.name)}" value="${quantity || 1}" style="flex:none;width:44px"></div>`;
       })
       .join('');
