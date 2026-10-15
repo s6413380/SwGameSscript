@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.71
+// @version      3.72
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -2239,10 +2239,13 @@
   // 中繼站和 GitHub 取比較新的：朋友電腦的中繼站可能還放著舊版，不能只看中繼站
   async function latestPublishedVersion(settings) {
     let relayVersion = '';
-    try {
-      relayVersion = await fetchVersionText(`${dashboardBaseUrl(settings)}/version`);
-    } catch {
-      // 中繼站沒開
+    // 中繼站沒開就 10 分鐘後再問，不要每分鐘一直連；新版照樣從 GitHub 拿得到
+    if (Date.now() >= (autoUpdate.relayDownUntil || 0)) {
+      try {
+        relayVersion = await fetchVersionText(`${dashboardBaseUrl(settings)}/version`);
+      } catch {
+        autoUpdate.relayDownUntil = Date.now() + 10 * 60000;
+      }
     }
     if (Date.now() - autoUpdate.githubCheckedAt >= GITHUB_UPDATE_CHECK_MILLISECONDS) {
       autoUpdate.githubCheckedAt = Date.now();
@@ -3976,7 +3979,17 @@
     renderGlobalButtons();
   }
 
+  // 「全體」暫停是給多個帳號、總覽頁用的；三個都沒開（只玩一個帳號）就不用每 2 秒去問中繼站
+  function usesRelay(settings) {
+    return Boolean(settings.dashboardEnabled || settings.turnTakingEnabled || settings.syncAccountsEnabled);
+  }
+
   async function pollGlobalPause(settings) {
+    if (!usesRelay(settings)) {
+      globalPause.mode = 'run';
+      globalPause.error = '';
+      return;
+    }
     if (Date.now() - globalPause.checkedAt < GLOBAL_POLL_MILLISECONDS) return;
     globalPause.checkedAt = Date.now();
     try {
