@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.64
+// @version      3.65
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -281,6 +281,9 @@
     miningPlans: '{}',
     // 收礦順序（heroId 陣列，JSON）；有的角色要最後收
     miningOrder: '[]',
+    // 工頭：全部收礦前先進場 3 分鐘，大家收完再收回來（放太久會死）；一個工頭各礦場、伐木場都有效
+    miningForemanId: '',
+    miningForemanSite: '3',
     miningConditionRest: true,
     // 挖礦時不理會的異常狀態名稱（、分隔）：有這些也照常出發、不提早收
     miningIgnoreConditions: '',
@@ -782,7 +785,8 @@
         <button data-capture-hero="${group.id}:${index}" title="按下後手動替這位角色吃一次道具，自動記下 heroId">抓取</button></div>`;
     }).join('');
     const heroSection = forge
-      ? `<div class="row"><button data-load-heroes="${group.id}" title="讀取英雄列表，勾選負責鍛造的角色">從英雄列表勾選</button></div>
+      ? `<div class="hint" style="color:#4ade80">用「自動鍛造」佇列（API 鍛造）時，自動補這輪要開爐的角色，不用填 heroId，也不用勾「用 API 補給」；下面的 heroId 只給畫面按鈕鍛造用</div>
+        <div class="row"><button data-load-heroes="${group.id}" title="讀取英雄列表，勾選負責鍛造的角色">從英雄列表勾選</button></div>
         <div data-hero-choices="${group.id}" class="choices"></div>
         ${forgeHeroRows}`
       : group.id === 'resource'
@@ -1109,7 +1113,7 @@
       <input data-field="miningIgnoreConditions" type="hidden">
       <div style="font-size:12px">不理會這些異常（勾了照常挖）：<span data-role="mining-ignore"></span></div>
       <div class="row"><input data-role="mining-ignore-name" placeholder="沒看過的異常名稱，手動加" style="flex:1;min-width:0"><button data-action="mining-ignore-add">加入</button></div>
-      <input data-field="miningPlans" type="hidden"><input data-field="miningOrder" type="hidden">
+      <input data-field="miningPlans" type="hidden"><input data-field="miningOrder" type="hidden"><input data-field="miningForemanId" type="hidden"><input data-field="miningForemanSite" type="hidden">
       <div class="subhead">角色（選地點＝要挖；沒在跑「開始挖礦」時每 5 分鐘讀一次）</div>
       <div class="hint">要挖的角色一起出發、一起收：任一個時間到就照上面的順序（↑↓ 調整）全部收完，再一個一個出發</div>
       <div data-role="mining-heroes" style="font-size:12px"></div>
@@ -2038,6 +2042,8 @@
   }
 
   function usesItemApi(settings, group, index) {
+    // API 鍛造（佇列）不靠畫面按鈕，鍛造體力一定用 API 補，不用另外打開
+    if (group.id === 'forge' && forgeSupply.heroIds.length) return Boolean(heroIdForSlot(settings, group.id, index));
     return Boolean(group.healField && settings[groupKey(group.id, 'ApiEnabled')] && heroIdForSlot(settings, group.id, index));
   }
 
@@ -2049,8 +2055,11 @@
   }
 
   // 第幾條對應哪個角色：狩獵＝/api/huntInfo 隊伍的第幾位（排除的回傳 0）；鍛造＝自己勾的
+  // API 鍛造時補的是佇列裡這輪要開爐的角色，自己知道是誰，不用填 heroId；手填的只給畫面按鈕鍛造用
+  const forgeSupply = { heroIds: [] };
+
   function heroIdForSlot(settings, groupId, index) {
-    if (groupId === 'forge') return Number(settings[forgeHeroKey(index)]) || 0;
+    if (groupId === 'forge') return forgeSupply.heroIds.length ? forgeSupply.heroIds[index] || 0 : Number(settings[forgeHeroKey(index)]) || 0;
     const heroId = state.huntTeamIds[index] || 0;
     return excludedHuntHeroIds(settings).includes(heroId) ? 0 : heroId;
   }
@@ -13032,6 +13041,7 @@
   function stopForgeRunner(message) {
     if (!forgeRunner.running) return;
     forgeRunner.running = false;
+    forgeSupply.heroIds = [];
     // 狀態列會被掛機的訊息蓋掉，停下的原因另外留著顯示在監控區
     forgeRunner.stoppedReason = `${new Date().toLocaleTimeString('zh-TW', { hour12: false })} ${message || '已停止'}`;
     forgeRunner.runId++;
@@ -13171,6 +13181,7 @@
         // 開工後就不能吃體力藥，所以要在開工之前補；只用 API 補給，人不在鍛造頁也能補
         heroes.forEach((hero) => state.heroStats.set(hero.id, hero));
         state.heroStatsAt = Date.now();
+        forgeSupply.heroIds = idleHeroes.map((hero) => hero.id).slice(0, SLOT_COUNT);
         const supplyTarget = findSlotNeedingItem(settings, { forge: true });
         if (supplyTarget && usesItemApi(settings, supplyTarget.group, supplyTarget.index)) {
           useItem(settings, supplyTarget, { isCancelled: cancelled, onDone: () => scheduleForgeRunner(randomGap(1500, 3000)) });
@@ -13322,6 +13333,34 @@
     setPanelField('miningOrder', JSON.stringify(ids));
     saveSettings(readSettingsFromPanel());
     renderMiningHeroes();
+  }
+
+  function miningForemanId(settings) {
+    return Number(settings.miningForemanId) || 0;
+  }
+
+  function canSendForeman(settings, hero) {
+    if (hero.actionState || hero.perished || hero.hp <= 0 || !inTownHero(hero) || inHuntTeam(hero)) return false;
+    if (forgeByApiHeroIds(settings).includes(hero.id)) return false;
+    return !(settings.miningConditionRest && miningConditions(settings, hero).length);
+  }
+
+  async function sendForeman(settings, foreman, data, opened) {
+    const site = Number(settings.miningForemanSite) || 3;
+    const pageHero = await openGameHeroPage(foreman, opened);
+    if (!canSendForeman(settings, pageHero)) return false;
+    syncGameHeroAction(await requestGameApi(`${HEROES_API}/${foreman.id}/mining/${site}`, { method: 'POST' }), 'mine');
+    data.foreman = { heroId: foreman.id, at: Date.now(), site };
+    saveMining(data);
+    return true;
+  }
+
+  async function collectForeman(settings, foreman, data, opened) {
+    const pageHero = await openGameHeroPage(foreman, opened);
+    const after = await completeMiningAction(settings, pageHero, data, 'foreman');
+    delete data.foreman;
+    saveMining(data);
+    return after;
   }
 
   function canCompleteNow(hero, now) {
@@ -13771,9 +13810,11 @@
     const runId = miningRunner.runId;
     const cancelled = () => runId !== miningRunner.runId;
     const plans = miningPlans(settings);
+    const foremanId = miningForemanId(settings);
     const heroIds = Object.keys(plans)
       .filter((id) => MINING_SITES[plans[id]])
-      .map(Number);
+      .map(Number)
+      .filter((id) => id !== foremanId);
     if (!heroIds.length) {
       stopMiningRunner('還沒選要挖礦的角色（挖礦頁每個角色選地點）');
       return;
@@ -13799,9 +13840,32 @@
       const free = ordered.filter((hero) => !miningHeldUntil(data, hero.id, now));
       const mining = free.filter((hero) => hero.actionState === 4);
       const due = mining.some((hero) => miningCollectAt(settings, hero, data, now) <= now);
+      // 工頭：要收礦了先派進場，滿 3 分鐘才開始收；大家收完再收回來。上一輪沒收到的（例如中途重整）有空就先收
+      const foreman = foremanId ? byId.get(foremanId) : null;
+      const foremanSent = Boolean(foreman && data.foreman && data.foreman.heroId === foreman.id && foreman.actionState === 4);
+      let waitForeman = false;
+      if (foreman && foremanSent && !canCompleteNow(foreman, now)) {
+        waits.push(Date.parse(foreman.actionCompleteTime) || now + 60000);
+        waitForeman = due;
+      } else if (foreman && foremanSent && !due) {
+        await collectForeman(settings, foreman, data, opened);
+        actions.push(`收回工頭 ${foreman.name}`);
+      } else if (foreman && due && foreman.actionState !== 4) {
+        if (await sendForeman(settings, foreman, data, opened)) {
+          actions.push(`工頭 ${foreman.name} 先進${MINING_SITES[data.foreman.site]}，3 分鐘後開始收礦`);
+          waits.push(Date.now() + 3 * 60000 + randomGap(5000, 20000));
+          waitForeman = true;
+        } else if (!miningNotified.has(`foreman:${foreman.id}`)) {
+          // 工頭不能出門（在打怪、鍛造、休息、有異常…）：這輪不等它，照常收
+          miningNotified.add(`foreman:${foreman.id}`);
+          showToast(`挖礦：工頭 ${foreman.name} 現在不能進場，這次沒有工頭照常收礦`);
+        }
+        if (cancelled()) return;
+      }
+      if (foreman && !foremanSent && foreman.actionState === 0) miningNotified.delete(`foreman:${foreman.id}`);
       for (const hero of mining) {
-        if (!due) {
-          waits.push(miningCollectAt(settings, hero, data, now));
+        if (!due || waitForeman) {
+          if (!waitForeman) waits.push(miningCollectAt(settings, hero, data, now));
           continue;
         }
         if (!canCompleteNow(hero, now)) {
@@ -13816,6 +13880,17 @@
         } catch (error) {
           if (error.captchaRequired) throw error;
           actions.push(`${hero.name}：${error.message}`);
+        }
+        if (cancelled()) return;
+      }
+      if (foremanSent && due && !waitForeman) {
+        try {
+          await collectForeman(settings, foreman, data, opened);
+          actions.push(`收回工頭 ${foreman.name}`);
+        } catch (error) {
+          if (error.captchaRequired) throw error;
+          actions.push(`工頭 ${foreman.name}：${error.message}`);
+          waits.push(Date.now() + 60000);
         }
         if (cancelled()) return;
       }
@@ -13992,8 +14067,18 @@
     const now = Date.now();
     const order = miningOrderedIds(settings, plannedMiningIds(settings));
     const rank = (hero) => (order.includes(hero.id) ? order.indexOf(hero.id) : Infinity);
+    const foremanId = miningForemanId(settings);
+    const selectStyle = 'flex:none;max-width:130px;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px';
+    const foremanRow = `<div class="row" style="margin:0 0 4px">工頭
+        <select data-mining-foreman style="${selectStyle}"><option value="">不用</option>${data.heroes
+          .map((hero) => `<option value="${hero.id}" ${hero.id === foremanId ? 'selected' : ''}>${escapeHtml(hero.name)}</option>`)
+          .join('')}</select>
+        進 <select data-mining-foreman-site style="${selectStyle}">${Object.entries(MINING_SITES)
+          .map(([value, name]) => `<option value="${value}" ${String(settings.miningForemanSite) === value ? 'selected' : ''}>${name}</option>`)
+          .join('')}</select></div>
+      <div class="hint" style="margin-top:0">要收礦時先讓工頭進場 3 分鐘，全部收完再把工頭收回來（放太久會死），工頭不算挖礦角色</div>`;
     box.innerHTML = data.heroes.length
-      ? data.heroes
+      ? foremanRow + data.heroes
           .slice()
           .sort((first, second) => rank(first) - rank(second) || Number(second.actionState === 4) - Number(first.actionState === 4) || (second.mining || 0) - (first.mining || 0))
           .map((hero) => {
@@ -14007,6 +14092,11 @@
             const blocked = inHuntTeam(hero) ? '狩獵隊伍（不會被拿去挖）' : queued.includes(hero.id) ? '鍛造佇列（不會被拿去挖）' : heldText;
             const ignored = miningIgnoredConditions(settings);
             const conditions = heroConditions(hero).map((condition) => `${condition.name}${condition.level}${ignored.includes(condition.name) ? '（不理會）' : ''}`);
+            if (hero.id === foremanId) {
+              return `<div class="row" style="margin:0;padding:3px 0;border-bottom:1px solid #2e2e34">
+                <div style="flex:1;min-width:0"><b>${escapeHtml(hero.name)}</b> <span style="color:#facc15">工頭</span>
+                  <div style="color:${hero.actionState === 4 ? '#60a5fa' : '#a0a0aa'}">${escapeHtml(miningHeroText(hero, data, now, settings))}</div></div></div>`;
+            }
             const options = [['', '不挖'], ...Object.entries(MINING_SITES)]
               .map(([value, name]) => `<option value="${value}" ${String(plans[hero.id] || '') === value ? 'selected' : ''}>${name}</option>`)
               .join('');
@@ -14026,7 +14116,7 @@
         .slice(0, 10)
         .map((entry) => {
           const time = new Date(entry.t).toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit' });
-          const what = entry.kind === 'mine' ? `${entry.site}挖 ${entry.minutes} 分` : `休息 ${entry.minutes} 分`;
+          const what = entry.kind === 'mine' ? `${entry.site}挖 ${entry.minutes} 分` : entry.kind === 'foreman' ? `工頭 ${entry.minutes} 分` : `休息 ${entry.minutes} 分`;
           return `<div${entry.accident ? ' style="color:#fb923c"' : ''}>${time} ${escapeHtml(entry.name)} ${what}：${escapeHtml(entry.text || '-')}</div>`;
         })
         .join('') || '<div class="hint">還沒有</div>';
@@ -14054,7 +14144,26 @@
 
   let miningRenderPending = false;
   panel.addEventListener('focusout', (event) => {
-    if (miningRenderPending && event.target.dataset && event.target.dataset.miningHero) setTimeout(renderMiningHeroes, 0);
+    if (miningRenderPending && event.target.dataset && (event.target.dataset.miningHero || event.target.dataset.miningForeman !== undefined || event.target.dataset.miningForemanSite !== undefined)) setTimeout(renderMiningHeroes, 0);
+  });
+
+  panel.addEventListener('change', (event) => {
+    if (!event.target.dataset) return;
+    if (event.target.dataset.miningForemanSite !== undefined) {
+      setPanelField('miningForemanSite', event.target.value);
+    } else if (event.target.dataset.miningForeman !== undefined) {
+      setPanelField('miningForemanId', event.target.value);
+      // 工頭不當挖礦角色
+      const plans = miningPlans(readSettingsFromPanel());
+      delete plans[event.target.value];
+      setPanelField('miningPlans', JSON.stringify(plans));
+    } else {
+      return;
+    }
+    saveSettings(readSettingsFromPanel());
+    event.target.blur();
+    renderMiningHeroes();
+    wakeMiningRunner();
   });
 
   panel.addEventListener('change', (event) => {
