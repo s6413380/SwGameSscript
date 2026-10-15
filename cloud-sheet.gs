@@ -11,12 +11,15 @@ const SHEETS = {
   transfers: ['key', 'transferId', 'from', 'to', 'amount', 'mine', 'token', 'event', 'at', 'contributor', 'uploadedAt'],
   // 角色遇過的異常狀態名稱（中毒…），挖礦「不理會」的勾選清單大家共用
   conditions: ['name', 'seenAt', 'contributor', 'uploadedAt'],
+  // 抽卡結果（英雄 id 唯一）、刮刮樂每次的花費與獎項（prizes 是 JSON），大家的合起來看機率
+  draws: ['heroId', 'at', 'item', 'type', 'tier', 'potential', 'contributor', 'uploadedAt'],
+  scratches: ['key', 'at', 'card', 'count', 'cost', 'won', 'prizes', 'contributor', 'uploadedAt'],
 };
 // 跟遊戲腳本的 CLOUD_PAGE_ROWS 要一樣，腳本靠「拿到的列數少於這個」判斷已經抓完
 const PAGE_ROWS = 3000;
 // 網址拿到的人都能寫，限制單次大小避免被灌爆
 const MAX_ROWS_PER_POST = 2000;
-const MAX_TEXT_LENGTH = 500;
+const MAX_TEXT_LENGTH = 2000;
 
 function sheetFor(name) {
   const book = SpreadsheetApp.getActiveSpreadsheet();

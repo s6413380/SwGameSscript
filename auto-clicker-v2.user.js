@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.61
+// @version      3.62
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1197,15 +1197,15 @@
     </div>
 
     <div data-tab="draw">
-      <div class="hint">在遊戲物品頁用英雄券這類道具抽卡時自動記下抽到什麼（這個瀏覽器、這個帳號自己的紀錄）</div>
-      <div class="row"><select data-role="draw-item" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select><button data-action="draw-clear">清除紀錄</button></div>
+      <div class="hint">在遊戲物品頁用英雄券這類道具抽卡時自動記下抽到什麼。開了雲端同步會上傳，也能看大家（照雲端頁的署名分上傳者）的紀錄</div>
+      <div class="row"><select data-role="draw-scope" style="flex:none;max-width:120px;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select><select data-role="draw-item" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select><button data-action="draw-clear">清除紀錄</button></div>
       <div data-role="draw-stats"></div>
     </div>
 
     <div data-tab="scratch">
-      <div class="hint">在遊戲賭場刮刮樂時自動記下花多少、中什麼（這個瀏覽器、這個帳號自己的紀錄）。清除後從零開始算</div>
+      <div class="hint">在遊戲賭場刮刮樂時自動記下花多少、中什麼。清除只清自己這邊、從零開始算；開了雲端同步會上傳，也能看大家的</div>
       <div class="row">道具估價<input data-field="scratchItemValues" placeholder="英雄券=35000, 寵物券=5000" style="flex:1;min-width:0" title="名稱=價格，用逗號分開；獎項文字裡有這個名稱就照這個價格算進損益，改了連以前的紀錄一起重算"></div>
-      <div class="row"><select data-role="scratch-card" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="">全部刮刮樂</option><option value="regular">200 元</option><option value="premium">1,600 元</option></select><button data-action="scratch-clear">清除紀錄</button></div>
+      <div class="row"><select data-role="scratch-scope" style="flex:none;max-width:120px;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select><select data-role="scratch-card" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="">全部刮刮樂</option><option value="regular">200 元</option><option value="premium">1,600 元</option></select><button data-action="scratch-clear">清除紀錄</button></div>
       <div data-role="scratch-stats"></div>
     </div>
 
@@ -9959,7 +9959,7 @@
   }
 
   function renderDrawStats() {
-    const all = readJsonStorage(DRAW_LOG_KEY, []);
+    const all = statsRecords('draw', ownCloudDraws(), readJsonStorage(CLOUD_DRAWS_KEY, []), (draw) => String(draw.heroId));
     const select = panel.querySelector('[data-role="draw-item"]');
     const items = [...new Set(all.map((draw) => draw.item))];
     const chosen = items.includes(select.value) ? select.value : '';
@@ -9987,7 +9987,7 @@
       .reverse()
       .map((draw) => {
         const time = new Date(draw.at).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-        return `<div>${time} ${escapeHtml(draw.type)}（稀有度 ${escapeHtml(draw.tier || '?')}，潛能 ${escapeHtml(draw.potential || '?')}）${chosen ? '' : `　${escapeHtml(draw.item)}`}</div>`;
+        return `<div>${time} ${escapeHtml(draw.type)}（稀有度 ${escapeHtml(draw.tier || '?')}，潛能 ${escapeHtml(draw.potential || '?')}）${chosen ? '' : `　${escapeHtml(draw.item)}`}${draw.by ? `　<span style="color:#93c5fd">${escapeHtml(draw.by)}</span>` : ''}</div>`;
       })
       .join('');
     const since = new Date(draws[0].at).toLocaleDateString();
@@ -10079,7 +10079,7 @@
     const settings = readSettingsFromPanel();
     const rules = scratchItemValueRules(settings);
     const select = panel.querySelector('[data-role="scratch-card"]');
-    const all = readJsonStorage(SCRATCH_LOG_KEY, []);
+    const all = statsRecords('scratch', ownCloudScratches(), readJsonStorage(CLOUD_SCRATCH_KEY, []), (play) => play.key);
     const plays = select.value ? all.filter((play) => play.card === select.value) : all;
     const box = panel.querySelector('[data-role="scratch-stats"]');
     if (!plays.length) {
@@ -10150,7 +10150,7 @@
         const items = Object.entries(play.prizes)
           .filter(([key]) => !key.startsWith('money\u0000') && (key.startsWith('item\u0000') || scratchPrizeValue(rules, key.split('\u0000')[1])))
           .map(([key, times]) => `${key.split('\u0000')[1]}${times > 1 ? ` ×${times}` : ''}`);
-        return `<tr><td style="text-align:left;color:#a0a0aa">${time}</td><td>${(SCRATCH_CARDS[play.card] || { label: play.card }).label}×${play.count}</td><td>${scratchNetHtml(part.net)}</td></tr>${
+        return `<tr><td style="text-align:left;color:#a0a0aa">${time}${play.by ? `<div style="color:#93c5fd">${escapeHtml(play.by)}</div>` : ''}</td><td>${(SCRATCH_CARDS[play.card] || { label: play.card }).label}×${play.count}</td><td>${scratchNetHtml(part.net)}</td></tr>${
           items.length ? `<tr><td colspan="3" style="text-align:left;white-space:normal;color:#fbbf24;padding-top:0">└ ${escapeHtml(items.join('、'))}</td></tr>` : ''
         }`;
       })
@@ -10164,6 +10164,93 @@
       ${dayTable}
       <details><summary>獎項分布（${prizeCounts.size} 種）</summary><table class="combat" style="width:100%"><tr><th style="text-align:left">獎項</th><th>次</th><th>每張</th><th>估價</th></tr>${prizeRows}</table></details>
       <details><summary>最近 ${Math.min(SCRATCH_RECENT_COUNT, plays.length)} 次</summary><table class="combat" style="width:100%">${recent}</table></details>`;
+  }
+
+  // 抽卡、刮刮樂上雲端：大家的紀錄合起來機率才準。每筆記上傳者（雲端頁的署名），統計頁可以分人看
+  const CLOUD_DRAWS_KEY = 'autoClickerV2CloudDraws';
+  const CLOUD_SCRATCH_KEY = 'autoClickerV2CloudScratch';
+  const CLOUD_STATS_LIMIT = 20000;
+  const OWN_SCOPE = '';
+  const ALL_SCOPE = '*';
+
+  // 英雄 id 全遊戲唯一，抽卡用它當鍵
+  function ownCloudDraws() {
+    return readJsonStorage(DRAW_LOG_KEY, []).filter((draw) => draw.heroId);
+  }
+
+  // 刮刮樂沒有編號，用帳號 id＋時間當鍵；還不知道帳號 id 就先不傳
+  function ownCloudScratches() {
+    const id = dashboard.profile && dashboard.profile.id;
+    return id ? readJsonStorage(SCRATCH_LOG_KEY, []).map((play) => ({ ...play, key: `${id}-${play.at}` })) : readJsonStorage(SCRATCH_LOG_KEY, []);
+  }
+
+  function cloudDrawRows() {
+    return ownCloudDraws().map((draw) => [String(draw.heroId), draw.at, draw.item || '', draw.type || '', String(draw.tier || ''), String(draw.potential || '')]);
+  }
+
+  function cloudScratchRows() {
+    return ownCloudScratches()
+      .filter((play) => play.key)
+      .map((play) => [play.key, play.at, play.card, play.count, play.cost, play.won, JSON.stringify(play.prizes)]);
+  }
+
+  // 下載的列最後一欄是上傳者
+  function importCloudStatRows(storageKey, rows, toRecord, keyOf) {
+    if (!rows.length) return 0;
+    const list = readJsonStorage(storageKey, []);
+    const known = new Set(list.map(keyOf));
+    let added = 0;
+    rows.forEach((row) => {
+      const record = toRecord(row);
+      if (!record || known.has(keyOf(record))) return;
+      known.add(keyOf(record));
+      list.push({ ...record, by: String(row[row.length - 1] || '未署名') });
+      added++;
+    });
+    if (added) writeJsonStorage(storageKey, list.slice(-CLOUD_STATS_LIMIT));
+    return added;
+  }
+
+  function importCloudDraws(rows) {
+    return importCloudStatRows(
+      CLOUD_DRAWS_KEY,
+      rows,
+      (row) => ({ heroId: Number(row[0]), at: Number(row[1]) || 0, item: String(row[2]), type: String(row[3]), tier: String(row[4]), potential: String(row[5]) }),
+      (draw) => String(draw.heroId)
+    );
+  }
+
+  function importCloudScratches(rows) {
+    return importCloudStatRows(
+      CLOUD_SCRATCH_KEY,
+      rows,
+      (row) => {
+        const prizes = parseJsonText(String(row[6]));
+        if (!prizes) return null;
+        return { key: String(row[0]), at: Number(row[1]) || 0, card: String(row[2]), count: Number(row[3]) || 0, cost: Number(row[4]) || 0, won: Number(row[5]) || 0, prizes };
+      },
+      (play) => play.key
+    );
+  }
+
+  // 範圍：自己這邊／雲端全部／某個上傳者。雲端全部＝雲端下載的＋自己還沒傳上去的
+  function statsRecords(kind, own, cloud, keyOf) {
+    const select = panel.querySelector(`[data-role="${kind}-scope"]`);
+    const me = readSettingsFromPanel().cloudName || '自己';
+    const cloudKeys = new Set(cloud.map(keyOf));
+    const merged = [...cloud, ...own.filter((record) => !keyOf(record) || !cloudKeys.has(keyOf(record))).map((record) => ({ ...record, by: me }))].sort(
+      (first, second) => first.at - second.at
+    );
+    const uploaders = [...new Set(merged.map((record) => record.by))];
+    const chosen = select.value === ALL_SCOPE || uploaders.includes(select.value) ? select.value : OWN_SCOPE;
+    const option = (value, label) => `<option value="${escapeHtml(value)}" ${value === chosen ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+    select.innerHTML = [
+      option(OWN_SCOPE, `自己（${own.length}）`),
+      ...(cloud.length ? [option(ALL_SCOPE, `雲端全部（${uploaders.length} 人）`)] : []),
+      ...(cloud.length ? uploaders.map((name) => option(name, `${name}（${merged.filter((record) => record.by === name).length}）`)) : []),
+    ].join('');
+    if (chosen === OWN_SCOPE) return own;
+    return chosen === ALL_SCOPE ? merged : merged.filter((record) => record.by === chosen);
   }
 
   // 自己沒記到的名稱，再看鍛造工具腳本有沒有記
@@ -11129,7 +11216,7 @@
     const saved = readJsonStorage(CLOUD_STATE_KEY, null);
     const fresh = { url, sentGrowth: [], sentEquipments: [], growthRow: 0, equipmentRow: 0 };
     // 舊的同步紀錄沒有地圖這兩欄，補上就好，不用整個重來
-    const added = { sentPlaces: [], placeRow: 0, sentConditions: [], conditionRow: 0 };
+    const added = { sentPlaces: [], placeRow: 0, sentConditions: [], conditionRow: 0, sentDraws: [], drawRow: 0, sentScratches: [], scratchRow: 0 };
     return saved && saved.url === url ? { ...added, ...saved } : { ...fresh, ...added };
   }
 
@@ -11308,9 +11395,30 @@
           saveCloudState(saved);
         }
       }
+      // 抽卡、刮刮樂：舊版試算表沒有這兩個分頁（回應裡沒有），先不記成已傳
+      for (const [name, rows, sentKey] of [['draws', cloudDrawRows(), 'sentDraws'], ['scratches', cloudScratchRows(), 'sentScratches']]) {
+        const sent = new Set(saved[sentKey]);
+        const fresh = rows.filter((row) => !sent.has(row[0]));
+        for (let start = 0; start < fresh.length; start += CLOUD_BATCH_ROWS) {
+          const batch = fresh.slice(start, start + CLOUD_BATCH_ROWS);
+          const result = await cloudRequest(url, { method: 'POST', body: JSON.stringify({ contributor: settings.cloudName || '未署名', [name]: batch }) });
+          if (result.added[name] === undefined) break;
+          uploaded += result.added[name];
+          batch.forEach((row) => sent.add(row[0]));
+          saved[sentKey] = [...sent];
+          saveCloudState(saved);
+        }
+      }
       let downloaded = 0;
       for (;;) {
-        const page = await cloudRequest(`${url}?after_growth=${saved.growthRow}&after_equipment=${saved.equipmentRow}&after_places=${saved.placeRow}&after_conditions=${saved.conditionRow}`);
+        const page = await cloudRequest(
+          `${url}?after_growth=${saved.growthRow}&after_equipment=${saved.equipmentRow}&after_places=${saved.placeRow}&after_conditions=${saved.conditionRow}&after_draws=${saved.drawRow}&after_scratches=${saved.scratchRow}`
+        );
+        const drawPage = page.draws || { rows: [], next: saved.drawRow };
+        const scratchPage = page.scratches || { rows: [], next: saved.scratchRow };
+        downloaded += importCloudDraws(drawPage.rows) + importCloudScratches(scratchPage.rows);
+        saved.drawRow = drawPage.next;
+        saved.scratchRow = scratchPage.next;
         const placePage = page.places || { rows: [], next: saved.placeRow };
         const conditionPage = page.conditions || { rows: [], next: saved.conditionRow };
         downloaded += importCloudGrowth(page.growth.rows) + importCloudEquipments(page.equipment.rows) + importCloudPlaces(placePage.rows);
@@ -11320,12 +11428,14 @@
         saved.placeRow = placePage.next;
         saved.conditionRow = conditionPage.next;
         saveCloudState(saved);
-        if ([page.growth, page.equipment, placePage, conditionPage].every((part) => part.rows.length < CLOUD_PAGE_ROWS)) break;
+        if ([page.growth, page.equipment, placePage, conditionPage, drawPage, scratchPage].every((part) => part.rows.length < CLOUD_PAGE_ROWS)) break;
       }
       const time = new Date().toLocaleTimeString('zh-TW', { hour12: false });
-      setCloudStatus(`上次同步 ${time}：上傳 ${uploaded} 筆、下載新增 ${downloaded} 筆；雲端共 ${saved.growthRow} 筆升級、${saved.equipmentRow} 件裝備、${saved.placeRow} 筆地圖、${saved.conditionRow} 種異常`);
+      setCloudStatus(`上次同步 ${time}：上傳 ${uploaded} 筆、下載新增 ${downloaded} 筆；雲端共 ${saved.growthRow} 筆升級、${saved.equipmentRow} 件裝備、${saved.placeRow} 筆地圖、${saved.conditionRow} 種異常、${saved.drawRow} 筆抽卡、${saved.scratchRow} 次刮刮樂`);
       if (downloaded && activeTab === 'growth') renderGrowthSummary();
       if (downloaded && activeTab === 'material') renderMaterialSummary();
+      if (downloaded && activeTab === 'draw') renderDrawStats();
+      if (downloaded && activeTab === 'scratch') renderScratchStats();
     } catch (error) {
       setCloudStatus(`雲端同步失敗（${error.message}）`);
     } finally {
@@ -14909,6 +15019,8 @@
   // data-role 的欄位不會進設定的 change 處理，篩選道具要自己接
   panel.querySelector('[data-role="draw-item"]').addEventListener('change', renderDrawStats);
   panel.querySelector('[data-role="scratch-card"]').addEventListener('change', renderScratchStats);
+  panel.querySelector('[data-role="scratch-scope"]').addEventListener('change', renderScratchStats);
+  panel.querySelector('[data-role="draw-scope"]').addEventListener('change', renderDrawStats);
   panel.querySelector('[data-role="material-summary"]').addEventListener('input', (event) => {
     const name = event.target.dataset.enchantMaterial;
     if (name === undefined) return;
