@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.72
+// @version      3.73
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -326,6 +326,8 @@
     qualityPickMinMilliseconds: 300,
     qualityPickMaxMilliseconds: 800,
     dashboardEnabled: false,
+    // 中繼站總開關：關掉就完全不連（總覽、全體暫停、多開輪流、同步、成長備份、帳號轉移都不會動）；單開也能開著用
+    relayEnabled: true,
     dashboardUrl: 'http://localhost:8787',
     // 轉金幣時請對方掛單用的材料（掛 1 個，價格＝要轉的金額）
     transferMine: '泥土',
@@ -853,6 +855,8 @@
       <div class="hint">完全休息跟睡覺一樣：不打怪、不開爐、不收鍛造，休閒的「回來看一下」也不會有。不管哪種玩法都照這個時段停</div>
       <div class="hint">開了之後掛機、API 鍛造每一步多等 1～8 秒（多數短、偶爾長），偶爾分心停 0.5～2 分鐘，要補給、換裝時晚幾秒才反應，動作之間的間隔也拉長；玩一陣子就整個停下休息，晚上睡覺。休息、睡覺時不會打怪、開爐，也不會躲紅名（血量、活人驗證照常監控）。反應變慢，補給門檻設高一點比較安全</div>
       <div class="hint" data-role="low-profile-personality"></div>
+      <label class="row"><input data-field="relayEnabled" type="checkbox" style="flex:none;width:auto"> <b>使用中繼站</b>（總開關）</label>
+      <div class="hint">要先開中繼站（啟動中繼站.cmd）。打開才能用總覽頁、「全體」暫停、成長紀錄備份，單開一個帳號也能用；關掉就完全不連中繼站，下面的多開輪流、同步也跟著不作用</div>
       <label class="row"><input data-field="turnTakingEnabled" type="checkbox" style="flex:none;width:auto"> <b>多開輪流</b>（同一台電腦的帳號一次只有一個送出請求）</label>
       <div class="row"><b>主帳號</b> <input data-field="mainAccountName" placeholder="留空＝沒有" style="width:110px;flex:none"> <button data-action="main-account-me" style="flex:none">設成這個帳號</button></div>
       <div class="row">小號打怪頻率是主帳號的 ${numberInput('sideHuntPercent', 'min="10" max="100" step="5"')} %</div>
@@ -2240,7 +2244,7 @@
   async function latestPublishedVersion(settings) {
     let relayVersion = '';
     // 中繼站沒開就 10 分鐘後再問，不要每分鐘一直連；新版照樣從 GitHub 拿得到
-    if (Date.now() >= (autoUpdate.relayDownUntil || 0)) {
+    if (relayOn(settings) && Date.now() >= (autoUpdate.relayDownUntil || 0)) {
       try {
         relayVersion = await fetchVersionText(`${dashboardBaseUrl(settings)}/version`);
       } catch {
@@ -2402,6 +2406,10 @@
     };
   }
 
+  function relayOn(settings) {
+    return settings.relayEnabled !== false;
+  }
+
   function dashboardBaseUrl(settings) {
     return String(settings.dashboardUrl || '').replace(/\/+$/, '');
   }
@@ -2423,7 +2431,7 @@
     const settings = readSettingsFromPanel();
     leaveDashboard(settings);
     // 關分頁時剛好輪到自己，不放手的話別的帳號要等租約過期
-    if (settings.turnTakingEnabled) {
+    if (relayOn(settings) && settings.turnTakingEnabled) {
       try {
         navigator.sendBeacon(`${dashboardBaseUrl(settings)}/turn/release?id=${encodeURIComponent(TURN_ID)}`, '');
         if (transferWatch.arm) navigator.sendBeacon(`${dashboardBaseUrl(settings)}/turn/transfer/end?id=${encodeURIComponent(TRANSFER_TURN_ID)}`, '');
@@ -2565,6 +2573,7 @@
 
   // 同一個帳號可能開好幾個分頁，取最近回報的那個
   async function relayAccounts(settings) {
+    if (!relayOn(settings)) throw new Error('中繼站總開關沒開（打怪 → 主流程「使用中繼站」）');
     const response = await window.fetch(`${dashboardBaseUrl(settings)}/status`, { cache: 'no-store' });
     if (!response.ok) throw new Error(`中繼站回應 HTTP ${response.status}`);
     const { accounts = [] } = await response.json();
@@ -3696,7 +3705,7 @@
   const commandPoll = { at: 0, busy: false, unsupported: false };
 
   async function pollDashboardCommands(settings) {
-    if (!settings.dashboardEnabled || !dashboard.reportingId || commandPoll.busy || commandPoll.unsupported) return;
+    if (!relayOn(settings) || !settings.dashboardEnabled || !dashboard.reportingId || commandPoll.busy || commandPoll.unsupported) return;
     if (Date.now() - commandPoll.at < DASHBOARD_COMMAND_POLL_MILLISECONDS) return;
     commandPoll.at = Date.now();
     commandPoll.busy = true;
@@ -3716,6 +3725,7 @@
   }
 
   async function reportToDashboard(settings) {
+    if (!relayOn(settings)) return;
     if (!settings.dashboardEnabled) leaveDashboard(settings);
     if (!settings.dashboardEnabled || dashboard.sending) return;
     if (Date.now() - dashboard.reportedAt < DASHBOARD_REPORT_MILLISECONDS) return;
@@ -3799,6 +3809,7 @@
   }
 
   async function pushSharedSettings(settings) {
+    if (!relayOn(settings)) return;
     const at = Date.now();
     const values = Object.fromEntries(SHARED_SETTING_KEYS.map((key) => [key, settings[key]]));
     try {
@@ -3817,7 +3828,7 @@
   }
 
   async function syncSharedSettings(settings) {
-    if (!settings.syncAccountsEnabled || Date.now() - sharedSettings.checkedAt < SHARED_SETTINGS_POLL_MILLISECONDS) return;
+    if (!relayOn(settings) || !settings.syncAccountsEnabled || Date.now() - sharedSettings.checkedAt < SHARED_SETTINGS_POLL_MILLISECONDS) return;
     sharedSettings.checkedAt = Date.now();
     try {
       const response = await window.fetch(`${dashboardBaseUrl(settings)}/shared`, { cache: 'no-store' });
@@ -3979,13 +3990,9 @@
     renderGlobalButtons();
   }
 
-  // 「全體」暫停是給多個帳號、總覽頁用的；三個都沒開（只玩一個帳號）就不用每 2 秒去問中繼站
-  function usesRelay(settings) {
-    return Boolean(settings.dashboardEnabled || settings.turnTakingEnabled || settings.syncAccountsEnabled);
-  }
-
+  // 「全體」暫停放在中繼站；中繼站總開關關著就不問，當成沒暫停
   async function pollGlobalPause(settings) {
-    if (!usesRelay(settings)) {
+    if (!relayOn(settings)) {
       globalPause.mode = 'run';
       globalPause.error = '';
       return;
@@ -4005,6 +4012,10 @@
 
   async function setGlobalPause(settings, mode) {
     const minutes = Math.max(1, Number(settings.globalPauseMinutes) || 10);
+    if (!relayOn(settings)) {
+      setStatus('「全體」按鈕要用中繼站：到 打怪 → 主流程 打開「使用中繼站」');
+      return;
+    }
     try {
       const response = await window.fetch(`${dashboardBaseUrl(settings)}/global?mode=${mode}&minutes=${minutes}`, { method: 'POST' });
       if (!response.ok) throw new Error(response.status === 404 ? 'monitor-server.ps1 是舊版，請關掉重開' : `HTTP ${response.status}`);
@@ -4094,7 +4105,7 @@
   const queueOverview = { checkedAt: 0, entries: [], error: '' };
 
   async function pollQueueOverview(settings) {
-    if (!settings.dashboardEnabled || Date.now() - queueOverview.checkedAt < QUEUE_POLL_MILLISECONDS) return;
+    if (!relayOn(settings) || !settings.dashboardEnabled || Date.now() - queueOverview.checkedAt < QUEUE_POLL_MILLISECONDS) return;
     queueOverview.checkedAt = Date.now();
     try {
       const response = await window.fetch(`${dashboardBaseUrl(settings)}/status`, { cache: 'no-store' });
@@ -4144,7 +4155,7 @@
 
   function sendGameRequestUnpaused(path, { background = false, noLinger = false, ...options } = {}) {
     const settings = readSettingsFromPanel();
-    if (!settings.turnTakingEnabled) return sendGameRequestNow(path, options);
+    if (!relayOn(settings) || !settings.turnTakingEnabled) return sendGameRequestNow(path, options);
     if (background) return deferBackgroundRequest(settings, path, options);
     return sendInTurn(settings, path, options, { noLinger });
   }
@@ -4254,19 +4265,19 @@
 
   // 轉移開始時通知中繼站：之後只有標成轉移的請求拿得到操作權，其他帳號（和自己的掛機、鍛造）先等
   function beginTransferTurn(settings, milliseconds) {
-    if (!settings.turnTakingEnabled) return Promise.resolve();
+    if (!relayOn(settings) || !settings.turnTakingEnabled) return Promise.resolve();
     const mode = settings.transferTurnMode === 'fast' ? 'fast' : 'human';
     return askTurnRelay(settings, 'turn/transfer', 'POST', { id: TRANSFER_TURN_ID, query: `&mode=${mode}&ms=${Math.round(milliseconds)}` }).catch(() => {});
   }
 
   function endTransferTurn(settings) {
-    if (!settings.turnTakingEnabled) return Promise.resolve();
+    if (!relayOn(settings) || !settings.turnTakingEnabled) return Promise.resolve();
     return askTurnRelay(settings, 'turn/transfer/end', 'POST', { id: TRANSFER_TURN_ID }).catch(() => {});
   }
 
   // 轉移的一組請求（例如查到掛單接著買）在同一次操作權裡送完，中間不讓別的請求插進來
   function inTransferTurn(settings, run) {
-    if (!settings.turnTakingEnabled) return run();
+    if (!relayOn(settings) || !settings.turnTakingEnabled) return run();
     const next = transferTurnChain.then(async () => {
       const held = await takeTurn(settings, { id: TRANSFER_TURN_ID, transfer: true });
       try {
@@ -4280,7 +4291,7 @@
   }
 
   function turnMonitorText(settings) {
-    if (!settings.turnTakingEnabled) return '';
+    if (!relayOn(settings) || !settings.turnTakingEnabled) return '';
     if (turnTaking.error) return `多開輪流：${turnTaking.error}`;
     if (turnTaking.waitingSince && turnTaking.transferWaiting) return `多開輪流：帳號之間轉移中，先暫停（${Math.round((Date.now() - turnTaking.waitingSince) / 1000)} 秒）`;
     if (turnTaking.waitingSince) return `多開輪流：等其他帳號（${Math.round((Date.now() - turnTaking.waitingSince) / 1000)} 秒）`;
@@ -7056,7 +7067,7 @@
   // 多開輪流時，三個帳號的打怪時間先跟中繼站登記：撞在一起的往後挪一點，登記的時間到了操作權留給它，
   // 不用等別人讀完畫面、也不用跟別人搶
   function bookHuntSlot(settings, at) {
-    if (!settings.turnTakingEnabled || Date.now() < turnTaking.downUntil) return;
+    if (!relayOn(settings) || !settings.turnTakingEnabled || Date.now() < turnTaking.downUntil) return;
     const runId = state.runId;
     const timerId = state.timerId;
     askTurnRelay(settings, 'turn/plan', 'POST', { query: `&at=${Math.round(at)}` })
@@ -9668,7 +9679,7 @@
   }
 
   async function syncGrowth(settings) {
-    if (!settings.growthEnabled || !settings.growthSyncEnabled || growthSync.running) return;
+    if (!relayOn(settings) || !settings.growthEnabled || !settings.growthSyncEnabled || growthSync.running) return;
     if (Date.now() - growthSync.at < GROWTH_SYNC_MILLISECONDS) return;
     growthSync.running = true;
     growthSync.at = Date.now();
