@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.57
+// @version      3.58
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -337,6 +337,8 @@
     // toast＝右下角小提示＋系統通知，不打斷；popup＝照「提醒」頁設定（彈窗、聲音、紅框）
     cardAlertStyle: 'toast',
     cardBuyRules: '',
+    // 刮刮樂中的道具值多少錢（名稱=價格），算進損益
+    scratchItemValues: '英雄券=35000, 寵物券=5000',
     // 0＝不買：花的是真錢，一定要自己設上限
     cardBuyBudget: 0,
     cardBuyMaxCount: 1,
@@ -1193,6 +1195,7 @@
 
     <div data-tab="scratch">
       <div class="hint">在遊戲賭場刮刮樂時自動記下花多少、中什麼（這個瀏覽器、這個帳號自己的紀錄）。清除後從零開始算</div>
+      <div class="row">道具估價<input data-field="scratchItemValues" placeholder="英雄券=35000, 寵物券=5000" style="flex:1;min-width:0" title="名稱=價格，用逗號分開；獎項文字裡有這個名稱就照這個價格算進損益，改了連以前的紀錄一起重算"></div>
       <div class="row"><select data-role="scratch-card" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="">全部刮刮樂</option><option value="regular">200 元</option><option value="premium">1,600 元</option></select><button data-action="scratch-clear">清除紀錄</button></div>
       <div data-role="scratch-stats"></div>
     </div>
@@ -10005,20 +10008,51 @@
     return `<span style="color:${color}">${net > 0 ? '+' : ''}${scratchMoney(net)}</span>`;
   }
 
-  function scratchTotals(plays) {
-    const totals = { count: 0, cost: 0, won: 0, items: 0 };
+  // 「英雄券=35000, 寵物券=5000」→ [['英雄券', 35000], …]；長的名稱先比對，免得「高級英雄券」被當成「英雄券」
+  function scratchItemValueRules(settings) {
+    return String(settings.scratchItemValues || '')
+      .split(/[,，、\n]+/)
+      .map((part) => part.match(/^\s*(.+?)\s*[=＝:：]\s*([\d,]+)\s*$/))
+      .filter(Boolean)
+      .map((match) => [match[1], Number(match[2].replace(/,/g, ''))])
+      .sort((first, second) => second[0].length - first[0].length);
+  }
+
+  // 獎項文字裡的數量（× 3、x3）；沒寫就是 1 個
+  function scratchPrizeValue(rules, message) {
+    const rule = rules.find(([name]) => message.includes(name));
+    if (!rule) return 0;
+    const quantity = message.match(/[×xX]\s*(\d+)/);
+    return rule[1] * (quantity ? Number(quantity[1]) : 1);
+  }
+
+  function scratchTotals(plays, rules) {
+    const totals = { count: 0, cost: 0, won: 0, items: 0, itemValue: 0, unpriced: 0 };
     plays.forEach((play) => {
       totals.count += play.count;
       totals.cost += play.cost;
       totals.won += play.won;
       Object.entries(play.prizes).forEach(([key, times]) => {
-        if (key.startsWith('item\u0000')) totals.items += times;
+        const [kind, message] = key.split('\u0000');
+        if (kind === 'money') return;
+        const value = scratchPrizeValue(rules, message);
+        if (value) totals.itemValue += value * times;
+        else if (kind === 'item') totals.unpriced += times;
+        if (kind === 'item' || value) totals.items += times;
       });
     });
+    totals.net = totals.won + totals.itemValue - totals.cost;
+    totals.returnRate = totals.cost ? (totals.won + totals.itemValue) / totals.cost : 0;
     return totals;
   }
 
+  function scratchRateHtml(rate) {
+    return `<span style="color:${rate >= 1 ? '#4ade80' : '#f87171'}">${(rate * 100).toFixed(0)}%</span>`;
+  }
+
   function renderScratchStats() {
+    const settings = readSettingsFromPanel();
+    const rules = scratchItemValueRules(settings);
     const select = panel.querySelector('[data-role="scratch-card"]');
     const all = readJsonStorage(SCRATCH_LOG_KEY, []);
     const plays = select.value ? all.filter((play) => play.card === select.value) : all;
@@ -10027,34 +10061,46 @@
       box.innerHTML = '<div class="hint">還沒有刮刮樂紀錄：在遊戲的賭場刮刮樂，這裡就會記下來</div>';
       return;
     }
-    const totals = scratchTotals(plays);
-    const returnRate = totals.cost ? `${((totals.won / totals.cost) * 100).toFixed(1)}%` : '-';
-    // 每張平均：拿來判斷長期刮下去是賺是賠
-    const perCard = totals.count ? (totals.won - totals.cost) / totals.count : 0;
+    const totals = scratchTotals(plays, rules);
+    const tile = (label, value, sub = '') =>
+      `<div style="min-width:0;padding:5px 7px;border:1px solid #34343c;border-radius:6px;background:#222228">
+        <div style="color:#a0a0aa;font-size:11px">${label}</div><div style="font-size:16px;font-weight:bold">${value}</div>${sub ? `<div style="color:#a0a0aa;font-size:11px">${sub}</div>` : ''}</div>`;
+    const tiles = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin:4px 0">
+      ${tile('總損益（含道具）', scratchNetHtml(totals.net), `平均每張 ${scratchNetHtml(totals.count ? totals.net / totals.count : 0)}`)}
+      ${tile('回收率', scratchRateHtml(totals.returnRate), '100% 以上才是賺')}
+      ${tile('刮了', `${totals.count.toLocaleString()} 張`, `花費 ${scratchMoney(totals.cost)}`)}
+      ${tile('拿回', scratchMoney(totals.won + totals.itemValue), `現金 ${scratchMoney(totals.won)}＋道具 ${scratchMoney(totals.itemValue)}`)}
+    </div>
+    ${totals.unpriced ? `<div class="hint" style="color:#fbbf24">有 ${totals.unpriced} 個道具沒有估價，沒算進損益（在上面「道具估價」加上名稱=價格）</div>` : ''}`;
 
+    // 種類、每天共用同一種表：張數、花費、損益、回收率
+    const row = (label, list) => {
+      const part = scratchTotals(list, rules);
+      return `<tr><td style="text-align:left">${label}</td><td>${part.count.toLocaleString()}</td><td>${scratchMoney(part.cost)}</td><td>${scratchNetHtml(part.net)}</td><td>${scratchRateHtml(part.returnRate)}</td></tr>`;
+    };
+    const table = (title, rows) =>
+      `<table class="combat" style="width:100%"><tr><th style="text-align:left">${title}</th><th>張</th><th>花費</th><th>損益</th><th>回收</th></tr>${rows}</table>`;
+    const cardTable = select.value
+      ? ''
+      : table(
+          '種類',
+          Object.entries(SCRATCH_CARDS)
+            .map(([card, info]) => {
+              const list = plays.filter((play) => play.card === card);
+              return list.length ? row(info.label, list) : '';
+            })
+            .join('')
+        );
     const days = new Map();
     plays.forEach((play) => {
       const day = new Date(play.at).toLocaleDateString('zh-TW', { month: 'numeric', day: 'numeric' });
-      const list = days.get(day) || [];
-      list.push(play);
-      days.set(day, list);
+      days.set(day, [...(days.get(day) || []), play]);
     });
-    const dayRows = [...days.entries()]
-      .reverse()
-      .map(([day, list]) => {
-        const dayTotals = scratchTotals(list);
-        return `<tr><td style="text-align:left">${day}</td><td>${dayTotals.count}</td><td>${scratchMoney(dayTotals.cost)}</td><td>${scratchMoney(dayTotals.won)}</td><td>${scratchNetHtml(dayTotals.won - dayTotals.cost)}</td><td>${dayTotals.items || ''}</td></tr>`;
-      })
-      .join('');
-
-    const cardRows = Object.entries(SCRATCH_CARDS)
-      .map(([card, info]) => {
-        const list = plays.filter((play) => play.card === card);
-        if (!list.length) return '';
-        const cardTotals = scratchTotals(list);
-        return `<tr><td style="text-align:left">${info.label}</td><td>${cardTotals.count}</td><td>${scratchMoney(cardTotals.cost)}</td><td>${scratchMoney(cardTotals.won)}</td><td>${scratchNetHtml(cardTotals.won - cardTotals.cost)}</td><td>${cardTotals.items || ''}</td></tr>`;
-      })
-      .join('');
+    const dayRows = [...days.entries()].reverse().map(([day, list]) => row(day, list));
+    const shownDays = 7;
+    const dayTable = `${table('日期', dayRows.slice(0, shownDays).join(''))}${
+      dayRows.length > shownDays ? `<details><summary>更早 ${dayRows.length - shownDays} 天</summary>${table('日期', dayRows.slice(shownDays).join(''))}</details>` : ''
+    }`;
 
     const prizeCounts = new Map();
     plays.forEach((play) => {
@@ -10064,8 +10110,9 @@
       .sort((first, second) => second[1] - first[1])
       .map(([key, times]) => {
         const [kind, message] = key.split('\u0000');
-        const style = kind === 'item' ? ' style="text-align:left;color:#fbbf24"' : ' style="text-align:left"';
-        return `<tr><td${style}>${escapeHtml(message)}</td><td>${times}</td><td>${((times / totals.count) * 100).toFixed(1)}%</td></tr>`;
+        const value = kind === 'money' ? 0 : scratchPrizeValue(rules, message);
+        const isItem = kind === 'item' || value;
+        return `<tr><td style="text-align:left;white-space:normal;${isItem ? 'color:#fbbf24' : ''}">${escapeHtml(message)}</td><td>${times}</td><td>${((times / totals.count) * 100).toFixed(1)}%</td><td>${value ? scratchMoney(value) : isItem ? '<span style="color:#a0a0aa">未估</span>' : ''}</td></tr>`;
       })
       .join('');
 
@@ -10073,25 +10120,25 @@
       .slice(-SCRATCH_RECENT_COUNT)
       .reverse()
       .map((play) => {
+        const part = scratchTotals([play], rules);
         const time = new Date(play.at).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
         const items = Object.entries(play.prizes)
-          .filter(([key]) => key.startsWith('item\u0000'))
+          .filter(([key]) => !key.startsWith('money\u0000') && (key.startsWith('item\u0000') || scratchPrizeValue(rules, key.split('\u0000')[1])))
           .map(([key, times]) => `${key.split('\u0000')[1]}${times > 1 ? ` ×${times}` : ''}`);
-        return `<div>${time} ${(SCRATCH_CARDS[play.card] || { label: play.card }).label} × ${play.count} 張：${scratchNetHtml(play.won - play.cost)}${items.length ? `　<span style="color:#fbbf24">${escapeHtml(items.join('、'))}</span>` : ''}</div>`;
+        return `<tr><td style="text-align:left;color:#a0a0aa">${time}</td><td>${(SCRATCH_CARDS[play.card] || { label: play.card }).label}×${play.count}</td><td>${scratchNetHtml(part.net)}</td></tr>${
+          items.length ? `<tr><td colspan="3" style="text-align:left;white-space:normal;color:#fbbf24;padding-top:0">└ ${escapeHtml(items.join('、'))}</td></tr>` : ''
+        }`;
       })
       .join('');
 
-    const head = '<tr><th style="text-align:left">%s</th><th>張</th><th>花費</th><th>贏得</th><th>損益</th><th>道具</th></tr>';
     box.innerHTML = `
-      <div>共刮 <b>${totals.count}</b> 張（${new Date(plays[0].at).toLocaleDateString()} 起）</div>
-      <div>花費 <b>${scratchMoney(totals.cost)}</b>　贏得 <b>${scratchMoney(totals.won)}</b>　損益 <b>${scratchNetHtml(totals.won - totals.cost)}</b></div>
-      <div>回收率 <b>${returnRate}</b>　平均每張 ${scratchNetHtml(perCard)}${totals.items ? `　中道具 <b style="color:#fbbf24">${totals.items}</b> 次（道具價值沒算進損益）` : ''}</div>
-      ${select.value ? '' : `<table class="combat">${head.replace('%s', '種類')}${cardRows}</table>`}
+      <div style="color:#a0a0aa;font-size:11px">${new Date(plays[0].at).toLocaleDateString()} 起的紀錄</div>
+      ${tiles}
+      ${cardTable}
       <div class="subhead">每天</div>
-      <table class="combat">${head.replace('%s', '日期')}${dayRows}</table>
-      <details><summary>獎項分布（${prizeCounts.size} 種）</summary><table class="combat"><tr><th style="text-align:left">獎項</th><th>次</th><th>每張機率</th></tr>${prizeRows}</table></details>
-      <div class="subhead">最近 ${Math.min(SCRATCH_RECENT_COUNT, plays.length)} 次</div>
-      <div class="hint">${recent}</div>`;
+      ${dayTable}
+      <details><summary>獎項分布（${prizeCounts.size} 種）</summary><table class="combat" style="width:100%"><tr><th style="text-align:left">獎項</th><th>次</th><th>每張</th><th>估價</th></tr>${prizeRows}</table></details>
+      <details><summary>最近 ${Math.min(SCRATCH_RECENT_COUNT, plays.length)} 次</summary><table class="combat" style="width:100%">${recent}</table></details>`;
   }
 
   // 自己沒記到的名稱，再看鍛造工具腳本有沒有記
@@ -14658,6 +14705,7 @@
     if (event.target.dataset.field === 'forgeShopSlots') renderForgePlanOverview();
     // 自動換名稱的門檻改了：鍛造正在等好名稱的話馬上再看一次，不用等下一輪
     if (['forgeAutoNamePercent', 'forgeAutoNameEnabled'].includes(event.target.dataset.field)) wakeForgeRunner();
+    if (event.target.dataset.field === 'scratchItemValues' && activeTab === 'scratch') renderScratchStats();
     if (['forgeNameWeightMode', 'forgeNamePriorities'].includes(event.target.dataset.field)) {
       renderNameWeightTable();
       recipeOptionsCache.at = 0;
