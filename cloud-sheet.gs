@@ -9,6 +9,8 @@ const SHEETS = {
   places: ['key', 'kind', 'zone', 'name', 'fromZone', 'fromStage', 'toZone', 'toStage', 'path', 'contributor', 'uploadedAt'],
   // 帳號之間轉帳的傳話（event = request / listed / failed），只新增不修改
   transfers: ['key', 'transferId', 'from', 'to', 'amount', 'mine', 'token', 'event', 'at', 'contributor', 'uploadedAt'],
+  // 角色遇過的異常狀態名稱（中毒…），挖礦「不理會」的勾選清單大家共用
+  conditions: ['name', 'seenAt', 'contributor', 'uploadedAt'],
 };
 // 跟遊戲腳本的 CLOUD_PAGE_ROWS 要一樣，腳本靠「拿到的列數少於這個」判斷已經抓完
 const PAGE_ROWS = 3000;

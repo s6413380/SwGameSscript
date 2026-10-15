@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.60
+// @version      3.61
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -11129,7 +11129,8 @@
     const saved = readJsonStorage(CLOUD_STATE_KEY, null);
     const fresh = { url, sentGrowth: [], sentEquipments: [], growthRow: 0, equipmentRow: 0 };
     // 舊的同步紀錄沒有地圖這兩欄，補上就好，不用整個重來
-    return saved && saved.url === url ? { sentPlaces: [], placeRow: 0, ...saved } : { ...fresh, sentPlaces: [], placeRow: 0 };
+    const added = { sentPlaces: [], placeRow: 0, sentConditions: [], conditionRow: 0 };
+    return saved && saved.url === url ? { ...added, ...saved } : { ...fresh, ...added };
   }
 
   function saveCloudState(saved) {
@@ -11292,19 +11293,37 @@
         saved.sentPlaces = [...sentPlaces];
         saveCloudState(saved);
       }
+      // 看過的異常名稱：大家共用一份清單，挖礦「不理會」就能直接勾沒遇過的
+      const sentConditions = new Set(saved.sentConditions);
+      const conditions = readJsonStorage(KNOWN_CONDITIONS_KEY, [])
+        .filter((name) => !sentConditions.has(name))
+        .map((name) => [name, Date.now()]);
+      if (conditions.length) {
+        const result = await cloudRequest(url, { method: 'POST', body: JSON.stringify({ contributor: settings.cloudName || '未署名', conditions }) });
+        // 舊版試算表沒有異常分頁（回應裡沒有 conditions），更新試算表後會補傳
+        if (result.added.conditions !== undefined) {
+          uploaded += result.added.conditions;
+          conditions.forEach(([name]) => sentConditions.add(name));
+          saved.sentConditions = [...sentConditions];
+          saveCloudState(saved);
+        }
+      }
       let downloaded = 0;
       for (;;) {
-        const page = await cloudRequest(`${url}?after_growth=${saved.growthRow}&after_equipment=${saved.equipmentRow}&after_places=${saved.placeRow}`);
+        const page = await cloudRequest(`${url}?after_growth=${saved.growthRow}&after_equipment=${saved.equipmentRow}&after_places=${saved.placeRow}&after_conditions=${saved.conditionRow}`);
         const placePage = page.places || { rows: [], next: saved.placeRow };
+        const conditionPage = page.conditions || { rows: [], next: saved.conditionRow };
         downloaded += importCloudGrowth(page.growth.rows) + importCloudEquipments(page.equipment.rows) + importCloudPlaces(placePage.rows);
+        rememberConditionNames(conditionPage.rows.map((row) => String(row[0]).trim()).filter(Boolean));
         saved.growthRow = page.growth.next;
         saved.equipmentRow = page.equipment.next;
         saved.placeRow = placePage.next;
+        saved.conditionRow = conditionPage.next;
         saveCloudState(saved);
-        if (page.growth.rows.length < CLOUD_PAGE_ROWS && page.equipment.rows.length < CLOUD_PAGE_ROWS && placePage.rows.length < CLOUD_PAGE_ROWS) break;
+        if ([page.growth, page.equipment, placePage, conditionPage].every((part) => part.rows.length < CLOUD_PAGE_ROWS)) break;
       }
       const time = new Date().toLocaleTimeString('zh-TW', { hour12: false });
-      setCloudStatus(`上次同步 ${time}：上傳 ${uploaded} 筆、下載新增 ${downloaded} 筆；雲端共 ${saved.growthRow} 筆升級、${saved.equipmentRow} 件裝備、${saved.placeRow} 筆地圖`);
+      setCloudStatus(`上次同步 ${time}：上傳 ${uploaded} 筆、下載新增 ${downloaded} 筆；雲端共 ${saved.growthRow} 筆升級、${saved.equipmentRow} 件裝備、${saved.placeRow} 筆地圖、${saved.conditionRow} 種異常`);
       if (downloaded && activeTab === 'growth') renderGrowthSummary();
       if (downloaded && activeTab === 'material') renderMaterialSummary();
     } catch (error) {
@@ -13504,7 +13523,6 @@
     const settings = readSettingsFromPanel();
     const names = miningIgnoredConditions(settings).filter((item) => item !== name);
     if (ignore) names.push(name);
-    rememberConditionNames([name]);
     setPanelField('miningIgnoreConditions', names.join('、'));
     saveSettings(readSettingsFromPanel());
     renderMiningIgnore();
@@ -13521,7 +13539,7 @@
       ? names
           .map((name) => `<label style="display:inline-block;margin-right:8px;white-space:nowrap"><input type="checkbox" data-mining-ignore="${escapeHtml(name)}" ${ignored.includes(name) ? 'checked' : ''} style="width:auto;flex:none"> ${escapeHtml(name)}</label>`)
           .join('')
-      : '<span style="color:#a0a0aa">還沒看過異常（角色中過的會自動列在這裡）</span>';
+      : '<span style="color:#a0a0aa">還沒看過異常（自己角色中過的、雲端同步下來別人遇過的，都會列在這裡）</span>';
   }
 
   const MINING_POTION_MAX_USES = 10;
