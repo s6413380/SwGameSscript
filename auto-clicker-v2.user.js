@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.76
+// @version      3.77
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -913,51 +913,51 @@
 
     <div data-tab="forge">
       <div class="row"><button data-action="forge-start" style="font-weight:bold">開始鍛造</button><button data-action="forge-stop">停止鍛造</button></div>
-      <div class="hint">勾「用 API 鍛造」：鍛造自己跑，可以跟上方「開始」的掛機同時進行，人也不用待在鍛造頁。沒勾（按鈕鍛造）：要待在鍛造頁，跟掛機只能二選一，按其中一個開始會停掉另一個。上方「開始」只管掛機</div>
+      <label class="row"><input data-field="forgeByApiEnabled" type="checkbox" style="flex:none;width:auto"> <b>用 API 鍛造</b>（建議勾）</label>
+      <div class="row">鍛造欄位 ${numberInput('forgeShopSlots', 'min="0"')} 個（0＝自動）</div>
+      <div class="row">開 ${numberInput('forgeByApiCount', 'min="0"')} 爐就停（0＝不限）</div>
       <fieldset class="group">
-        <legend>API 鍛造（用「配方」頁的配方）</legend>
-        <label class="row"><input data-field="forgeByApiEnabled" type="checkbox" style="flex:none;width:auto"> <b>用 API 鍛造</b>（不用設下面的按鈕鍛造）</label>
-        <div class="row">鍛造欄位 ${numberInput('forgeShopSlots', 'min="0"')} 個（0＝自動讀遊戲）　開 ${numberInput('forgeByApiCount', 'min="0"')} 爐（0＝不限）</div>
-        <div class="hint">只要填這個帳號有幾個鍛造欄位；哪個角色用哪一格會自動找空的</div>
-        <fieldset class="group">
-          <legend>鍛造佇列</legend>
-          <div data-role="forge-plan-overview" style="font-size:12px"></div>
+        <legend>鍛造佇列</legend>
+        <div class="hint" style="margin-top:0">每個角色類型旁邊的「用途」選 <b>用</b> 或 <b>賣</b>：<b>用</b>＝做來自己用（武器挑攻擊高、防具挑防禦高的名稱）；<b style="color:#fbbf24">賣</b>＝做來鍊金（挑耐久、智、幸高的名稱，不管重量）。新增角色到「配方」頁 ④ 給誰用 按「加入」</div>
+        <div data-role="forge-plan-overview" style="font-size:12px"></div>
+      </fieldset>
+      <fieldset class="group" data-fold="closed">
+        <legend>每天自動換名稱</legend>
+        <label class="row"><input data-field="forgeAutoNameEnabled" type="checkbox" style="flex:none;width:auto"> <b>每天自動換名稱</b></label>
+        <div class="row">每 ${numberInput('forgeAutoNameMinutes', 'min="1"')} 分鐘看一次測名表，分數 ≥ ${numberInput('forgeAutoNamePercent', 'min="0" max="100" step="0.5"')} % 才用</div>
+        <div class="hint">過 00:00 先不開新爐，等測名表有過門檻的名稱再換上；之後有更好的名稱也會自動換。每個角色照自己的裝備類型和「用／賣」挑，各屬性的比重看下表</div>
+        <div data-role="name-weight-table" style="font-size:12px"></div>
+      </fieldset>
+      ${supplyGroupHtml(SUPPLY_GROUPS.find((group) => group.id === 'forge')).replace('<fieldset class="group">', '<fieldset class="group" data-fold="closed">')}
+      <fieldset class="group" data-fold="closed">
+        <legend>進階（平常不用動）</legend>
+        <fieldset class="group" data-fold="closed">
+          <legend>自己排挑名稱的屬性順序</legend>
+          <div class="row">挑名稱的權重 <select data-field="forgeNameWeightMode" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="auto">內建（照用／賣）</option><option value="manual">手動：照下面的順序</option></select></div>
+          <textarea data-field="forgeNamePriorities" rows="4" style="width:100%;box-sizing:border-box"></textarea>
+          <div class="hint">一行一組，例：「雙手斧、雙手劍：攻>重>耐」。越前面越重要（3 個就是 3:2:1）；選「賣」的角色會自動拿掉「重」；沒寫到的類型照內建</div>
         </fieldset>
         <fieldset class="group" data-fold="closed">
           <legend>編輯佇列（列出所有角色）</legend>
           <div class="row"><button data-action="forge-api-heroes">讀取角色</button></div>
           <input data-field="forgeByApiHeroIds" type="hidden"><input data-field="forgeByApiPlans" type="hidden">
           <div data-role="forge-api-heroes" style="font-size:12px;max-height:200px;overflow:auto"></div>
-          <div class="hint">勾選＝排進佇列。每個角色可以有自己的類型、名稱、配方；名稱沒填就用「配方」頁的。按「帶入」把「配方」頁目前的類型與配方帶進來。平常在「配方」頁的「④ 給誰用」按「加入」就好</div>
-          <label class="row"><input data-field="forgeFillGameForm" type="checkbox" style="flex:none;width:auto"> 送出前把類型、名稱、材料也填到遊戲的鍛造頁（停在鍛造頁、而且「按鈕鍛造」區設過該鍛造坊的「切換」按鈕才會切過去填）</label>
+          <div class="hint">勾選＝排進佇列；每個角色可以有自己的類型、名稱、配方。平常用「配方」頁的 ④ 給誰用 就好</div>
+          <label class="row"><input data-field="forgeFillGameForm" type="checkbox" style="flex:none;width:auto"> 送出前把類型、名稱、材料也填到遊戲的鍛造頁</label>
         </fieldset>
-        <fieldset class="group" data-fold="closed">
-          <legend>每天自動換名稱</legend>
-          <label class="row"><input data-field="forgeAutoNameEnabled" type="checkbox" style="flex:none;width:auto"> <b>每天自動換名稱</b>：過 00:00 先暫停開爐，等測名表有好名稱再換上繼續</label>
-          <div class="row">每 ${numberInput('forgeAutoNameMinutes', 'min="1"')} 分鐘抓一次測名表，分數 ≥ ${numberInput('forgeAutoNamePercent', 'min="0" max="100" step="0.5"')} % 就用（0＝有資料就用最高的）</div>
-          <div class="row">挑名稱的權重 <select data-field="forgeNameWeightMode" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="auto">自動：照用途（用／賣）</option><option value="manual">手動：照下面的順序</option></select></div>
-          <div class="hint">名稱的倍率是乘在裝備原本的數值上，所以看這件裝備拿來做什麼。佇列裡每個角色可以選「用」或「賣」：用＝武器看攻擊、防具看防禦（輕、耐久高也加分）；賣（鍊金）＝回收價主要看耐久、智、幸，不看重量。手動順序只在選「手動」時用，賣的會自動拿掉「重」</div>
-          <div data-role="name-weight-table" style="font-size:12px"></div>
-          <label>手動順序（一行一組，越前面越重要；屬性用 攻 防 智 幸 重 耐）</label>
-          <textarea data-field="forgeNamePriorities" rows="4" style="width:100%;box-sizing:border-box"></textarea>
-          <div class="hint">手動：排第 1 的屬性佔最多（3 個屬性就是 3:2:1）。佇列裡不同類型的角色會拿到不同名稱；都沒有的類型用六圍平均。全部類型都到門檻才開新爐</div>
-          <div class="hint">換名稱時勾選角色的名稱、配方頁的名稱都會換成今天六圍平均最高的（同名稱測過好幾次取平均）。暫停期間做好的爐照樣收。手動開始、重整頁面也一樣：今天的名稱還沒定就先等。當天自己改過名稱就用自己的，下一個 00:00 才換</div>
-        </fieldset>
-        <div class="hint">佇列裡的角色好了就收、閒著就用自己的類型與配方開下一爐；材料不夠會暫停提醒，鍛造體力照下面的設定補</div>
+          <fieldset class="group" data-fold="closed">
+            <legend>按鈕鍛造（沒勾「用 API 鍛造」才用）</legend>
+            <label>巡視間隔 ${numberInput('forgeIntervalMinSeconds', 'min="1" step="0.1"')} ～ ${numberInput('forgeIntervalMaxSeconds', 'min="1" step="0.1"')} 秒隨機</label>
+            <div class="row">共用按鈕 ${pickButtonHtml('forgeStart', '開始鍛造', { text: true })} ${pickButtonHtml('forgeFinish', '完成鍛造', { text: true })}</div>
+            <div>鍛造坊（切換按鈕與次數，次數 0 或沒選切換按鈕就不做）</div>
+            ${Array.from({ length: FORGE_SHOP_COUNT }, (_, index) => {
+              const key = (name) => forgeKey(index, name);
+              return `<div class="row">${index + 1}. ${pickButtonHtml(key('Switch'), '切換', { text: true })}
+                次數 ${numberInput(key('Count'), 'min="0"')}
+                ${clearButtonHtml([key('Switch'), `${key('Switch')}Text`])}</div>`;
+            }).join('')}
+          </fieldset>
       </fieldset>
-      <fieldset class="group" data-fold="closed">
-        <legend>按鈕鍛造（沒勾「用 API 鍛造」才用）</legend>
-        <label>巡視間隔 ${numberInput('forgeIntervalMinSeconds', 'min="1" step="0.1"')} ～ ${numberInput('forgeIntervalMaxSeconds', 'min="1" step="0.1"')} 秒隨機</label>
-        <div class="row">共用按鈕 ${pickButtonHtml('forgeStart', '開始鍛造', { text: true })} ${pickButtonHtml('forgeFinish', '完成鍛造', { text: true })}</div>
-        <div>鍛造坊（切換按鈕與次數，次數 0 或沒選切換按鈕就不做）</div>
-        ${Array.from({ length: FORGE_SHOP_COUNT }, (_, index) => {
-          const key = (name) => forgeKey(index, name);
-          return `<div class="row">${index + 1}. ${pickButtonHtml(key('Switch'), '切換', { text: true })}
-            次數 ${numberInput(key('Count'), 'min="0"')}
-            ${clearButtonHtml([key('Switch'), `${key('Switch')}Text`])}</div>`;
-        }).join('')}
-      </fieldset>
-      ${supplyGroupHtml(SUPPLY_GROUPS.find((group) => group.id === 'forge'))}
     </div>
 
     <div data-tab="equip">
@@ -12415,11 +12415,14 @@
       weights
         ? weights.pairs.map(([stat, share]) => `<span style="display:inline-block;margin-right:6px">${stat} <span style="display:inline-block;width:${Math.max(4, Math.round(share * 50))}px;height:8px;background:#7c5cff;border-radius:3px"></span> ${Math.round(share * 100)}%</span>`).join('')
         : '<span style="color:#a0a0aa">六個屬性一樣重</span>';
-    const rows = Object.values(FORGE_TYPE_NAMES).map(
-      (type) => `<tr><td rowspan="2">${type}</td><td>用</td><td style="white-space:normal">${bars(nameWeightsFor(settings, type, 'use'))}</td></tr>
-        <tr><td style="color:#fbbf24">賣</td><td style="white-space:normal">${bars(nameWeightsFor(settings, type, 'sell'))}</td></tr>`
-    );
-    box.innerHTML = `<table class="combat"><tr><th>裝備</th><th>用途</th><th>挑名稱時各屬性占多少（${settings.forgeNameWeightMode === 'manual' ? '手動順序' : '內建'}）</th></tr>${rows.join('')}</table>`;
+    const row = (type) => `<tr><td rowspan="2">${type}</td><td>用</td><td style="white-space:normal">${bars(nameWeightsFor(settings, type, 'use'))}</td></tr>
+        <tr><td style="color:#fbbf24">賣</td><td style="white-space:normal">${bars(nameWeightsFor(settings, type, 'sell'))}</td></tr>`;
+    const table = (types) =>
+      `<table class="combat"><tr><th>裝備</th><th>用途</th><th>挑名稱時各屬性占多少（${settings.forgeNameWeightMode === 'manual' ? '手動順序' : '內建'}）</th></tr>${types.map(row).join('')}</table>`;
+    // 只列正在做的類型（佇列＋配方頁），其他收起來
+    const using = [...new Set([settings.forgeRecipeType, ...forgeByApiHeroIds(settings).map((heroId) => forgeApiPlan(settings, heroId).type)].filter(Boolean))];
+    const others = Object.values(FORGE_TYPE_NAMES).filter((type) => !using.includes(type));
+    box.innerHTML = `${table(using)}${others.length ? `<details><summary>其他裝備（${others.length} 種）</summary>${table(others)}</details>` : ''}`;
   }
 
   function todayNames(goal) {
@@ -13052,6 +13055,7 @@
     setPanelField('forgeByApiPlans', JSON.stringify(plans));
     saveSettings(readSettingsFromPanel());
     renderForgePlanOverview();
+    renderRecipeHeroes();
     const hero = forgeHeroes.find((candidate) => candidate.id === heroId);
     forgeLog(`${hero ? hero.name : heroId} ${text}`);
     return `${hero ? hero.name : heroId} ${text}`;
@@ -13134,7 +13138,11 @@
             ${inQueue ? `<button data-action="forge-unqueue" data-hero="${hero.id}" style="${small}">移出</button>` : ''}
             <button data-action="recipe-forge-once" data-hero="${hero.id}" style="${small}" ${unavailable ? 'disabled' : ''}>鍛一次</button>
           </div>
-          <div style="color:#a0a0aa">鍛 ${hero.forge ?? '?'}・裁 ${hero.tailor ?? '?'}・工 ${hero.craft ?? '?'}${tags.length ? `・${tags.join('・')}` : ''}</div>
+          <div style="color:#a0a0aa">鍛 ${hero.forge ?? '?'}・裁 ${hero.tailor ?? '?'}・工 ${hero.craft ?? '?'}${tags.length ? `・${tags.join('・')}` : ''}${
+            inQueue
+              ? `・用途 <select data-forge-purpose="${hero.id}" style="padding:0;color:${plan.purpose === 'sell' ? '#fbbf24' : '#fff'};background:#2a2a30;border:1px solid #44444c;border-radius:4px"><option value="use" ${plan.purpose === 'sell' ? '' : 'selected'}>用</option><option value="sell" ${plan.purpose === 'sell' ? 'selected' : ''}>賣</option></select>`
+              : ''
+          }</div>
         </div>`;
       })
       .join('');
@@ -13225,14 +13233,14 @@
         return `<div style="border:1px solid #2e2e34;border-radius:8px;padding:5px 6px;margin:4px 0;background:${row.next ? '#16261c' : '#1c1c21'}">
           <div style="display:flex;gap:6px;align-items:baseline"><b style="white-space:nowrap">${escapeHtml(row.name)}</b>
             <span style="flex:1;text-align:right;color:${row.statusColor}">${row.statusText}</span>
-            <select data-forge-purpose="${row.heroId}" title="用：武器挑攻擊、防具挑防禦；賣（鍊金）：挑耐久、智、幸，不看重量" style="flex:none;padding:1px;color:${row.purpose === 'sell' ? '#fbbf24' : '#fff'};background:#2a2a30;border:1px solid #44444c;border-radius:5px">
-              <option value="use" ${row.purpose === 'sell' ? '' : 'selected'}>用</option><option value="sell" ${row.purpose === 'sell' ? 'selected' : ''}>賣</option></select>
             ${(() => {
               const options = favoriteOptionsHtml(readSettingsFromPanel(), row.type, '★ 換最愛');
               return options ? `<select data-forge-fav="${row.heroId}" data-type="${escapeHtml(row.type)}" style="flex:none;max-width:110px;padding:1px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px">${options}</select>` : '';
             })()}
             <button data-action="forge-unqueue" data-hero="${row.heroId}" style="padding:0 6px" title="移出佇列（配方會留著）">移出</button></div>
           <div style="margin:2px 0"><span style="padding:0 6px;border-radius:9px;background:#3b2f5c;color:#ddd6fe">${escapeHtml(row.type || '?')}</span>
+            用途<select data-forge-purpose="${row.heroId}" title="用：武器挑攻擊、防具挑防禦；賣（鍊金）：挑耐久、智、幸，不看重量" style="padding:1px;color:${row.purpose === 'sell' ? '#fbbf24' : '#fff'};background:#2a2a30;border:1px solid #44444c;border-radius:5px">
+              <option value="use" ${row.purpose === 'sell' ? '' : 'selected'}>用</option><option value="sell" ${row.purpose === 'sell' ? 'selected' : ''}>賣</option></select>
             「<b>${escapeHtml(row.itemName)}</b>」${row.ownName ? '' : '<span style="color:#a0a0aa">（配方頁的名稱）</span>'}</div>
           <div>${chips || '<span style="color:#666">沒有配方</span>'}
             ${row.materials.length ? `<span style="color:#a0a0aa">共 ${row.total}${row.cap ? `/${row.cap}` : ''}</span>` : ''}

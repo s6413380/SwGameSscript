@@ -461,7 +461,7 @@
     const editing = forgeEditing && forgeEditing.target === account.id && forgeEditing.heroId === row.heroId;
     return `<div class="forge-hero ${row.next ? 'next' : ''}">
       <div class="line"><b>${escapeHtml(row.name)}</b><span class="status" style="color:${row.statusColor}">${escapeHtml(row.statusText)}</span></div>
-      <div class="line"><span class="type">${escapeHtml(row.type || '?')}</span><button class="small" data-forge-purpose="${row.heroId}" data-purpose="${row.purpose === 'sell' ? 'use' : 'sell'}" title="用：武器挑攻擊、防具挑防禦；賣（鍊金）：挑耐久、智、幸，不看重量。按一下切換" style="${row.purpose === 'sell' ? 'color:#fbbf24' : ''}">${row.purpose === 'sell' ? '賣' : '用'}</button>「${escapeHtml(row.itemName)}」${row.ownName ? '' : '<span class="muted">（帳號的名稱）</span>'}</div>
+      <div class="line"><span class="type">${escapeHtml(row.type || '?')}</span><button class="small" data-forge-purpose="${row.heroId}" data-purpose="${row.purpose === 'sell' ? 'use' : 'sell'}" title="用：武器挑攻擊、防具挑防禦；賣（鍊金）：挑耐久、智、幸，不看重量。按一下切換" style="${row.purpose === 'sell' ? 'color:#fbbf24' : ''}">用途：${row.purpose === 'sell' ? '賣（鍊金）' : '用'}</button>「${escapeHtml(row.itemName)}」${row.ownName ? '' : '<span class="muted">（帳號的名稱）</span>'}</div>
       <div>${forgeChips(row.materials) || '<span class="muted">沒有配方</span>'}
         ${row.materials.length ? `<span class="muted">共 ${row.total}${row.cap ? `/${row.cap}` : ''}</span>` : ''}
         ${row.possible === null ? '' : `<span style="color:${row.possible ? '#4ade80' : '#f87171'}">・夠 ${row.possible} 爐</span>`}</div>
