@@ -332,7 +332,9 @@
         const money = Object.entries(actor.money || {})
           .sort(([first], [second]) => (first === '盜取' ? -1 : second === '盜取' ? 1 : 0))
           .map(([verb, amount]) => `${escapeHtml(verb)} $${Number(amount).toLocaleString()}`);
-        const items = actor.items ? [`道具 ${actor.items} 件${actor.topItems && actor.topItems.length ? `（${actor.topItems.map(([item, quantity]) => `${escapeHtml(item)}×${quantity}`).join('、')}）` : ''}`] : [];
+        const items = actor.items
+          ? [`道具 ${actor.items} 件${actor.topItems && actor.topItems.length ? `（${actor.topItems.map(([item, quantity, rare]) => (rare ? `<b style="color:#fbbf24">${escapeHtml(item)}×${quantity}</b>` : `${escapeHtml(item)}×${quantity}`)).join('、')}）` : ''}`]
+          : [];
         return `<div>${escapeHtml(actor.name)}${actor.ours ? '' : ' <span style="color:#f87171">不是我方</span>'}：${[...money, ...items].join('・') || '-'}</div>`;
       })
       .join('');

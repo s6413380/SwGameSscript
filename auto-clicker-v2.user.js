@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.80
+// @version      3.81
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -15145,9 +15145,16 @@
 
   // 總覽頁只放得下幾樣：照數量排的話，撿到 1 張英雄券會被一大堆普通掉落擠掉，所以稀有道具一定放前面
   const TOP_LOOT_COUNT = 8;
+  // 英雄券、英雄卷軸這類一定算稀有，不管設定有沒有寫
+  const BUILT_IN_RARE_LOOT = ['英雄券', '英雄卷'];
+
+  function isRareLoot(name, rareNames = rareLootNames()) {
+    return [...BUILT_IN_RARE_LOOT, ...rareNames].some((rareName) => String(name).includes(rareName));
+  }
+
   function topLootItems(items) {
     const rareNames = rareLootNames();
-    const isRare = ([name]) => rareNames.some((rareName) => name.includes(rareName));
+    const isRare = ([name]) => isRareLoot(name, rareNames);
     const byQuantity = Object.entries(items).sort(([, first], [, second]) => second - first);
     const rare = byQuantity.filter(isRare);
     return [...rare, ...byQuantity.filter((entry) => !isRare(entry)).slice(0, Math.max(0, TOP_LOOT_COUNT - rare.length))];
@@ -15401,9 +15408,13 @@
       ours: actor.ours,
       money: actor.money,
       items: Object.values(actor.items).reduce((sum, quantity) => sum + quantity, 0),
-      topItems: Object.entries(actor.items)
-        .sort(([, first], [, second]) => second - first)
-        .slice(0, 3),
+      // 稀有的（英雄券…）一律列出來放最前面，再補數量最多的到 3 樣；第三格標稀有
+      topItems: (() => {
+        const rareNames = rareLootNames();
+        const sorted = Object.entries(actor.items).sort(([, first], [, second]) => second - first);
+        const rare = sorted.filter(([item]) => isRareLoot(item, rareNames)).map(([item, quantity]) => [item, quantity, true]);
+        return [...rare, ...sorted.filter(([item]) => !isRareLoot(item, rareNames)).slice(0, Math.max(0, 3 - rare.length))];
+      })(),
     }));
   }
 
@@ -15431,9 +15442,11 @@
       .map((name) => {
         const actor = totals[name];
         const money = Object.entries(actor.money).map(([verb, amount]) => `${escapeHtml(verb)} $${amount.toLocaleString()}`).join('<br>');
+        // 稀有的放最前面、黃字
+        const rareNames = rareLootNames();
         const items = Object.entries(actor.items)
-          .sort(([, first], [, second]) => second - first)
-          .map(([item, quantity]) => `${escapeHtml(item)}×${quantity}`)
+          .sort(([first, firstQuantity], [second, secondQuantity]) => Number(isRareLoot(second, rareNames)) - Number(isRareLoot(first, rareNames)) || secondQuantity - firstQuantity)
+          .map(([item, quantity]) => (isRareLoot(item, rareNames) ? `<b style="color:#fbbf24">${escapeHtml(item)}×${quantity}</b>` : `${escapeHtml(item)}×${quantity}`))
           .join('、');
         return `<tr><td>${escapeHtml(name)}${actor.ours ? '' : '<div style="color:#f87171">不是我方</div>'}</td><td>${money || '-'}</td><td style="white-space:normal">${items || '-'}</td></tr>`;
       })
@@ -15453,7 +15466,7 @@
   // 名稱有包含就算（「英雄券」也會對到「高級英雄券」）；只提醒時用右下角小提示，不打斷
   function alertRareLoot(loot, place, settings) {
     const rareNames = rareLootNames(settings);
-    const rare = loot.filter(([name]) => rareNames.some((rareName) => name.includes(rareName)));
+    const rare = loot.filter(([name]) => isRareLoot(name, rareNames));
     if (!rare.length) return;
     const message = `撿到稀有道具：${rare.map(([name, quantity]) => `${name} ×${quantity}`).join('、')}（${place}）`;
     if (settings.lootRarePause && state.running) pauseWithAlert(message);
