@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.87
+// @version      3.88
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -6223,6 +6223,10 @@
     { pattern: /(?:被|，)([^，被]+?)趁\S?攻擊/, skill: '趁機攻擊' },
     // 「遭古老樹人反擊」「遭到古老樹人上前反擊」
     { pattern: /遭到?([^，]+?)(?:上前)?反擊/, skill: '反擊' },
+    // 「綠水靈2被鳥屎擊中分心，愛德華·蒂奇發起攻擊造成 734 點傷害」
+    { pattern: /，([^，被]+?)發起攻擊/, skill: '趁機攻擊' },
+    // 「青竹絲右小腿抽筋，被愛德華·蒂奇攻擊造成 956 點傷害」
+    { pattern: /，被([^，被]+?)攻擊造成/, skill: '趁機攻擊' },
   ];
   // 一行可能同時恢復兩種，例如「恢復了 278 生命值和 61 體力」
   const HEAL_AMOUNT_PATTERN = /(\d[\d,]*)\s*點?\s*(體力|生命值)?/g;
@@ -6494,7 +6498,7 @@
       if (!line.includes(member)) return false;
       const name = escapeRegExp(member);
       const asReceiver = new RegExp(
-        `(?:攻擊|朝|擊中|襲擊|對)${name}|${name}(?:上前保護)?受到|${name}因|${name}[^，]*?(?:吃|喝)了|${name}[^，]*?恢復了`
+        `(?:攻擊|朝|擊中|襲擊|對)${name}|${name}(?:上前保護)?受到|${name}上前承受|${name}因|${name}[^，]*?(?:吃|喝)了|${name}[^，]*?恢復了`
       );
       return !asReceiver.test(line);
     });
