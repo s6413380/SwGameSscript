@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.79
+// @version      3.80
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -3204,11 +3204,45 @@
     box.innerHTML = `
       <div style="display:flex;justify-content:space-between;gap:6px"><b>市場上的「${escapeHtml(box.dataset.name)}」</b><button type="button" data-sell-refresh style="color:#a8a29e;text-decoration:underline">重新查</button></div>
       ${sorted.length ? `${line('最低', sorted[0])}${line('第二低', sorted[1])}<div style="color:#a8a29e">共 ${sorted.length} 筆在賣</div>` : '<div style="color:#86efac">市場上目前沒人在賣</div>'}
-      ${compare}`;
+      ${compare}
+      ${
+        sellFillUnit(box)
+          ? `<div style="display:flex;gap:6px;margin-top:4px">
+              <button type="button" data-sell-fill="fill" style="flex:1;padding:3px;border:1px solid #b45309;border-radius:4px;background:#451a03;color:#fcd34d">填最大數量＋最低價</button>
+              <button type="button" data-sell-fill="submit" style="flex:1;padding:3px;border:1px solid #b45309;border-radius:4px;background:#b45309;color:#fff">填好直接上架</button></div>`
+          : '<div style="color:#a8a29e">別人沒在賣，價格要自己填</div>'
+      }`;
+  }
+
+  // 別人掛的最低單價（自己的不算，不然會跟自己比）
+  function sellFillUnit(box) {
+    const ownId = dashboard.profile && Number(dashboard.profile.id);
+    const units = (box.trades || []).filter((trade) => Number(trade.sellerId) !== ownId).map((trade) => trade.price / trade.quantity);
+    return units.length ? Math.min(...units) : 0;
+  }
+
+  // 數量填全部（遊戲輸入框的上限就是可賣的數量），總價＝最低單價 × 數量（取整數，不會比最低貴）；要的話直接按遊戲的「掛單販賣」
+  function fillSellDialog(submit) {
+    const parts = sellDialogParts();
+    const box = parts && parts.dialog.querySelector('[data-role="sell-price"]');
+    const unit = box && sellFillUnit(box);
+    if (!unit || !parts.quantityInput) return;
+    const quantity = Math.max(1, Number(parts.quantityInput.max) || Number(parts.quantityInput.value) || 1);
+    setReactInputValue(parts.quantityInput, String(quantity));
+    setReactInputValue(parts.priceInput, String(Math.max(1, Math.floor(unit * quantity))));
+    if (!submit) return;
+    // 等 React 把新的數字畫上去、按鈕解鎖再按
+    backgroundTimer.setTimeout(() => {
+      const button = [...parts.dialog.querySelectorAll('button')].find((candidate) => candidate.textContent.trim() === '掛單販賣');
+      if (button && !button.disabled) button.click();
+    }, 400);
   }
 
   document.addEventListener('click', (event) => {
-    if (event.target.closest && event.target.closest('[data-sell-refresh]')) showSellPrices(true);
+    if (!event.target.closest) return;
+    if (event.target.closest('[data-sell-refresh]')) showSellPrices(true);
+    const fill = event.target.closest('[data-sell-fill]');
+    if (fill) fillSellDialog(fill.dataset.sellFill === 'submit');
   });
 
   // 遊戲的視窗是 React 動態掛上去的，有出現就補上比價
