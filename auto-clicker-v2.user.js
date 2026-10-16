@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.75
+// @version      3.76
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -935,8 +935,8 @@
           <legend>每天自動換名稱</legend>
           <label class="row"><input data-field="forgeAutoNameEnabled" type="checkbox" style="flex:none;width:auto"> <b>每天自動換名稱</b>：過 00:00 先暫停開爐，等測名表有好名稱再換上繼續</label>
           <div class="row">每 ${numberInput('forgeAutoNameMinutes', 'min="1"')} 分鐘抓一次測名表，分數 ≥ ${numberInput('forgeAutoNamePercent', 'min="0" max="100" step="0.5"')} % 就用（0＝有資料就用最高的）</div>
-          <div class="row">挑名稱的權重 <select data-field="forgeNameWeightMode" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="auto">自動：照鍛造紀錄算</option><option value="manual">手動：照下面的順序</option></select></div>
-          <div class="hint">名稱的倍率是乘在裝備原本的數值上：盔甲幾乎沒有攻擊，名稱攻擊再高也沒用。「自動」照你的鍛造紀錄算出每種裝備平均各屬性有多少，數值越大的屬性占越重（耐久不算，用久會掉）；某種裝備紀錄不到 3 件才用下面的順序</div>
+          <div class="row">挑名稱的權重 <select data-field="forgeNameWeightMode" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="auto">自動：照用途（用／賣）</option><option value="manual">手動：照下面的順序</option></select></div>
+          <div class="hint">名稱的倍率是乘在裝備原本的數值上，所以看這件裝備拿來做什麼。佇列裡每個角色可以選「用」或「賣」：用＝武器看攻擊、防具看防禦（輕、耐久高也加分）；賣（鍊金）＝回收價主要看耐久、智、幸，不看重量。手動順序只在選「手動」時用，賣的會自動拿掉「重」</div>
           <div data-role="name-weight-table" style="font-size:12px"></div>
           <label>手動順序（一行一組，越前面越重要；屬性用 攻 防 智 幸 重 耐）</label>
           <textarea data-field="forgeNamePriorities" rows="4" style="width:100%;box-sizing:border-box"></textarea>
@@ -3617,6 +3617,8 @@
         return queueHeroFromDashboard(Number(command.heroId), Number(command.fromId) || 0);
       case 'forge-plan':
         return setForgePlanFromDashboard(command);
+      case 'forge-purpose':
+        return setForgePurpose(Number(command.heroId), command.purpose);
       case 'forge-unqueue':
         unqueueHeroForForge(Number(command.heroId));
         return `${command.heroId} 移出鍛造佇列`;
@@ -12348,57 +12350,56 @@
     return null;
   }
 
-  // 這種裝備今天的名稱排名：照屬性順序加權（3 個屬性就是 3:2:1）
-  // 名稱倍率乘在裝備原本的數值上：照鍛造紀錄算這種裝備平均各屬性有多少，當成挑名稱的權重。
-  // 耐久不算（用久會掉，不算戰力）；換成普通品質再平均，品質高低不影響比例
-  const AUTO_WEIGHT_FIELDS = { 攻: 'atk', 防: 'def', 智: 'int', 幸: 'lck', 重: 'wgt' };
-  const AUTO_WEIGHT_MIN_RECORDS = 3;
-  const AUTO_WEIGHT_FRESH_MILLISECONDS = 60000;
-  const autoWeightCache = { at: 0, byType: {} };
+  // 挑名稱的權重看這件裝備拿來做什麼（名稱倍率乘在裝備原本的數值上）：
+  // 用：武器看攻擊、防具看防禦，輕一點、耐久高一點也好
+  const WEAPON_TYPES = ['單手劍', '細劍', '短刀', '單手錘', '雙手劍', '太刀', '雙手斧', '長槍'];
+  const ARMOR_TYPES = ['盾牌', '頭盔', '帽子', '盔甲', '大衣'];
+  const USE_NAME_WEIGHTS = {
+    weapon: [['攻', 0.6], ['重', 0.15], ['耐', 0.15], ['幸', 0.1]],
+    armor: [['防', 0.55], ['重', 0.25], ['攻', 0.1], ['耐', 0.1]],
+  };
+  // 賣（鍊金）：回收價主要看耐久、智、幸，攻防比較少，不看重量；照雲端 3400 多件紀錄的回收價配出來的
+  const SELL_NAME_WEIGHTS = {
+    盔甲: [['耐', 0.39], ['防', 0.28], ['攻', 0.22], ['智', 0.11]],
+    單手錘: [['耐', 0.4], ['幸', 0.3], ['攻', 0.26], ['智', 0.04]],
+    雙手劍: [['耐', 0.66], ['幸', 0.15], ['智', 0.12], ['攻', 0.07]],
+    太刀: [['耐', 0.64], ['防', 0.1], ['智', 0.1], ['攻', 0.09], ['幸', 0.07]],
+    雙手斧: [['耐', 0.43], ['攻', 0.3], ['幸', 0.2], ['智', 0.07]],
+    頭盔: [['耐', 0.35], ['防', 0.29], ['智', 0.23], ['幸', 0.07], ['攻', 0.06]],
+  };
+  const SELL_NAME_WEIGHTS_DEFAULT = [['耐', 0.66], ['攻', 0.12], ['幸', 0.1], ['智', 0.09], ['防', 0.03]];
+  const FORGE_PURPOSES = { use: '用', sell: '賣' };
 
-  function autoNameWeights(type) {
-    if (Date.now() - autoWeightCache.at > AUTO_WEIGHT_FRESH_MILLISECONDS) {
-      const multipliers = qualityMultipliers();
-      const sums = {};
-      forgedRecords().forEach((equipment) => {
-        const base = baseStats(equipment, multipliers);
-        const sum = sums[equipment.type] || (sums[equipment.type] = { count: 0, stats: {} });
-        sum.count++;
-        Object.entries(AUTO_WEIGHT_FIELDS).forEach(([stat, field]) => (sum.stats[stat] = (sum.stats[stat] || 0) + Math.abs(base[field] || 0)));
-      });
-      autoWeightCache.byType = Object.fromEntries(
-        Object.entries(sums)
-          .filter(([, sum]) => sum.count >= AUTO_WEIGHT_MIN_RECORDS)
-          .map(([itemType, sum]) => {
-            const total = Object.values(sum.stats).reduce((all, value) => all + value, 0);
-            // 不到 3% 的屬性當成這種裝備沒有
-            const pairs = Object.entries(sum.stats)
-              .map(([stat, value]) => [stat, total ? value / total : 0])
-              .filter(([, share]) => share >= 0.03)
-              .sort(([, first], [, second]) => second - first);
-            return [itemType, { count: sum.count, pairs }];
-          })
-      );
-      autoWeightCache.at = Date.now();
-    }
-    return autoWeightCache.byType[type] || null;
+  function forgePurposeOf(value) {
+    return value === 'sell' ? 'sell' : 'use';
   }
 
-  // 這種裝備挑名稱用的權重：[[屬性, 比重]]、說明文字；都沒有就 null（用六圍平均）
-  function nameWeightsFor(settings, type) {
-    const auto = settings.forgeNameWeightMode !== 'manual' ? autoNameWeights(type) : null;
-    if (auto && auto.pairs.length) {
-      return { pairs: auto.pairs, label: `自動 ${auto.pairs.map(([stat, share]) => `${stat}${Math.round(share * 100)}%`).join(' ')}` };
+  function purposeNameWeights(type, purpose) {
+    if (purpose === 'sell') return SELL_NAME_WEIGHTS[type] || SELL_NAME_WEIGHTS_DEFAULT;
+    if (WEAPON_TYPES.includes(type)) return USE_NAME_WEIGHTS.weapon;
+    if (ARMOR_TYPES.includes(type)) return USE_NAME_WEIGHTS.armor;
+    return null;
+  }
+
+  // 這種裝備、這種用途挑名稱的權重：[[屬性, 比重]]、說明文字；都沒有就 null（用六圍平均）
+  function nameWeightsFor(settings, type, purpose = 'use') {
+    const purposeLabel = FORGE_PURPOSES[forgePurposeOf(purpose)];
+    if (settings.forgeNameWeightMode === 'manual') {
+      // 賣的不看重量，手動順序裡的「重」拿掉
+      const stats = (namePriorityFor(settings, type) || []).filter((stat) => purpose !== 'sell' || stat !== '重');
+      if (stats.length) {
+        const total = stats.reduce((sum, _, index) => sum + stats.length - index, 0);
+        return { pairs: stats.map((stat, index) => [stat, (stats.length - index) / total]), label: `${purposeLabel} ${stats.join('>')}` };
+      }
     }
-    const stats = namePriorityFor(settings, type);
-    if (!stats) return null;
-    const total = stats.reduce((sum, _, index) => sum + stats.length - index, 0);
-    return { pairs: stats.map((stat, index) => [stat, (stats.length - index) / total]), label: stats.join('>') };
+    const pairs = purposeNameWeights(type, forgePurposeOf(purpose));
+    if (!pairs) return null;
+    return { pairs, label: `${purposeLabel} ${pairs.map(([stat, share]) => `${stat}${Math.round(share * 100)}%`).join(' ')}` };
   }
 
   // 這種裝備今天的名稱排名
-  function todayNamesForType(settings, type) {
-    const weights = nameWeightsFor(settings, type);
+  function todayNamesForType(settings, type, purpose = 'use') {
+    const weights = nameWeightsFor(settings, type, purpose);
     const names = todayNames('six');
     if (!weights) return names;
     return names
@@ -12410,16 +12411,15 @@
     const box = panel.querySelector('[data-role="name-weight-table"]');
     if (!box) return;
     const settings = readSettingsFromPanel();
-    const rows = Object.values(FORGE_TYPE_NAMES).map((type) => {
-      const weights = nameWeightsFor(settings, type);
-      const auto = autoNameWeights(type);
-      const source = weights ? (weights.label.startsWith('自動') ? `${auto.count} 件紀錄` : '手動順序') : '六圍平均';
-      const bars = weights
-        ? weights.pairs.map(([stat, share]) => `<span style="display:inline-block;margin-right:6px">${stat} <span style="display:inline-block;width:${Math.max(4, Math.round(share * 60))}px;height:8px;background:#7c5cff;border-radius:3px"></span> ${Math.round(share * 100)}%</span>`).join('')
+    const bars = (weights) =>
+      weights
+        ? weights.pairs.map(([stat, share]) => `<span style="display:inline-block;margin-right:6px">${stat} <span style="display:inline-block;width:${Math.max(4, Math.round(share * 50))}px;height:8px;background:#7c5cff;border-radius:3px"></span> ${Math.round(share * 100)}%</span>`).join('')
         : '<span style="color:#a0a0aa">六個屬性一樣重</span>';
-      return `<tr><td>${type}</td><td style="white-space:normal">${bars}</td><td style="color:#a0a0aa">${source}</td></tr>`;
-    });
-    box.innerHTML = `<table class="combat"><tr><th>裝備</th><th>挑名稱時各屬性占多少</th><th>依據</th></tr>${rows.join('')}</table>`;
+    const rows = Object.values(FORGE_TYPE_NAMES).map(
+      (type) => `<tr><td rowspan="2">${type}</td><td>用</td><td style="white-space:normal">${bars(nameWeightsFor(settings, type, 'use'))}</td></tr>
+        <tr><td style="color:#fbbf24">賣</td><td style="white-space:normal">${bars(nameWeightsFor(settings, type, 'sell'))}</td></tr>`
+    );
+    box.innerHTML = `<table class="combat"><tr><th>裝備</th><th>用途</th><th>挑名稱時各屬性占多少（${settings.forgeNameWeightMode === 'manual' ? '手動順序' : '內建'}）</th></tr>${rows.join('')}</table>`;
   }
 
   function todayNames(goal) {
@@ -13031,7 +13031,30 @@
       type: plan.type || settings.forgeRecipeType,
       recipe: plan.recipe || '',
       name: plan.name || settings.forgeRecipeName,
+      purpose: forgePurposeOf(plan.purpose),
     };
+  }
+
+  // 換「用／賣」：今天的名稱已經定了就馬上換成這個用途最好的名稱
+  function setForgePurpose(heroId, purpose) {
+    const settings = readSettingsFromPanel();
+    const plans = forgeByApiPlans(settings);
+    const plan = forgeApiPlan(settings, heroId);
+    plans[heroId] = { ...(plans[heroId] || {}), purpose: forgePurposeOf(purpose) };
+    let text = `改成做來${FORGE_PURPOSES[forgePurposeOf(purpose)]}`;
+    if (settings.forgeAutoNameEnabled && readJsonStorage(FORGE_NAME_DAY_KEY, '') === localDayKey(Date.now())) {
+      const best = todayNamesForType(settings, plan.type, purpose)[0];
+      if (best && best.score * 100 >= settings.forgeAutoNamePercent) {
+        plans[heroId].name = best.name;
+        text += `，名稱換成「${best.name}」${(best.score * 100).toFixed(1)}%`;
+      }
+    }
+    setPanelField('forgeByApiPlans', JSON.stringify(plans));
+    saveSettings(readSettingsFromPanel());
+    renderForgePlanOverview();
+    const hero = forgeHeroes.find((candidate) => candidate.id === heroId);
+    forgeLog(`${hero ? hero.name : heroId} ${text}`);
+    return `${hero ? hero.name : heroId} ${text}`;
   }
 
   async function showForgeApiHeroChoices() {
@@ -13165,6 +13188,7 @@
         statusColor,
         statusText,
         type: plan.type || '',
+        purpose: plan.purpose,
         itemName: plan.name || '',
         ownName: Boolean((plans[heroId] || {}).name),
         materials: recipe.map(([name, quantity]) => ({ name, quantity, have: mineStock.length ? stock.get(name) || 0 : null })),
@@ -13201,6 +13225,8 @@
         return `<div style="border:1px solid #2e2e34;border-radius:8px;padding:5px 6px;margin:4px 0;background:${row.next ? '#16261c' : '#1c1c21'}">
           <div style="display:flex;gap:6px;align-items:baseline"><b style="white-space:nowrap">${escapeHtml(row.name)}</b>
             <span style="flex:1;text-align:right;color:${row.statusColor}">${row.statusText}</span>
+            <select data-forge-purpose="${row.heroId}" title="用：武器挑攻擊、防具挑防禦；賣（鍊金）：挑耐久、智、幸，不看重量" style="flex:none;padding:1px;color:${row.purpose === 'sell' ? '#fbbf24' : '#fff'};background:#2a2a30;border:1px solid #44444c;border-radius:5px">
+              <option value="use" ${row.purpose === 'sell' ? '' : 'selected'}>用</option><option value="sell" ${row.purpose === 'sell' ? 'selected' : ''}>賣</option></select>
             ${(() => {
               const options = favoriteOptionsHtml(readSettingsFromPanel(), row.type, '★ 換最愛');
               return options ? `<select data-forge-fav="${row.heroId}" data-type="${escapeHtml(row.type)}" style="flex:none;max-width:110px;padding:1px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px">${options}</select>` : '';
@@ -13366,12 +13392,14 @@
   function applyForgeNamesByType(namesByType) {
     const settings = readSettingsFromPanel();
     const plans = forgeByApiPlans(settings);
+    // 鍵是「類型|用途」；配方頁的名稱當成「用」
     forgeByApiHeroIds(settings).forEach((heroId) => {
-      const name = namesByType[forgeApiPlan(settings, heroId).type];
+      const plan = forgeApiPlan(settings, heroId);
+      const name = namesByType[`${plan.type}|${plan.purpose}`];
       if (name) plans[heroId] = { ...(plans[heroId] || {}), name };
     });
     setPanelField('forgeByApiPlans', JSON.stringify(plans));
-    if (namesByType[settings.forgeRecipeType]) setPanelField('forgeRecipeName', namesByType[settings.forgeRecipeType]);
+    if (namesByType[`${settings.forgeRecipeType}|use`]) setPanelField('forgeRecipeName', namesByType[`${settings.forgeRecipeType}|use`]);
     saveSettings(readSettingsFromPanel());
     if (panel.querySelector('[data-forge-plan-hero]')) showForgeApiHeroChoices().catch(() => {});
   }
@@ -13395,17 +13423,25 @@
     } catch (error) {
       return `讀取測名表失敗（${error.message}）`;
     }
-    // 佇列裡每種裝備各挑各的；全部類型都到門檻才換
-    const types = [...new Set([settings.forgeRecipeType, ...forgeByApiHeroIds(settings).map((heroId) => forgeApiPlan(settings, heroId).type)].filter(Boolean))];
-    const picks = types.map((type) => {
-      const weights = nameWeightsFor(settings, type);
-      return { type, label: weights ? weights.label : '六圍', best: todayNamesForType(settings, type)[0] };
+    // 佇列裡每種裝備、每種用途（用／賣）各挑各的；全部都到門檻才換
+    const keys = [
+      ...new Set(
+        [`${settings.forgeRecipeType}|use`, ...forgeByApiHeroIds(settings).map((heroId) => {
+          const plan = forgeApiPlan(settings, heroId);
+          return `${plan.type}|${plan.purpose}`;
+        })].filter((key) => !key.startsWith('|'))
+      ),
+    ];
+    const picks = keys.map((key) => {
+      const [type, purpose] = key.split('|');
+      const weights = nameWeightsFor(settings, type, purpose);
+      return { key, type, purpose, label: weights ? weights.label : '六圍', best: todayNamesForType(settings, type, purpose)[0] };
     });
     if (picks.some((pick) => !pick.best)) return '測名表今天還沒有資料';
     const pickText = (pick) => `${pick.type}「${pick.best.name}」${pick.label} ${(pick.best.score * 100).toFixed(1)}%`;
     const short = picks.filter((pick) => pick.best.score * 100 < settings.forgeAutoNamePercent);
     if (short.length) return `今天最高 ${short.map(pickText).join('、')}，還沒到 ${settings.forgeAutoNamePercent}%`;
-    const names = Object.fromEntries(picks.map((pick) => [pick.type, pick.best.name]));
+    const names = Object.fromEntries(picks.map((pick) => [pick.key, pick.best.name]));
     applyForgeNamesByType(names);
     writeJsonStorage(FORGE_NAME_DAY_KEY, localDayKey(Date.now()));
     forgeRunner.nameWaiting = '';
@@ -13425,30 +13461,31 @@
     } catch {
       return;
     }
-    const rankedByType = new Map();
-    const ranked = (type) => {
-      if (!rankedByType.has(type)) rankedByType.set(type, todayNamesForType(settings, type));
-      return rankedByType.get(type);
+    const rankedByKey = new Map();
+    const ranked = (type, purpose) => {
+      const key = `${type}|${purpose}`;
+      if (!rankedByKey.has(key)) rankedByKey.set(key, todayNamesForType(settings, type, purpose));
+      return rankedByKey.get(key);
     };
     // 回傳要換成的名稱和說明；不用換回傳 null
-    const better = (type, name) => {
-      const list = ranked(type);
+    const better = (type, purpose, name) => {
+      const list = ranked(type, purpose);
       const best = list[0];
       if (!best || best.name === name || best.score * 100 < settings.forgeAutoNamePercent) return null;
       const current = list.find((entry) => entry.name === name);
       if (current && best.score < current.score + FORGE_NAME_UPGRADE_MARGIN) return null;
-      return { name: best.name, text: `${type}「${name || '（沒有名稱）'}」${current ? ` ${(current.score * 100).toFixed(1)}%` : ''} → 「${best.name}」${(best.score * 100).toFixed(1)}%` };
+      return { name: best.name, text: `${type}${purpose === 'sell' ? '（賣）' : ''}「${name || '（沒有名稱）'}」${current ? ` ${(current.score * 100).toFixed(1)}%` : ''} → 「${best.name}」${(best.score * 100).toFixed(1)}%` };
     };
     const plans = forgeByApiPlans(settings);
     const texts = new Set();
     forgeByApiHeroIds(settings).forEach((heroId) => {
       const plan = forgeApiPlan(settings, heroId);
-      const change = better(plan.type, plan.name);
+      const change = better(plan.type, plan.purpose, plan.name);
       if (!change) return;
       plans[heroId] = { ...(plans[heroId] || {}), name: change.name };
       texts.add(change.text);
     });
-    const recipeChange = better(settings.forgeRecipeType, settings.forgeRecipeName);
+    const recipeChange = better(settings.forgeRecipeType, 'use', settings.forgeRecipeName);
     if (!texts.size && !recipeChange) return;
     setPanelField('forgeByApiPlans', JSON.stringify(plans));
     if (recipeChange) {
@@ -14747,6 +14784,11 @@
       })
       .join('');
   }
+
+  panel.addEventListener('change', (event) => {
+    const heroId = event.target.dataset && event.target.dataset.forgePurpose;
+    if (heroId) setForgePurpose(Number(heroId), event.target.value);
+  });
 
   panel.addEventListener('change', (event) => {
     const heroId = event.target.dataset && event.target.dataset.forgeFav;
