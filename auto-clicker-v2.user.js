@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.84
+// @version      3.85
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1151,7 +1151,7 @@
       <div data-role="recipe-favorites" style="font-size:12px"></div>
       <div class="subhead">① 歷史配方（照鍛造紀錄排名，按 ☆ 加進最愛）</div>
       <div class="row">
-        <select data-role="recipe-goal" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="total">攻防智運合計</option><option value="atk">攻擊</option><option value="def">防禦</option><option value="int">智力</option><option value="lck">幸運</option><option value="fullDur">耐久</option><option value="wgt">重量輕</option></select></div>
+        <select data-role="recipe-goal" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="total">攻防智運合計</option><option value="atk">攻擊</option><option value="def">防禦</option><option value="int">智力</option><option value="lck">幸運</option><option value="fullDur">耐久</option><option value="wgt">重量輕</option><option value="recyclePrice">鍊金價（回收）</option></select></div>
       <div class="row"><select data-role="recipe-forger" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
       <label class="row"><input data-field="recipeNameAdjust" type="checkbox" style="flex:none;width:auto"> 扣掉名稱影響（只算對得到測名表的裝備）</label>
       <div data-role="recipe-list" style="font-size:12px;max-height:200px;overflow:auto"></div>
@@ -12561,6 +12561,7 @@
     lck: '幸運',
     fullDur: '耐久',
     wgt: '重量（越輕越好）',
+    recyclePrice: '鍊金價（回收）',
   };
   const RECIPE_LIMIT = 10;
 
@@ -12586,6 +12587,8 @@
         key,
         count: items.length,
         score: items.reduce((sum, item) => sum + recipeScore(item.base, goal), 0) / items.length,
+        // 鍊金價是實拿的（照實際做出來的品質），不換算成普通品質
+        recyclePrice: items.reduce((sum, item) => sum + (Number(item.recyclePrice) || 0), 0) / items.length,
         skills: skillsText(items),
       }))
       .sort((first, second) => second.score - first.score)
@@ -12697,7 +12700,7 @@
     panel.querySelector('[data-role="recipe-list"]').innerHTML = recipes.length
       ? `<table class="combat"><tr><th>配方</th><th>件</th><th>${escapeHtml(RECIPE_GOALS[goal])}</th><th title="照目前的材料庫存，夠鍛幾爐">夠</th><th></th></tr>${recipes
           .map(
-            (recipe) => `<tr><td style="white-space:normal">${escapeHtml(recipe.key)}${recipe.skills ? `<div class="hint" style="margin:0">${recipe.skills}</div>` : ''}</td><td>${recipe.count}</td><td>${scoreText(recipe.score)}</td>
+            (recipe) => `<tr><td style="white-space:normal">${escapeHtml(recipe.key)}${recipe.recyclePrice ? `<div style="color:#fbbf24;font-size:11px">平均鍊金 $${Math.round(recipe.recyclePrice).toLocaleString()}</div>` : ''}${recipe.skills ? `<div class="hint" style="margin:0">${recipe.skills}</div>` : ''}</td><td>${recipe.count}</td><td>${scoreText(recipe.score)}</td>
               <td>${recipeStockCell(recipe.key)}</td><td style="white-space:nowrap"><button data-action="recipe-use" data-recipe="${escapeHtml(recipe.key)}">用</button>${(() => {
                 const favorite = isFavoriteRecipe(readSettingsFromPanel(), type, recipe.key);
                 return `<button data-action="recipe-fav" data-type="${escapeHtml(type)}" data-recipe="${escapeHtml(recipe.key)}" title="${favorite ? '從我的最愛拿掉' : '加入我的最愛'}" style="${favorite ? 'color:#facc15' : ''}">${favorite ? '★' : '☆'}</button>`;
