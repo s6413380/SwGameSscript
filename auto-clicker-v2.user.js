@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.88
+// @version      3.89
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -263,6 +263,11 @@
     qualityPickTypes: '',
     qualityPickItemNames: '',
     qualityPickMode: 'check',
+    // 遊戲背包頁的表格點表頭可以排序；匯出勾選的裝備時換算成普通品質
+    itemTableSortEnabled: true,
+    equipExportBase: false,
+    // 穿著的裝備預測還能打幾場，少於這麼多場就提醒（0＝不提醒）
+    durWarnBattles: 30,
     // 換過名字：舊版存的「關閉」不會蓋掉現在的預設開啟
     cloudSyncEnabled: true,
     huntStatsEnabled: true,
@@ -992,6 +997,12 @@
         ${Array.from({ length: CHARACTER_COUNT }, (_, index) => equipCharacterHtml(index)).join('')}
         <div class="hint">每步間隔沿用「暫停」頁的道具每步間隔</div>
       </div>
+      <fieldset class="group">
+        <legend>耐久預測</legend>
+        <div class="row">預測還能打少於 ${numberInput('durWarnBattles', 'min="0"')} 場就提醒（0＝不提醒）</div>
+        <div class="hint">記每件穿著的裝備每場掉多少耐久（最近 30 場平均），算出還能撐幾場；打過幾場才算得出來</div>
+        <div data-role="dur-forecast" style="font-size:12px"></div>
+      </fieldset>
     </div>
 
     <div data-tab="train">
@@ -1103,6 +1114,14 @@
       <div class="row">每勾一個間隔 ${numberInput('qualityPickMinMilliseconds', 'min="0"')} ～ ${numberInput('qualityPickMaxMilliseconds', 'min="0"')} 毫秒</div>
       <div class="row"><button data-action="quality-pick">開始</button><button data-action="quality-pick-stop">停止</button></div>
       <div class="hint">只處理畫面上這一頁；已經是目標狀態的不會再點</div>
+      <fieldset class="group">
+        <legend>背包表格</legend>
+        <label class="row"><input data-field="itemTableSortEnabled" type="checkbox" style="flex:none;width:auto"> 點表頭排序（再點一次反向；品質照品質高低）</label>
+        <div class="hint">鎖定的裝備在背包表格會標 🔒、整列淡黃色</div>
+        <div class="row"><button data-action="equip-export">匯出勾選的裝備</button><label style="flex:none"><input data-field="equipExportBase" type="checkbox" style="width:auto"> 換算成普通品質</label></div>
+        <div class="hint">在遊戲背包的裝備表勾好裝備再按，複製成表格（貼進 Excel、Google 試算表會自動分欄）：名稱、類型、品質、攻防智幸重、耐久上限、孔、鍊金價、鍛造素材</div>
+        <textarea data-role="equip-export" rows="4" readonly style="display:none;width:100%;box-sizing:border-box;font:11px monospace"></textarea>
+      </fieldset>
     </div>
 
     <div data-tab="material">
@@ -1583,6 +1602,7 @@
     }
     if (tabId === 'income') renderIncome();
     if (tabId === 'draw') renderDrawStats();
+    if (tabId === 'equip') renderDurabilityForecast();
     if (tabId === 'scratch') renderScratchStats();
     if (tabId === 'forge') {
       renderForgePlanOverview();
@@ -4857,6 +4877,7 @@
     }
     if (Array.isArray(heroes)) rememberHuntTeam(heroes, huntPlace(data.huntInfo));
     const changes = data.equipmentChanges;
+    if (changes) recordDurabilityChanges(changes);
     if (changes && state.equipments.length) {
       const deleted = new Set(changes.deletedIds || []);
       const updated = new Map((Array.isArray(changes.updated) ? changes.updated : []).map((equipment) => [equipment.id, equipment]));
@@ -8490,6 +8511,8 @@
       refreshMaterialSummary();
     } else if (action === 'quality-pick-scan') {
       showPickChoices();
+    } else if (action === 'equip-export') {
+      exportCheckedEquipments();
     } else if (action === 'quality-pick') {
       pickItemsByQuality(readSettingsFromPanel());
     } else if (action === 'quality-pick-stop') {
@@ -8688,7 +8711,7 @@
   // 遊戲可能用 fetch、XHR 或 WebSocket 其中一種，三種都包起來；不在錄製時原樣放行
   function installApiRecorder() {
     const originalFetch = window.fetch;
-    window.fetch = function (...args) {
+    const hookedFetch = function (...args) {
       const fromScript = scriptFetchActive;
       {
         const [lockInput, lockInit = {}] = args;
@@ -8860,6 +8883,16 @@
           throw error;
         }
       );
+    };
+    // 腳本還在載入時（後面的常數還沒定義），遊戲就可能透過這裡發請求（例如腳本叫遊戲重抓資料）；
+    // 這時碰到還沒準備好的東西會拋 ReferenceError，讓遊戲的請求整個失敗（畫面顯示「…載入失敗」）。改成直接照原樣送出
+    window.fetch = function (...args) {
+      try {
+        return hookedFetch.apply(this, args);
+      } catch (error) {
+        if (error instanceof ReferenceError) return originalFetch.apply(this, args);
+        throw error;
+      }
     };
 
     const originalOpen = XMLHttpRequest.prototype.open;
@@ -12311,6 +12344,7 @@
     const locked = toggleEquipmentLock(Number(button.dataset.equipLock));
     showToast(locked ? '已鎖定：這件不能販賣、不能鍊金' : '已解鎖');
     enhanceEquipmentDetails();
+    scanItemTables();
   }, true);
 
   function enhanceEquipmentDetails() {
@@ -12351,6 +12385,276 @@
   }
 
   // 只看遊戲畫面的變動；自己加的那塊改內容不要再觸發一次
+  // 耐久預測：打怪回應的 equipmentChanges.updated 只列有變的裝備；追蹤過的穿著裝備這場沒出現＝這場沒掉
+  const DUR_TRACK_KEY = 'autoClickerV2DurTrack';
+  const DUR_HISTORY = 30;
+  const durWarned = new Set();
+
+  function recordDurabilityChanges(changes) {
+    const track = readJsonStorage(DUR_TRACK_KEY, {});
+    const updated = new Map((Array.isArray(changes.updated) ? changes.updated : []).map((equipment) => [String(equipment.id), equipment]));
+    (changes.deletedIds || []).forEach((id) => delete track[id]);
+    // 沒變的穿著裝備這場掉 0
+    Object.entries(track).forEach(([id, entry]) => {
+      if (entry.equipped && !updated.has(id)) entry.losses = [...entry.losses, 0].slice(-DUR_HISTORY);
+    });
+    updated.forEach((equipment, id) => {
+      if (equipment.dur === undefined) return;
+      const entry = track[id] || { losses: [] };
+      const dur = Number(equipment.dur);
+      // 修好、換新的耐久會變多：重新算
+      if (entry.dur !== undefined && dur <= entry.dur) entry.losses = [...entry.losses, entry.dur - dur].slice(-DUR_HISTORY);
+      else if (entry.dur !== undefined) entry.losses = [];
+      Object.assign(entry, {
+        name: equipment.name || entry.name,
+        type: equipment.type || entry.type,
+        dur,
+        fullDur: Number(equipment.fullDur) || entry.fullDur,
+        equipped: equipment.equipped || 0,
+        at: Date.now(),
+      });
+      track[id] = entry;
+    });
+    writeJsonStorage(DUR_TRACK_KEY, track);
+    warnDurability(track);
+    if (activeTab === 'equip') renderDurabilityForecast();
+  }
+
+  function durabilityForecast(entry) {
+    if (!entry.losses.length) return null;
+    const average = entry.losses.reduce((sum, loss) => sum + loss, 0) / entry.losses.length;
+    return { average, left: average > 0 ? Math.floor(entry.dur / average) : Infinity };
+  }
+
+  function warnDurability(track) {
+    const limit = Number(readSettingsFromPanel().durWarnBattles) || 0;
+    if (!limit) return;
+    Object.entries(track).forEach(([id, entry]) => {
+      const forecast = entry.equipped && entry.losses.length >= 3 ? durabilityForecast(entry) : null;
+      if (!forecast || forecast.left > limit) {
+        durWarned.delete(id);
+        return;
+      }
+      if (durWarned.has(id)) return;
+      durWarned.add(id);
+      const hero = state.heroStats.get(Number(entry.equipped));
+      showToast(`耐久：${hero ? `${hero.name} 的` : ''}${entry.type || ''}「${entry.name}」剩 ${entry.dur}/${entry.fullDur}，大約再 ${forecast.left} 場就壞了`);
+    });
+  }
+
+  function renderDurabilityForecast() {
+    const box = panel.querySelector('[data-role="dur-forecast"]');
+    if (!box) return;
+    const rows = Object.values(readJsonStorage(DUR_TRACK_KEY, {}))
+      .filter((entry) => entry.equipped)
+      .map((entry) => ({ entry, forecast: durabilityForecast(entry) }))
+      .sort((first, second) => (first.forecast ? first.forecast.left : Infinity) - (second.forecast ? second.forecast.left : Infinity));
+    if (!rows.length) {
+      box.innerHTML = '<div class="hint">還沒有紀錄：打幾場就會出現</div>';
+      return;
+    }
+    const limit = Number(readSettingsFromPanel().durWarnBattles) || 0;
+    box.innerHTML = `<table class="combat"><tr><th style="text-align:left">裝備</th><th>耐久</th><th>每場</th><th>還能打</th></tr>${rows
+      .map(({ entry, forecast }) => {
+        const hero = state.heroStats.get(Number(entry.equipped));
+        const left = forecast ? (forecast.left === Infinity ? '不會掉' : `${forecast.left} 場`) : '算不出';
+        const danger = forecast && limit && forecast.left <= limit;
+        return `<tr><td style="text-align:left;white-space:normal">${escapeHtml(entry.name || '?')}<div style="color:#a0a0aa">${escapeHtml([hero && hero.name, entry.type].filter(Boolean).join('・'))}</div></td>
+          <td>${entry.dur}/${entry.fullDur || '?'}</td><td>${forecast ? forecast.average.toFixed(2) : '-'}</td><td style="color:${danger ? '#f87171' : '#4ade80'}">${left}</td></tr>`;
+      })
+      .join('')}</table>`;
+  }
+
+  // 遊戲背包頁（/items）的表格：點表頭排序（只搬 tbody 裡 <tr> 的順序，遊戲重畫後再套一次）、鎖定的裝備標 🔒
+  const ITEM_SORT_ATTR = 'data-ac-sort';
+  const ITEM_SORT_DIR_ATTR = 'data-ac-sort-dir';
+  const ITEM_LOCKED_ATTR = 'data-ac-locked';
+  const itemSort = {};
+
+  function isItemsPage() {
+    return /^\/items(?:\/|$)/.test(location.pathname);
+  }
+
+  function itemHeadCells(table) {
+    const head = table.querySelector('thead tr');
+    return head ? [...head.children] : [];
+  }
+
+  function itemTableKey(table) {
+    return itemHeadCells(table)
+      .map((cell) => cell.textContent.replace(/\s+/g, ''))
+      .join('|');
+  }
+
+  function itemSortValue(text, quality) {
+    const clean = text.replace(/\s+/g, ' ').trim();
+    if (quality) {
+      const rank = Object.keys(QUALITY_MULTIPLIERS).indexOf(clean.replace(/的$/, ''));
+      return rank < 0 ? null : -rank;
+    }
+    const number = /^([+-]?)\s*([\d,]+(?:\.\d+)?)\s*%?$/.exec(clean) || /^([+-]?)([\d,]+)\s*\/\s*[\d,]+$/.exec(clean);
+    return number ? Number(`${number[1] === '-' ? '-' : ''}${number[2].replace(/,/g, '')}`) : clean;
+  }
+
+  function compareItemValues(first, second) {
+    if (typeof first === 'number' && typeof second === 'number') return first - second;
+    if (typeof first !== typeof second) return typeof first === 'number' ? -1 : 1;
+    return String(first).localeCompare(String(second), 'zh-Hant');
+  }
+
+  function applyItemSort(table) {
+    const cells = itemHeadCells(table);
+    const sort = itemSort[itemTableKey(table)];
+    cells.forEach((cell, index) => {
+      if (sort && sort.col === index) cell.setAttribute(ITEM_SORT_DIR_ATTR, sort.dir);
+      else cell.removeAttribute(ITEM_SORT_DIR_ATTR);
+    });
+    if (!sort || !cells[sort.col]) return;
+    const quality = cells[sort.col].textContent.replace(/\s+/g, '') === '品質';
+    const direction = sort.dir === 'desc' ? -1 : 1;
+    table.querySelectorAll(':scope > tbody').forEach((tbody) => {
+      const rows = [...tbody.children].filter((row) => row.tagName === 'TR');
+      const data = [];
+      const tail = [];
+      rows.forEach((row, index) => {
+        const cell = row.children[sort.col];
+        const value = row.children.length > 1 && cell ? itemSortValue(cell.textContent, quality) : null;
+        if (value === null) tail.push(row);
+        else data.push({ row, index, value });
+      });
+      data.sort((first, second) => compareItemValues(first.value, second.value) * direction || first.index - second.index);
+      const wanted = [...data.map((item) => item.row), ...tail];
+      // 順序本來就對就不動，免得畫面變動又觸發自己
+      if (wanted.every((row, index) => rows[index] === row)) return;
+      wanted.forEach((row) => tbody.appendChild(row));
+    });
+  }
+
+  function decorateItemTable(table) {
+    if (table.hasAttribute(ITEM_SORT_ATTR)) return;
+    table.setAttribute(ITEM_SORT_ATTR, '');
+    itemHeadCells(table).forEach((cell, index) => {
+      if (cell.querySelector('input, button[role="checkbox"]') || !cell.textContent.trim()) return;
+      cell.style.cursor = 'pointer';
+      cell.title = `點一下照「${cell.textContent.trim()}」排序，再點一次反向`;
+      cell.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const key = itemTableKey(table);
+        const current = itemSort[key];
+        itemSort[key] = { col: index, dir: current && current.col === index && current.dir === 'asc' ? 'desc' : 'asc' };
+        applyItemSort(table);
+      });
+    });
+  }
+
+  // 裝備表：表頭同時有名稱、品質、攻擊（道具、礦物那兩張沒有）
+  function isEquipmentTable(table) {
+    const labels = itemHeadCells(table).map((cell) => cell.textContent.replace(/\s+/g, ''));
+    return labels.includes('名稱') && labels.includes('品質') && labels.includes('攻擊');
+  }
+
+  function markLockedEquipmentRows(table) {
+    const nameColumn = itemHeadCells(table).findIndex((cell) => cell.textContent.replace(/\s+/g, '') === '名稱');
+    const locked = lockedEquipmentIds();
+    table.querySelectorAll(':scope > tbody > tr').forEach((row) => {
+      const isLocked = locked.size > 0 && locked.has(rowEquipmentId(row));
+      if (row.hasAttribute(ITEM_LOCKED_ATTR) !== isLocked) row.toggleAttribute(ITEM_LOCKED_ATTR, isLocked);
+      const nameCell = row.children[nameColumn];
+      if (nameCell && nameCell.hasAttribute(ITEM_LOCKED_ATTR) !== isLocked) nameCell.toggleAttribute(ITEM_LOCKED_ATTR, isLocked);
+    });
+  }
+
+  function scanItemTables() {
+    if (tabShutDown || !isItemsPage()) return;
+    const settings = readSettingsFromPanel();
+    document.querySelectorAll('table').forEach((table) => {
+      if (panel.contains(table)) return;
+      if (settings.itemTableSortEnabled) {
+        decorateItemTable(table);
+        applyItemSort(table);
+      }
+      if (isEquipmentTable(table)) markLockedEquipmentRows(table);
+    });
+  }
+
+  function installItemTableHelpers() {
+    const style = document.createElement('style');
+    style.textContent = `
+      [${ITEM_SORT_DIR_ATTR}="asc"]::after { content:' ▲'; color:#5eead4; }
+      [${ITEM_SORT_DIR_ATTR}="desc"]::after { content:' ▼'; color:#5eead4; }
+      tr[${ITEM_LOCKED_ATTR}] { background:rgba(245,158,11,.12) !important; }
+      td[${ITEM_LOCKED_ATTR}]::before { content:'🔒 '; }`;
+    document.head.appendChild(style);
+    let pending = null;
+    new MutationObserver(() => {
+      if (pending || !isItemsPage()) return;
+      pending = setTimeout(() => {
+        pending = null;
+        scanItemTables();
+      }, 150);
+    }).observe(document.body, { childList: true, subtree: true });
+    // 切裝備／道具／礦物分頁不一定動到整棵樹，點完補看一次
+    document.addEventListener('click', () => setTimeout(scanItemTables, 300), true);
+  }
+
+  // 匯出背包裝備表勾選的列：每列的 React key 就是裝備 id，數值和鍛造素材直接用記下來的資料
+  function equipRowChecked(row) {
+    return [row, ...row.querySelectorAll('*')].some(
+      (element) =>
+        element.checked === true || element.getAttribute('data-state') === 'checked' || element.getAttribute('aria-checked') === 'true'
+    );
+  }
+
+  async function exportCheckedEquipments() {
+    const table = [...document.querySelectorAll('table')].find((candidate) => !panel.contains(candidate) && isEquipmentTable(candidate));
+    if (!table) return setStatus('要在遊戲的背包（物品）頁、裝備那張表才匯出得了');
+    const rows = [...table.querySelectorAll(':scope > tbody > tr')].filter(equipRowChecked);
+    if (!rows.length) return setStatus('裝備表沒有勾選的列');
+    let ids = rows.map(rowEquipmentId);
+    if (ids.some((id) => id && !latestEquipments.has(id))) {
+      try {
+        rememberLatestEquipments((await requestGameApi(EQUIPMENTS_API)).equipments || []);
+      } catch {
+        // 讀不到就只匯出有的
+      }
+    }
+    const settings = readSettingsFromPanel();
+    const base = settings.equipExportBase;
+    const multipliers = qualityMultipliers();
+    const records = forgedRecords();
+    const columns = ['名稱', '類型', '品質', '攻', '防', '智', '幸', '重', '耐久上限', '孔', '鍊金價', '鍛造素材'].map((label) =>
+      base && ['攻', '防', '智', '幸', '重', '耐久上限'].includes(label) ? `${label}(普通)` : label
+    );
+    let missing = 0;
+    const lines = ids.map((id) => {
+      const equipment = latestEquipments.get(id);
+      if (!equipment) {
+        missing++;
+        return null;
+      }
+      const stats = base ? baseStats(equipment, multipliers) : equipment;
+      const round = (value) => (value === undefined || value === null || value === '' ? '' : Math.round(Number(value)));
+      const record = records.get(String(id));
+      const materials = record && Array.isArray(record.materials) ? record.materials.map(([name, quantity]) => `${name}×${quantity}`).join('、') : '';
+      return [equipment.name, equipment.type, equipment.quality, round(stats.atk), round(stats.def), round(stats.int), round(stats.lck), round(stats.wgt), round(stats.fullDur), equipment.fullSlots ?? '', equipment.recyclePrice ?? '', materials]
+        .map((value) => String(value).replace(/\t|\n/g, ' '))
+        .join('\t');
+    });
+    const text = [columns.join('\t'), ...lines.filter(Boolean)].join('\n');
+    const box = panel.querySelector('[data-role="equip-export"]');
+    box.style.display = '';
+    box.value = text;
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      copied = true;
+    } catch {
+      box.select();
+      copied = document.execCommand && document.execCommand('copy');
+    }
+    setStatus(`匯出 ${lines.length - missing} 件${missing ? `（${missing} 件讀不到資料）` : ''}${copied ? '，已複製' : '，複製失敗，請從下面的框自己複製'}`);
+  }
+
   function installForgeDetailEnhancer() {
     let pending = null;
     new MutationObserver((mutations) => {
@@ -16006,6 +16310,8 @@
   refreshSlotButtons();
   refreshSupplyModes();
   applyPanelTheme();
+  // 用到的常數在檔案後段才定義，要等全部載入完才裝
+  installItemTableHelpers();
   refreshAreaList();
   renderCombatStats();
   renderCardBuyStatus();
