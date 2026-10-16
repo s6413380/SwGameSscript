@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.82
+// @version      3.83
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -227,6 +227,8 @@
     alertNotifyEnabled: true,
     // 開好幾個帳號時分得出是哪個；截圖分享時可以關掉
     showAccountName: true,
+    // 面板換成大耳狗風格（天空藍、雲朵、粉紅點綴），預設關
+    cinnamonTheme: false,
     itemStepSeconds: 1,
     combatEnabled: true,
     combatKeyword: '戰鬥過程',
@@ -1040,6 +1042,7 @@
       <label class="row"><input data-field="alertPopupEnabled" type="checkbox" style="flex:none;width:auto"> 彈出提示視窗</label>
       <label class="row"><input data-field="alertNotifyEnabled" type="checkbox" style="flex:none;width:auto"> 系統通知＋分頁標題閃爍</label>
       <label class="row"><input data-field="showAccountName" type="checkbox" style="flex:none;width:auto"> 面板標題、分頁標題和提醒顯示帳號名稱（例如「愛吉吉的小明」）</label>
+      <label class="row"><input data-field="cinnamonTheme" type="checkbox" style="flex:none;width:auto"> ☁️ 大耳狗風格背景（天空藍＋雲朵，關掉就是原本的黑底）</label>
       <fieldset class="group">
         <legend>多帳號總覽</legend>
         <label class="row"><input data-field="dashboardEnabled" type="checkbox" style="flex:none;width:auto"> 回報到總覽頁（每 5 秒）</label>
@@ -1358,12 +1361,52 @@
     [data-auto-clicker] table.combat { width:100%; border-collapse:collapse; font:11px monospace; margin:4px 0; }
     [data-auto-clicker] table.combat th, [data-auto-clicker] table.combat td { padding:1px 3px; text-align:right; border-bottom:1px solid #2e2e34; }
     [data-auto-clicker] table.combat th:first-child, [data-auto-clicker] table.combat td:first-child { text-align:left; }
+    /* 大耳狗風格：天空藍底、白雲、粉紅點綴；白字照樣看得清楚 */
+    [data-auto-clicker][data-cinnamon] {
+      background-color:#4a8fd0 !important; border:2px solid #e6f4ff !important; box-shadow:0 6px 24px rgba(40,100,170,.55) !important;
+      background-image:
+        radial-gradient(circle at 86% 3%, rgba(255,255,255,.55) 0 16px, transparent 17px),
+        radial-gradient(circle at 93% 4.5%, rgba(255,255,255,.55) 0 20px, transparent 21px),
+        radial-gradient(circle at 79% 5%, rgba(255,255,255,.5) 0 12px, transparent 13px),
+        radial-gradient(circle at 12% 55%, rgba(255,255,255,.18) 0 22px, transparent 23px),
+        radial-gradient(circle at 20% 56.5%, rgba(255,255,255,.18) 0 28px, transparent 29px),
+        radial-gradient(circle at 88% 90%, rgba(255,255,255,.16) 0 24px, transparent 25px),
+        radial-gradient(circle at 95% 91%, rgba(255,255,255,.16) 0 18px, transparent 19px),
+        linear-gradient(180deg, #6cb2ee 0%, #4a8fd0 45%, #3d7cbf 100%) !important;
+      background-attachment:local !important; }
+    [data-auto-clicker][data-cinnamon] input, [data-auto-clicker][data-cinnamon] textarea, [data-auto-clicker][data-cinnamon] select,
+    [data-auto-clicker][data-cinnamon] [style*="background:#2a2a30"] { background:#2f6aa8 !important; border-color:#a9d6ff !important; }
+    [data-auto-clicker][data-cinnamon] input::placeholder, [data-auto-clicker][data-cinnamon] textarea::placeholder { color:#c9e4ff; }
+    [data-auto-clicker][data-cinnamon] input[type="checkbox"], [data-auto-clicker][data-cinnamon] input[type="range"] { accent-color:#ff9cc7; background:transparent !important; }
+    [data-auto-clicker][data-cinnamon] button { background:#3572b3; border-color:#a9d6ff; }
+    [data-auto-clicker][data-cinnamon] button:hover { background:#4683c4; }
+    [data-auto-clicker][data-cinnamon] .tab-groups { border-bottom-color:#a9d6ff; }
+    [data-auto-clicker][data-cinnamon] .tab-groups button { background:#2f6aa8; color:#e6f4ff; border-color:#a9d6ff; }
+    [data-auto-clicker][data-cinnamon] .tab-groups button[data-active] { background:#ff9cc7; color:#5a2140; border-color:#ffd1e6; }
+    [data-auto-clicker][data-cinnamon] .tabs button { background:#2f6aa8; border-color:#a9d6ff; }
+    [data-auto-clicker][data-cinnamon] .tabs button[data-active] { background:#fff; color:#2d5f93; border-color:#ffd1e6; }
+    [data-auto-clicker][data-cinnamon] fieldset.group { border-color:#cfe8ff; background:rgba(255,255,255,.06); }
+    [data-auto-clicker][data-cinnamon] fieldset.group > legend::before { content:'☁ '; color:#fff; }
+    [data-auto-clicker][data-cinnamon] fieldset.group.folded > legend::before { content:'☁ '; color:#cfe8ff; }
+    [data-auto-clicker][data-cinnamon] .hint, [data-auto-clicker][data-cinnamon] .global-row { color:#e3f1ff; }
+    [data-auto-clicker][data-cinnamon] .subhead, [data-auto-clicker][data-cinnamon] .divider, [data-auto-clicker][data-cinnamon] .tab-groups { border-color:#cfe8ff; }
+    [data-auto-clicker][data-cinnamon] .monitor, [data-auto-clicker][data-cinnamon] pre[data-role="log"] { background:#2a5d93; border:1px solid #a9d6ff; }
+    [data-auto-clicker][data-cinnamon] table.combat th, [data-auto-clicker][data-cinnamon] table.combat td { border-bottom-color:#7fb6e6; }
+    [data-auto-clicker][data-cinnamon] [style*="color:#a0a0aa"], [data-auto-clicker][data-cinnamon] [style*="color: #a0a0aa"] { color:#d6ebff !important; }
+    [data-auto-clicker][data-cinnamon] [style*="background:#1c1c21"], [data-auto-clicker][data-cinnamon] [style*="background:#222228"],
+    [data-auto-clicker][data-cinnamon] [style*="background:#1f1f24"] { background:#3572b3 !important; }
+    [data-auto-clicker][data-cinnamon] [style*="border:1px solid #2e2e34"], [data-auto-clicker][data-cinnamon] [style*="border-bottom:1px solid #2e2e34"],
+    [data-auto-clicker][data-cinnamon] [style*="border:1px solid #34343c"] { border-color:#a9d6ff !important; }
     [data-auto-clicker][data-alerting] { background:#c62828 !important; border:3px solid #ffe066 !important; }
     .auto-clicker-hover { outline: 3px solid #e33 !important; }
   `;
   panel.setAttribute('data-auto-clicker', '');
   document.head.appendChild(style);
   document.body.appendChild(panel);
+
+  function applyPanelTheme() {
+    panel.toggleAttribute('data-cinnamon', Boolean(readSettingsFromPanel().cinnamonTheme));
+  }
 
   // 長說明一多，「開始」被擠到很下面：預設只露第一行，點一下展開、再點收起。
   // 只收建立面板時寫死的說明；有 data-role 的是會變的狀態文字，要一直看得到
@@ -15751,6 +15794,7 @@
     refreshAreaList();
     refreshSlotButtons();
     refreshSupplyModes();
+    applyPanelTheme();
     saveSettings(readSettingsFromPanel());
     setStatus(`已匯入 ${known.length} 項設定，按開始即可使用`);
   }
@@ -15821,6 +15865,7 @@
     }
     if (event.target.dataset.recipeMine !== undefined || event.target.dataset.recipeQty !== undefined) updateRecipeFromPicker();
     refreshSupplyModes();
+    if (event.target.dataset.field === 'cinnamonTheme') applyPanelTheme();
     saveSettings(readSettingsFromPanel());
     if (activeTab === 'forge') renderForgePlanOverview();
     if (/^card/.test(event.target.dataset.field || '')) {
@@ -15852,6 +15897,7 @@
   writeSettingsToPanel(loadSettings());
   refreshSlotButtons();
   refreshSupplyModes();
+  applyPanelTheme();
   refreshAreaList();
   renderCombatStats();
   renderCardBuyStatus();
