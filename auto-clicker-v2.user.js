@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.81
+// @version      3.82
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -15145,8 +15145,8 @@
 
   // 總覽頁只放得下幾樣：照數量排的話，撿到 1 張英雄券會被一大堆普通掉落擠掉，所以稀有道具一定放前面
   const TOP_LOOT_COUNT = 8;
-  // 英雄券、英雄卷軸這類一定算稀有，不管設定有沒有寫
-  const BUILT_IN_RARE_LOOT = ['英雄券', '英雄卷'];
+  // 英雄券、英雄卷軸、寵物券這類一定算稀有，不管設定有沒有寫
+  const BUILT_IN_RARE_LOOT = ['英雄券', '英雄卷', '寵物券', '寵物卷'];
 
   function isRareLoot(name, rareNames = rareLootNames()) {
     return [...BUILT_IN_RARE_LOOT, ...rareNames].some((rareName) => String(name).includes(rareName));
@@ -15408,12 +15408,12 @@
       ours: actor.ours,
       money: actor.money,
       items: Object.values(actor.items).reduce((sum, quantity) => sum + quantity, 0),
-      // 稀有的（英雄券…）一律列出來放最前面，再補數量最多的到 3 樣；第三格標稀有
-      topItems: (() => {
+      // 全部道具：稀有的（英雄券、寵物券…）放最前面、第三格標稀有，其他照數量；總覽頁先顯示 3 樣，可以展開看全部
+      allItems: (() => {
         const rareNames = rareLootNames();
         const sorted = Object.entries(actor.items).sort(([, first], [, second]) => second - first);
         const rare = sorted.filter(([item]) => isRareLoot(item, rareNames)).map(([item, quantity]) => [item, quantity, true]);
-        return [...rare, ...sorted.filter(([item]) => !isRareLoot(item, rareNames)).slice(0, Math.max(0, 3 - rare.length))];
+        return [...rare, ...sorted.filter(([item]) => !isRareLoot(item, rareNames))];
       })(),
     }));
   }

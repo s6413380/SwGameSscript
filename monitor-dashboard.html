@@ -323,6 +323,15 @@
   }
 
   // 今天戰報寫明是誰拿到的：每個角色一行，盜取放最前面
+  // 卡片每幾秒重畫，展開過的「誰拿到」要記著，不然一直被收回去
+  const openedLoot = new Set();
+  document.addEventListener('toggle', (event) => {
+    const key = event.target.dataset && event.target.dataset.lootKey;
+    if (!key) return;
+    if (event.target.open) openedLoot.add(key);
+    else openedLoot.delete(key);
+  }, true);
+
   function actorLootHtml(data) {
     if (!Array.isArray(data.actorLoot) || !data.actorLoot.length) return '';
     const stolen = (actor) => (actor.money && actor.money['盜取']) || 0;
@@ -332,10 +341,16 @@
         const money = Object.entries(actor.money || {})
           .sort(([first], [second]) => (first === '盜取' ? -1 : second === '盜取' ? 1 : 0))
           .map(([verb, amount]) => `${escapeHtml(verb)} $${Number(amount).toLocaleString()}`);
-        const items = actor.items
-          ? [`道具 ${actor.items} 件${actor.topItems && actor.topItems.length ? `（${actor.topItems.map(([item, quantity, rare]) => (rare ? `<b style="color:#fbbf24">${escapeHtml(item)}×${quantity}</b>` : `${escapeHtml(item)}×${quantity}`)).join('、')}）` : ''}`]
-          : [];
-        return `<div>${escapeHtml(actor.name)}${actor.ours ? '' : ' <span style="color:#f87171">不是我方</span>'}：${[...money, ...items].join('・') || '-'}</div>`;
+        // 舊版分頁只送前 3 樣（topItems），新版送全部（allItems）
+        const list = actor.allItems || actor.topItems || [];
+        const chip = ([item, quantity, rare]) => (rare ? `<b style="color:#fbbf24">${escapeHtml(item)}×${quantity}</b>` : `${escapeHtml(item)}×${quantity}`);
+        const shown = list.slice(0, 3).map(chip).join('、');
+        const items = actor.items ? [`道具 ${actor.items} 件${shown ? `（${shown}${list.length > 3 ? '…' : ''}）` : ''}`] : [];
+        const head = `${escapeHtml(actor.name)}${actor.ours ? '' : ' <span style="color:#f87171">不是我方</span>'}：${[...money, ...items].join('・') || '-'}`;
+        if (list.length <= 3) return `<div>${head}</div>`;
+        const key = `${data.nickname}|${actor.name}`;
+        return `<details data-loot-key="${escapeHtml(key)}" ${openedLoot.has(key) ? 'open' : ''}><summary style="cursor:pointer">${head} <span class="muted">（全部 ${list.length} 樣，點開）</span></summary>
+          <div style="margin-left:12px">${list.map(chip).join('、')}</div></details>`;
       })
       .join('');
     return `<div class="income"><b>今天誰拿到</b>${rows}</div>`;
