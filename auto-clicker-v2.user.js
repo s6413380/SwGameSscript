@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.77
+// @version      3.78
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -12248,6 +12248,8 @@
     return Number.isFinite(value) && value > 0 ? value / 100 : null;
   }
 
+  const NAME_SHEET_TRUSTED_QUALITIES = ['普通', '精良'];
+
   function parseNameSheet(text) {
     const rows = parseCsv(text);
     const headerIndex = rows.findIndex((row) => row.includes('鍛造日期') && row.includes('名子') && row.includes('品質'));
@@ -12256,7 +12258,6 @@
     const dateColumn = header.indexOf('鍛造日期');
     const nameColumn = header.indexOf('名子');
     const qualityColumn = header.indexOf('品質');
-    const multipliers = qualityMultipliers();
     const now = new Date();
     const sums = {};
     rows.slice(headerIndex + 1).forEach((row) => {
@@ -12264,8 +12265,8 @@
       const name = String(row[nameColumn] || '').trim();
       const ratios = NAME_WEIGHT_FIELDS.map((_, offset) => percentValue(row[qualityColumn + 1 + offset]));
       if (!day || !name || ratios.some((ratio) => ratio === null)) return;
-      // 品質太差的基底數字很小，比例跳動大；有普通以上的樣本就只用那些
-      const good = (multipliers[row[qualityColumn]] || [0])[0] >= 1;
+      // 品質太差的基底數字很小、太好的會碰到上限，比例都會跳；跟測名表「今天」分頁一樣只採普通、精良的樣本
+      const good = NAME_SHEET_TRUSTED_QUALITIES.includes(String(row[qualityColumn]).trim());
       const dayEntry = sums[day] || (sums[day] = {});
       const entry = dayEntry[name] || (dayEntry[name] = { good: { total: [0, 0, 0, 0, 0, 0], count: 0 }, all: { total: [0, 0, 0, 0, 0, 0], count: 0 } });
       [entry.all, ...(good ? [entry.good] : [])].forEach((bucket) => {
@@ -12430,7 +12431,9 @@
     const today = weights ? weights.days[localDayKey(Date.now())] || {} : {};
     const fieldIndex = (field) => NAME_WEIGHT_FIELDS.indexOf(field);
     const score = ({ w }) => (goal === 'six' ? w.reduce((sum, value) => sum + value, 0) / w.length : goal === 'total' ? (w[0] + w[1] + w[2] + w[3]) / 4 : w[fieldIndex(goal)]);
+    // 只有次等以下（或上等以上）測過的名稱不準，不拿來挑（測名表「今天」分頁也不列）
     return Object.entries(today)
+      .filter(([, entry]) => entry.good)
       .map(([name, entry]) => ({ name, ...entry, score: score(entry) }))
       .sort((first, second) => second.score - first.score);
   }
