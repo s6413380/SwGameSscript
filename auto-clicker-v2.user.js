@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.85
+// @version      3.86
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -238,6 +238,10 @@
     equipApiMinDurability: 10,
     equipApiSameName: false,
     equipApiPauseWhenEmpty: true,
+    // 沒有可替換的裝備時改去別的關卡掛機（勾了就不暫停）
+    equipEmptyMoveEnabled: false,
+    equipEmptyArea: '',
+    equipEmptyNumber: 1,
     // 要自動換裝的角色（heroId，逗號分隔）；沒勾就誰都不換
     equipApiHeroIds: '',
     // 可以換上的裝備名稱（逗號分隔）；留空＝閒置裝備都能用
@@ -971,6 +975,8 @@
           <div class="row">耐久低於 ${numberInput('equipApiMinDurability', 'min="0"')} 就換</div>
           <label class="row"><input data-field="equipApiSameName" type="checkbox" style="flex:none;width:auto"> 只換同名裝備（不勾＝同類型都可以）</label>
           <label class="row"><input data-field="equipApiPauseWhenEmpty" type="checkbox" style="flex:none;width:auto"> 沒有可替換的裝備就暫停</label>
+          <label class="row"><input data-field="equipEmptyMoveEnabled" type="checkbox" style="flex:none;width:auto"> 沒有可替換的裝備就改去（勾了就不暫停）</label>
+          <div class="row">${escapeTargetHtml('equipEmpty')}</div>
           <div class="subhead">要換裝的角色</div>
           <input type="hidden" data-field="equipApiHeroIds">
           <div data-role="equip-heroes" class="choices"><div class="hint">還沒讀到隊伍</div></div>
@@ -4950,8 +4956,15 @@
     if (!replacement) {
       state.equipApiSkipped.add(worn.id);
       logItemUse(`${who} ✗ 沒有可替換的閒置裝備`);
+      const reason = `${hero ? hero.name : heroId} 的${worn.type}耐久 ${worn.dur}，沒有可替換的閒置裝備`;
+      // 改去設定的關卡（通常是比較好打、不太耗耐久的地方），自動移動會接手走過去
+      if (settings.equipEmptyMoveEnabled && settings.equipEmptyArea) {
+        if (!isEscapeTarget(settings, 'equipEmpty')) escapeTo(settings, 'equipEmpty', reason);
+        continueAfterItem(readSettingsFromPanel());
+        return;
+      }
       if (settings.equipApiPauseWhenEmpty) {
-        pauseWithAlert(`${hero ? hero.name : heroId} 的${worn.type}耐久 ${worn.dur}，沒有可替換的閒置裝備，已暫停`);
+        pauseWithAlert(`${reason}，已暫停`);
         return;
       }
       setStatus(`${who}：沒有可替換的閒置裝備，本輪不再換`);
