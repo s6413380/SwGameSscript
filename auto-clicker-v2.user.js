@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.78
+// @version      3.79
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -4656,8 +4656,10 @@
     if (hero[group.heroField] >= targetValue) {
       outcome = `已補到 ${targetPercent}% 以上`;
     } else if (!pickHealingItem(items, group, names)) {
-      state.needRest = true;
-      outcome = '沒有可用的道具，稍後全隊休息';
+      // 這一條先不補了：不標起來的話，叫它補的流程（尤其是 API 鍛造）會一直回來重試、卡在原地
+      state.itemUsedSlots.add(`${group.id}:${index}`);
+      if (group.id !== 'forge') state.needRest = true;
+      outcome = group.id === 'forge' ? '沒有可用的體力道具，這次直接開爐' : '沒有可用的道具，稍後全隊休息';
     } else {
       state.itemUsedSlots.add(`${group.id}:${index}`);
       outcome = `送出 ${settings[groupKey(group.id, 'MaxUses')]} 次仍未達 ${targetPercent}%，這次掛機前先不補`;
@@ -13738,6 +13740,8 @@
         const { body, summary, forgesLeft } = request;
         await sendForge(body);
         forgeRunner.started++;
+        // 開爐成功：補不上體力的標記清掉，下一爐再試著補
+        [...state.itemUsedSlots].filter((key) => key.startsWith('forge:')).forEach((key) => state.itemUsedSlots.delete(key));
         actions.push(`${idle.name} 在鍛造坊 ${freeShop} 開始鍛造 ${summary}${forgesLeft === null ? '' : `，材料還夠 ${forgesLeft} 爐`}`);
       }
       forgeRunner.failures = 0;
