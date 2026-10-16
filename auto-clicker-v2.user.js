@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.83
+// @version      3.84
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1042,7 +1042,7 @@
       <label class="row"><input data-field="alertPopupEnabled" type="checkbox" style="flex:none;width:auto"> 彈出提示視窗</label>
       <label class="row"><input data-field="alertNotifyEnabled" type="checkbox" style="flex:none;width:auto"> 系統通知＋分頁標題閃爍</label>
       <label class="row"><input data-field="showAccountName" type="checkbox" style="flex:none;width:auto"> 面板標題、分頁標題和提醒顯示帳號名稱（例如「愛吉吉的小明」）</label>
-      <label class="row"><input data-field="cinnamonTheme" type="checkbox" style="flex:none;width:auto"> ☁️ 大耳狗風格背景（天空藍＋雲朵，關掉就是原本的黑底）</label>
+      <label class="row"><input data-field="cinnamonTheme" type="checkbox" style="flex:none;width:auto"> 風格2</label>
       <fieldset class="group">
         <legend>多帳號總覽</legend>
         <label class="row"><input data-field="dashboardEnabled" type="checkbox" style="flex:none;width:auto"> 回報到總覽頁（每 5 秒）</label>
