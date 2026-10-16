@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.86
+// @version      3.87
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -8686,6 +8686,14 @@
     const originalFetch = window.fetch;
     window.fetch = function (...args) {
       const fromScript = scriptFetchActive;
+      {
+        const [lockInput, lockInit = {}] = args;
+        const lockUrl = typeof lockInput === 'string' ? lockInput : lockInput instanceof URL ? lockInput.href : (lockInput && lockInput.url) || '';
+        const lockMethod = String(lockInit.method || (lockInput instanceof Request ? lockInput.method : 'GET')).toUpperCase();
+        const lockGuard = guardLockedEquipment(lockUrl, lockMethod, lockInit, args);
+        if (lockGuard && lockGuard.response) return lockGuard.response;
+        if (lockGuard && lockGuard.args) args = lockGuard.args;
+      }
       // 關閉面板＝不掛機也不回報，但手動玩的升級還是要記，所以只留成長值紀錄
       const growthOnly = tabShutDown;
       if (growthOnly && !readSettingsFromPanel().growthEnabled) return originalFetch.apply(this, args);
@@ -9862,6 +9870,21 @@
     return [...texts];
   }
 
+  // 遊戲的物品清單每列用裝備 id 當 React 的 key：從這列的元素往上找就知道是哪一件
+  function rowEquipmentId(element) {
+    for (let node = element; node && node !== document.body; node = node.parentElement) {
+      const fiberKey = Object.keys(node).find((key) => key.startsWith('__reactFiber$'));
+      for (let fiber = fiberKey ? node[fiberKey] : null, depth = 0; fiber && depth < 12; fiber = fiber.return, depth++) {
+        if (fiber.key && /^\d+$/.test(fiber.key)) return Number(fiber.key);
+        const props = fiber.memoizedProps || {};
+        const item = props.equipment || props.item;
+        if (item && Number.isFinite(Number(item.id))) return Number(item.id);
+      }
+      if (fiberKey) return 0;
+    }
+    return 0;
+  }
+
   async function scanItemRows() {
     const equipments = (await requestGameApi(EQUIPMENTS_API)).equipments || [];
     const known = {
@@ -9949,7 +9972,11 @@
     const checking = settings.qualityPickMode !== 'uncheck';
     const verb = checking ? '勾選' : '取消勾選';
     try {
-      const targets = (await scanItemRows()).filter((row) => isBoxChecked(row.checkbox) !== checking && matchesPick(row, selections));
+      const locked = lockedEquipmentIds();
+      const candidates = (await scanItemRows()).filter((row) => isBoxChecked(row.checkbox) !== checking && matchesPick(row, selections));
+      // 勾選才要跳過鎖住的；取消勾選照常
+      const targets = checking ? candidates.filter((row) => !locked.has(rowEquipmentId(row.element))) : candidates;
+      const skippedLocked = candidates.length - targets.length;
       if (!targets.length) {
         setStatus(`畫面上沒有要${verb}的物品`);
         return;
@@ -9970,7 +9997,7 @@
         done++;
         setStatus(`${verb}中 ${done}／${targets.length}`);
       }
-      setStatus(`已${verb} ${done} 個`);
+      setStatus(`已${verb} ${done} 個${skippedLocked ? `（跳過 ${skippedLocked} 件鎖定的）` : ''}`);
     } catch (error) {
       setStatus(`${verb}失敗（${error.message}）`);
     } finally {
@@ -12228,15 +12255,71 @@
       .catch(() => {});
   }
 
+  // 裝備鎖定：在遊戲的裝備詳細資料按 🔒。鎖住的裝備不能販賣、不能鍊金（遊戲送出前就攔下來），勾選頁也不會勾到
+  const LOCKED_EQUIPMENT_KEY = 'autoClickerV2LockedEquipments';
+
+  function lockedEquipmentIds() {
+    return new Set(readJsonStorage(LOCKED_EQUIPMENT_KEY, []).map(Number));
+  }
+
+  function toggleEquipmentLock(equipmentId) {
+    const locked = lockedEquipmentIds();
+    if (locked.has(equipmentId)) locked.delete(equipmentId);
+    else locked.add(equipmentId);
+    writeJsonStorage(LOCKED_EQUIPMENT_KEY, [...locked]);
+    return locked.has(equipmentId);
+  }
+
+  const EQUIPMENT_SELL_PATTERN = /\/api\/equipments\/(\d+)\/(sell|recycle)(?:[?#]|$)/;
+  const EQUIPMENT_RECYCLE_ALL_PATTERN = /\/api\/equipments\/recycleAll(?:[?#]|$)/;
+
+  function lockedResponse(message) {
+    showToast(message);
+    return Promise.resolve(new Response(JSON.stringify({ statusCode: 400, message }), { status: 400, headers: { 'Content-Type': 'application/json' } }));
+  }
+
+  // 遊戲要賣、要鍊金鎖住的裝備：不送出，回一個錯誤讓遊戲照常顯示提示；一次鍊金多件時把鎖住的拿掉，其他照送
+  // 回傳 null＝照常送；回傳 { response }＝直接用這個結果；回傳 { args }＝改過內容再送
+  function guardLockedEquipment(url, method, init, args) {
+    if (method !== 'POST') return null;
+    const locked = lockedEquipmentIds();
+    if (!locked.size) return null;
+    const single = url.match(EQUIPMENT_SELL_PATTERN);
+    if (single && locked.has(Number(single[1]))) {
+      return { response: lockedResponse(`這件裝備已鎖定，不能${single[2] === 'sell' ? '販賣' : '鍊金'}；要的話先在裝備詳細資料按 🔒 解鎖`) };
+    }
+    if (!EQUIPMENT_RECYCLE_ALL_PATTERN.test(url) || typeof init.body !== 'string') return null;
+    const body = parseJsonText(init.body);
+    if (!body || !Array.isArray(body.equipmentIds)) return null;
+    const kept = body.equipmentIds.filter((id) => !locked.has(Number(id)));
+    const skipped = body.equipmentIds.length - kept.length;
+    if (!skipped) return null;
+    if (!kept.length) return { response: lockedResponse(`勾的 ${skipped} 件都已鎖定，沒有鍊金`) };
+    showToast(`鍊金：略過 ${skipped} 件鎖定的裝備，其他 ${kept.length} 件照常鍊金`);
+    return { args: [args[0], { ...init, body: JSON.stringify({ ...body, equipmentIds: kept }) }, ...args.slice(2)] };
+  }
+
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest && event.target.closest('[data-equip-lock]');
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const locked = toggleEquipmentLock(Number(button.dataset.equipLock));
+    showToast(locked ? '已鎖定：這件不能販賣、不能鍊金' : '已解鎖');
+    enhanceEquipmentDetails();
+  }, true);
+
   function enhanceEquipmentDetails() {
-    if (tabShutDown || !readSettingsFromPanel().forgeDetailEnabled) return;
+    if (tabShutDown) return;
+    const showForge = readSettingsFromPanel().forgeDetailEnabled;
+    const locked = lockedEquipmentIds();
     equipmentDetailHeadings().forEach((heading) => {
       const title = heading.textContent.replace(/\s+/g, ' ').trim();
       let root = heading.parentElement;
       for (let depth = 0; root && depth < 10 && !/攻擊/.test(root.textContent) && !/防禦/.test(root.textContent); depth++) root = root.parentElement;
       if (!root || !/攻擊/.test(root.textContent)) return;
-      // 另一支工具腳本已經顯示材料就不重複
-      if (root.querySelector('[data-sgo-mats], .sgo-base.forge-info')) return;
+      // 另一支工具腳本已經顯示材料就不重複（鎖定按鈕照樣放）
+      const otherTool = root.querySelector('[data-sgo-mats], .sgo-base.forge-info');
       const equipment = findDetailEquipment(root, title);
       let box = root.querySelector(`[${FORGE_DETAIL_MARK}]`);
       if (!equipment) {
@@ -12244,8 +12327,9 @@
         refetchEquipmentsForDetail();
         return;
       }
-      const lines = forgeDetailLines(equipment);
-      const signature = `${equipment.id}|${lines.join('|')}`;
+      const lines = showForge && !otherTool ? forgeDetailLines(equipment) : [];
+      const isLocked = locked.has(equipment.id);
+      const signature = `${equipment.id}|${isLocked}|${lines.join('|')}`;
       if (box && box.dataset.signature === signature) return;
       if (!box) {
         box = document.createElement('div');
@@ -12254,7 +12338,11 @@
         root.appendChild(box);
       }
       box.dataset.signature = signature;
-      box.innerHTML = lines.map((line) => `<div>${escapeHtml(line)}</div>`).join('');
+      box.innerHTML =
+        lines.map((line) => `<div>${escapeHtml(line)}</div>`).join('') +
+        `<button type="button" data-equip-lock="${equipment.id}" style="margin-top:6px;padding:3px 10px;border-radius:4px;border:1px solid ${isLocked ? '#f59e0b' : '#57534e'};background:${isLocked ? '#78350f' : '#292524'};color:${isLocked ? '#fde68a' : '#d6d3d1'};font-size:13px;cursor:pointer">${
+          isLocked ? '🔒 已鎖定（點一下解鎖）' : '🔓 鎖定（不能販賣、不能鍊金）'
+        }</button>`;
     });
   }
 
