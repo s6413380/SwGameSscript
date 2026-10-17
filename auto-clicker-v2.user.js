@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.92
+// @version      3.93
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -8498,6 +8498,8 @@
       queueHeroForForge(Number(event.target.dataset.hero));
     } else if (action === 'forge-unqueue') {
       unqueueHeroForForge(Number(event.target.dataset.hero));
+    } else if (action === 'forge-name-unlock') {
+      unlockForgePlanName(Number(event.target.dataset.hero));
     } else if (action === 'recipe-forge-once') {
       forgeWithRecipe(readSettingsFromPanel(), Number(event.target.dataset.hero));
     } else if (action === 'recipe-auto-forge') {
@@ -13935,6 +13937,46 @@
     };
   }
 
+  // 佇列卡片手動改的名稱只鎖今天：今天自動換名稱都不碰它，過了 00:00 照常交給自動換名稱
+  function nameLockedToday(plan) {
+    return Boolean(plan && plan.name && plan.nameManualDay === localDayKey(Date.now()));
+  }
+
+  function setForgePlanName(heroId, name) {
+    const settings = readSettingsFromPanel();
+    const plans = forgeByApiPlans(settings);
+    const plan = { ...(plans[heroId] || {}) };
+    const trimmed = String(name || '').trim();
+    if (trimmed) {
+      plan.name = trimmed;
+      plan.nameManualDay = localDayKey(Date.now());
+    } else {
+      delete plan.name;
+      delete plan.nameManualDay;
+    }
+    plans[heroId] = plan;
+    setPanelField('forgeByApiPlans', JSON.stringify(plans));
+    saveSettings(readSettingsFromPanel());
+    renderForgePlanOverview();
+    renderRecipeHeroes();
+    const hero = forgeHeroes.find((candidate) => candidate.id === heroId);
+    const text = `${hero ? hero.name : heroId} 名稱${trimmed ? `改成「${trimmed}」（今天自動換名稱不會蓋掉）` : '清空，改用配方頁的名稱'}`;
+    forgeLog(text);
+    return text;
+  }
+
+  function unlockForgePlanName(heroId) {
+    const settings = readSettingsFromPanel();
+    const plans = forgeByApiPlans(settings);
+    if (!plans[heroId]) return;
+    delete plans[heroId].nameManualDay;
+    setPanelField('forgeByApiPlans', JSON.stringify(plans));
+    saveSettings(readSettingsFromPanel());
+    // 交回自動後馬上比一次，有更好的就換
+    forgeRunner.nameUpgradeAt = 0;
+    renderForgePlanOverview();
+  }
+
   // 換「用／賣」：今天的名稱已經定了就馬上換成這個用途最好的名稱
   function setForgePurpose(heroId, purpose) {
     const settings = readSettingsFromPanel();
@@ -13942,7 +13984,7 @@
     const plan = forgeApiPlan(settings, heroId);
     plans[heroId] = { ...(plans[heroId] || {}), purpose: forgePurposeOf(purpose) };
     let text = `改成做來${FORGE_PURPOSES[forgePurposeOf(purpose)]}`;
-    if (settings.forgeAutoNameEnabled && readJsonStorage(FORGE_NAME_DAY_KEY, '') === localDayKey(Date.now())) {
+    if (!nameLockedToday(plans[heroId]) && settings.forgeAutoNameEnabled && readJsonStorage(FORGE_NAME_DAY_KEY, '') === localDayKey(Date.now())) {
       const best = todayNamesForType(settings, plan.type, purpose)[0];
       if (best && best.score * 100 >= settings.forgeAutoNamePercent) {
         plans[heroId].name = best.name;
@@ -14102,6 +14144,7 @@
         purpose: plan.purpose,
         itemName: plan.name || '',
         ownName: Boolean((plans[heroId] || {}).name),
+        nameLocked: nameLockedToday(plans[heroId]),
         materials: recipe.map(([name, quantity]) => ({ name, quantity, have: mineStock.length ? stock.get(name) || 0 : null })),
         total,
         cap: cap || 0,
@@ -14144,7 +14187,10 @@
           <div style="margin:2px 0"><span style="padding:0 6px;border-radius:9px;background:#3b2f5c;color:#ddd6fe">${escapeHtml(row.type || '?')}</span>
             用途<select data-forge-purpose="${row.heroId}" title="用：武器挑攻擊、防具挑防禦；賣（鍊金）：挑耐久、智、幸，不看重量" style="padding:1px;color:${row.purpose === 'sell' ? '#fbbf24' : '#fff'};background:#2a2a30;border:1px solid #44444c;border-radius:5px">
               <option value="use" ${row.purpose === 'sell' ? '' : 'selected'}>用</option><option value="sell" ${row.purpose === 'sell' ? 'selected' : ''}>賣</option></select>
-            「<b>${escapeHtml(row.itemName)}</b>」${row.ownName ? '' : '<span style="color:#a0a0aa">（配方頁的名稱）</span>'}</div>
+            </div>
+          <div style="display:flex;gap:4px;align-items:center;margin:2px 0">名稱
+            <input data-forge-name="${row.heroId}" list="autoClickerTodayNames" value="${escapeHtml(row.ownName ? row.itemName : '')}" placeholder="${row.itemName ? `${escapeHtml(row.itemName)}（配方頁的）` : '輸入名稱'}" title="直接打字改名稱，按 Enter 或點別處就存；清空＝用配方頁的名稱" style="flex:1;min-width:0;padding:1px 4px;color:#fff;background:#2a2a30;border:1px solid ${row.nameLocked ? '#f59e0b' : '#44444c'};border-radius:5px">
+            ${row.nameLocked ? `<span style="flex:none;color:#fbbf24" title="今天手動改的，自動換名稱不會蓋掉；明天 00:00 後照常自動換">📌今天</span><button data-action="forge-name-unlock" data-hero="${row.heroId}" style="flex:none;padding:0 6px" title="交回自動換名稱，有更好的就換">交給自動</button>` : ''}</div>
           <div>${chips || '<span style="color:#666">沒有配方</span>'}
             ${row.materials.length ? `<span style="color:#a0a0aa">共 ${row.total}${row.cap ? `/${row.cap}` : ''}</span>` : ''}
             ${row.possible === null ? '' : `<span style="color:${row.possible ? '#4ade80' : '#f87171'}">・夠 ${row.possible} 爐</span>`}</div>
@@ -14306,6 +14352,7 @@
     const plans = forgeByApiPlans(settings);
     // 鍵是「類型|用途」；配方頁的名稱當成「用」
     forgeByApiHeroIds(settings).forEach((heroId) => {
+      if (nameLockedToday(plans[heroId])) return;
       const plan = forgeApiPlan(settings, heroId);
       const name = namesByType[`${plan.type}|${plan.purpose}`];
       if (name) plans[heroId] = { ...(plans[heroId] || {}), name };
@@ -14320,7 +14367,7 @@
     const settings = readSettingsFromPanel();
     const plans = forgeByApiPlans(settings);
     forgeByApiHeroIds(settings).forEach((heroId) => {
-      if (plans[heroId]) plans[heroId].name = name;
+      if (plans[heroId] && !nameLockedToday(plans[heroId])) plans[heroId].name = name;
     });
     setPanelField('forgeByApiPlans', JSON.stringify(plans));
     setPanelField('forgeRecipeName', name);
@@ -14391,6 +14438,7 @@
     const plans = forgeByApiPlans(settings);
     const texts = new Set();
     forgeByApiHeroIds(settings).forEach((heroId) => {
+      if (nameLockedToday(plans[heroId])) return;
       const plan = forgeApiPlan(settings, heroId);
       const change = better(plan.type, plan.purpose, plan.name);
       if (!change) return;
@@ -15698,6 +15746,15 @@
       })
       .join('');
   }
+
+  panel.addEventListener('change', (event) => {
+    const heroId = event.target.dataset && event.target.dataset.forgeName;
+    if (heroId) setForgePlanName(Number(heroId), event.target.value);
+  });
+
+  panel.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && event.target.dataset && event.target.dataset.forgeName) event.target.blur();
+  });
 
   panel.addEventListener('change', (event) => {
     const heroId = event.target.dataset && event.target.dataset.forgePurpose;
