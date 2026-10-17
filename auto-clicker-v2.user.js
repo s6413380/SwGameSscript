@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.89
+// @version      3.90
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -55,6 +55,7 @@
     ['growth', '成長'],
     ['draw', '抽卡'],
     ['scratch', '刮刮樂'],
+    ['loot', '掉落'],
     ['pick', '勾選'],
     ['alert', '提醒'],
     ['cloud', '雲端'],
@@ -68,7 +69,7 @@
   const TAB_GROUPS = [
     ['hunt', '打怪', ['main', 'health', 'resource', 'move', 'equip', 'train', 'pause']],
     ['forging', '鍛造', ['forge', 'recipe', 'material', 'mining']],
-    ['stats', '統計', ['income', 'combat', 'huntStats', 'growth', 'draw', 'scratch']],
+    ['stats', '統計', ['income', 'combat', 'huntStats', 'loot', 'growth', 'draw', 'scratch']],
     ['other', '其他', ['pick', 'transfer', 'cardBuy', 'alert', 'cloud', 'log', 'api', 'backup']],
   ];
   const TAB_STORAGE_KEY = 'autoClickerV2Tab';
@@ -265,6 +266,13 @@
     qualityPickMode: 'check',
     // 遊戲背包頁的表格點表頭可以排序；匯出勾選的裝備時換算成普通品質
     itemTableSortEnabled: true,
+    // 狩獵頁、戰報詳情頁加上「本場掉落・狀態」和重新排版的戰報；遊戲原本的戰報收起來
+    pageReportEnabled: true,
+    pageReportHideGame: true,
+    // 掉落紀錄要算哪些來源
+    lootSourceHunt: true,
+    lootSourcePvp: true,
+    lootSourceAction: true,
     equipExportBase: false,
     // 穿著的裝備預測還能打幾場，少於這麼多場就提醒（0＝不提醒）
     durWarnBattles: 30,
@@ -1071,6 +1079,8 @@
 
     <div data-tab="combat">
       <label class="row"><input data-field="combatEnabled" type="checkbox" style="flex:none;width:auto"> 讀取戰鬥紀錄並統計（不用按開始）</label>
+      <label class="row"><input data-field="pageReportEnabled" type="checkbox" style="flex:none;width:auto"> 狩獵頁、戰報詳情頁顯示「🎁 本場掉落・狀態」和「📜 戰報內容」</label>
+      <label class="row"><input data-field="pageReportHideGame" type="checkbox" style="flex:none;width:auto"> 同時收起遊戲原本的戰報（可以在上面按「顯示原本的」臨時打開）</label>
       <div class="row">紀錄區 ${pickButtonHtml('combatSelector', '選取', { mode: 'log' })} ${clearButtonHtml(['combatSelector'])}</div>
       <div class="hint">原地掛機後會直接讀 /api/hunt 回傳的戰報，不用選取；只有讀不到 API 時才用下面的紀錄區或標題文字找畫面</div>
       <div class="row">紀錄標題<input data-field="combatKeyword" placeholder="戰鬥紀錄最上面那行字"></div>
@@ -1251,6 +1261,13 @@
       <div class="hint">在遊戲物品頁用英雄券這類道具抽卡時自動記下抽到什麼。開了雲端同步會上傳，也能看大家（照雲端頁的署名分上傳者）的紀錄</div>
       <div class="row"><select data-role="draw-scope" style="flex:none;max-width:120px;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select><select data-role="draw-item" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select><button data-action="draw-clear">清除紀錄</button></div>
       <div data-role="draw-stats"></div>
+    </div>
+
+    <div data-tab="loot">
+      <div class="hint">打怪、PvP（打劫、切磋）、挖礦伐木收到的東西分開記（腳本跑的、自己手動的都算），勾的來源才算進「合計」</div>
+      <div class="row"><label style="flex:none"><input data-field="lootSourceHunt" type="checkbox" style="width:auto"> 狩獵</label><label style="flex:none"><input data-field="lootSourcePvp" type="checkbox" style="width:auto"> PvP</label><label style="flex:none"><input data-field="lootSourceAction" type="checkbox" style="width:auto"> 挖礦伐木</label>
+        <select data-role="loot-period" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">今天</option><option value="3">近 3 天</option><option value="7">近 7 天</option><option value="14">近 14 天</option></select></div>
+      <div data-role="loot-ledger" style="font-size:12px"></div>
     </div>
 
     <div data-tab="scratch">
@@ -1602,6 +1619,7 @@
     }
     if (tabId === 'income') renderIncome();
     if (tabId === 'draw') renderDrawStats();
+    if (tabId === 'loot') renderLootLedger();
     if (tabId === 'equip') renderDurabilityForecast();
     if (tabId === 'scratch') renderScratchStats();
     if (tabId === 'forge') {
@@ -4888,6 +4906,11 @@
     const settings = readSettingsFromPanel();
     if (Array.isArray(heroes) && !state.forgeMode) checkHeroConditions(heroes, settings);
     if (settings.combatEnabled) recordBattleFromApi(data.report);
+    recordLootLedger('hunt', data.report);
+    if (data.report) {
+      pageReport.hunt = { report: data.report, at: Date.now() };
+      renderPageReport();
+    }
     if (settings.huntStatsEnabled) recordHuntStats(data, requestBody, settings, url);
     recordActorLoot(data);
     if (settings.incomeEnabled) {
@@ -8740,6 +8763,7 @@
       const itemUseMatch = !growthOnly && url.match(ITEM_USE_PATTERN);
       const isScratchCard = !growthOnly && SCRATCH_CARD_PATTERN.test(url);
       const marketGoodsMatch = !growthOnly && url.match(MARKET_GOODS_PATTERN);
+      const reportDetailMatch = !growthOnly && REPORT_DETAIL_PATTERN.test(url) ? url.match(REPORT_DETAIL_PATTERN) : null;
       const isCardMarket = !growthOnly && (MARKET_HEROES_PATTERN.test(url) || RELEASED_MARKET_PATTERN.test(url));
       const isOtherSite = /^https?:/i.test(url) && !url.startsWith(location.origin);
       const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
@@ -8749,7 +8773,7 @@
       const manualMiningMatch = !growthOnly && !fromScript && method === 'POST' ? url.match(MINING_ACTION_PATTERN) : null;
       const needsResponse = growthOnly
         ? isHunt || growthHeroId || isHeroList || isForgeData || isPlace
-        : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData || itemUseMatch || isPlace || isMoney || isCardMarket || manualMiningMatch || isScratchCard || marketGoodsMatch;
+        : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData || itemUseMatch || isPlace || isMoney || isCardMarket || manualMiningMatch || isScratchCard || marketGoodsMatch || reportDetailMatch;
       if (!needsResponse || STATIC_ASSET_PATTERN.test(url) || isOtherSite) {
         return originalFetch.apply(this, args);
       }
@@ -8830,6 +8854,15 @@
             // 角色列表不管是遊戲自己讀（每 16 秒、抽到新卡、買賣角色後）還是腳本讀的，挖礦頁都跟著換，新卡馬上看得到
             if (response.ok && method === 'GET' && isHeroList) noticeHeroList(parseJsonText(responseText));
             if (response.ok && marketGoodsMatch && method === 'GET') noticeMarketGoods(marketGoodsMatch[1], parseJsonText(responseText));
+            if (response.ok && reportDetailMatch && method === 'GET') noticeReportDetail(Number(reportDetailMatch[1]), parseJsonText(responseText));
+            if (response.ok && method === 'POST' && PVP_ATTACK_PATTERN.test(url)) {
+              const data = parseJsonText(responseText);
+              if (data) recordLootLedger('pvp', data.report);
+            }
+            if (response.ok && method === 'POST' && ACTION_COMPLETE_PATTERN.test(url)) {
+              const data = parseJsonText(responseText);
+              if (data) recordLootLedger('action', data.actionResult);
+            }
             if (response.ok && isScratchCard && method === 'POST') {
               const data = parseJsonText(responseText);
               if (data && Array.isArray(data.prizes)) recordScratch(requestBody, data);
@@ -12655,6 +12688,255 @@
     setStatus(`匯出 ${lines.length - missing} 件${missing ? `（${missing} 件讀不到資料）` : ''}${copied ? '，已複製' : '，複製失敗，請從下面的框自己複製'}`);
   }
 
+  // 掉落紀錄：狩獵、PvP、挖礦伐木分開記，每天一格
+  const LOOT_LEDGER_KEY = 'autoClickerV2LootLedger';
+  const LOOT_LEDGER_DAYS = 14;
+  const LOOT_SOURCES = [
+    ['hunt', '狩獵', 'lootSourceHunt'],
+    ['pvp', 'PvP', 'lootSourcePvp'],
+    ['action', '挖礦伐木', 'lootSourceAction'],
+  ];
+  const REPORT_DETAIL_PATTERN = /\/api\/reports\/(\d+)(?:[?#]|$)/;
+  const PVP_ATTACK_PATTERN = /\/api\/users\/\d+\/attack(?:[?#]|$)/;
+  const ACTION_COMPLETE_PATTERN = /\/api\/heroes\/\d+\/completeAction(?:[?#]|$)/;
+  const reportLootSeen = new Set();
+
+  function recordLootLedger(source, report) {
+    if (!report || !Array.isArray(report.messages)) return;
+    // 同一份戰報（例如遊戲自己和腳本都看到同一個回應）只記一次
+    const key = report.id ? `${source}:${report.id}` : '';
+    if (key && reportLootSeen.has(key)) return;
+    if (key) reportLootSeen.add(key);
+    const loot = parseLoot(report.messages);
+    const money = Object.values(huntMessageMoney(report.messages)).reduce((sum, amount) => sum + amount, 0);
+    if (!loot.length && !money) return;
+    const ledger = readJsonStorage(LOOT_LEDGER_KEY, {});
+    const day = localDayKey(Date.now());
+    const bucket = ((ledger[day] = ledger[day] || {})[source] = ledger[day][source] || { items: {}, money: 0, count: 0 });
+    loot.forEach(([name, quantity]) => (bucket.items[name] = (bucket.items[name] || 0) + quantity));
+    bucket.money += money;
+    bucket.count++;
+    Object.keys(ledger)
+      .sort()
+      .slice(0, -LOOT_LEDGER_DAYS)
+      .forEach((old) => delete ledger[old]);
+    writeJsonStorage(LOOT_LEDGER_KEY, ledger);
+    if (activeTab === 'loot') renderLootLedger();
+  }
+
+  function renderLootLedger() {
+    const box = panel.querySelector('[data-role="loot-ledger"]');
+    if (!box) return;
+    const settings = readSettingsFromPanel();
+    const days = Number(panel.querySelector('[data-role="loot-period"]').value) || 1;
+    const ledger = readJsonStorage(LOOT_LEDGER_KEY, {});
+    const keys = Array.from({ length: days }, (_, index) => localDayKey(Date.now() - index * 86400000));
+    const sources = LOOT_SOURCES.filter(([, , field]) => settings[field]);
+    if (!sources.length) {
+      box.innerHTML = '<div class="hint">至少勾一個來源</div>';
+      return;
+    }
+    const table = new Map();
+    const totals = Object.fromEntries(sources.map(([id]) => [id, { money: 0, count: 0 }]));
+    keys.forEach((key) =>
+      sources.forEach(([id]) => {
+        const bucket = (ledger[key] || {})[id];
+        if (!bucket) return;
+        totals[id].money += bucket.money;
+        totals[id].count += bucket.count;
+        Object.entries(bucket.items).forEach(([name, quantity]) => {
+          const row = table.get(name) || {};
+          row[id] = (row[id] || 0) + quantity;
+          table.set(name, row);
+        });
+      })
+    );
+    if (!table.size && !sources.some(([id]) => totals[id].money)) {
+      box.innerHTML = '<div class="hint">這段時間還沒有紀錄</div>';
+      return;
+    }
+    const total = (row) => sources.reduce((sum, [id]) => sum + (row[id] || 0), 0);
+    const rareNames = rareLootNames(settings);
+    const rows = [...table.entries()]
+      .sort(([firstName, first], [secondName, second]) => Number(isRareLoot(secondName, rareNames)) - Number(isRareLoot(firstName, rareNames)) || total(second) - total(first))
+      .map(([name, row]) => `<tr><td style="text-align:left;white-space:normal;${isRareLoot(name, rareNames) ? 'color:#fbbf24;font-weight:bold' : ''}">${escapeHtml(name)}</td>${sources
+        .map(([id]) => `<td>${row[id] ? row[id].toLocaleString() : ''}</td>`)
+        .join('')}${sources.length > 1 ? `<td><b>${total(row).toLocaleString()}</b></td>` : ''}</tr>`)
+      .join('');
+    box.innerHTML = `<div>${sources.map(([id, label]) => `${label} ${totals[id].count} 次${totals[id].money ? `・$${totals[id].money.toLocaleString()}` : ''}`).join('　')}</div>
+      <table class="combat" style="width:100%"><tr><th style="text-align:left">道具</th>${sources.map(([, label]) => `<th>${label}</th>`).join('')}${sources.length > 1 ? '<th>合計</th>' : ''}</tr>${rows}</table>`;
+  }
+
+  // 頁面上的戰報：狩獵頁顯示最新一場，戰報詳情頁顯示那一份。用遊戲回應裡的戰報資料畫，不多發請求
+  const PAGE_REPORT_ID = 'ac-page-report';
+  const PAGE_HIDDEN_ATTR = 'data-ac-hidden';
+  const pageReport = { hunt: null, detail: {}, signature: '', showGame: false, open: { loot: true, log: true } };
+  // 遊戲戰報每行的樣式名 → 顏色（跟遊戲一樣）
+  const REPORT_COLORS = {
+    default: '#d6d3d1', info: '#67e8f9', exp: '#14b8a6', subInfo: '#fed7aa', sub: '#78716c', skill: '#5eead4',
+    strong: '#fdba74', heal: '#86efac', lucky: '#c084fc', critical: '#f87171', state: '#f9a8d4',
+  };
+
+  function noticeReportDetail(id, data) {
+    if (!data || !data.report) return;
+    pageReport.detail[id] = data.report;
+    renderPageReport();
+  }
+
+  function storedHuntReport() {
+    // 剛打開頁面還沒打過：用遊戲自己存的最近幾場戰報
+    const saved = readJsonStorage('huntReports', null);
+    return Array.isArray(saved) && saved[0] && Array.isArray(saved[0].messages) ? saved[0] : null;
+  }
+
+  // 狩獵頁的戰報區：每張戰報卡的 class 是 mt-1 mb-2 transition hover:border-stone-600，往上那層就是整個戰報區
+  function huntReportArea() {
+    const card = [...document.querySelectorAll('div.transition')].find(
+      (element) => element.classList.contains('mt-1') && element.classList.contains('mb-2') && /hover:border-stone-600/.test(element.className) && !element.closest(`#${PAGE_REPORT_ID}`)
+    );
+    return card ? card.parentElement : null;
+  }
+
+  // 戰報詳情頁：「戰鬥過程」標題和後面的訊息區
+  function detailReportParts() {
+    const label = [...document.querySelectorAll('div.text-sm')].find((element) => element.textContent.trim() === '戰鬥過程' && !element.closest(`#${PAGE_REPORT_ID}`));
+    return label ? { label, messages: label.nextElementSibling } : null;
+  }
+
+  function teamStatusHtml() {
+    const team = (state.huntTeamIds || []).map((id) => state.heroStats.get(id)).filter(Boolean);
+    const percent = (value, full) => (full > 0 ? Math.round((value / full) * 100) : null);
+    const teamText = team
+      .map((hero) => {
+        const hp = percent(hero.hp, hero.fullHp);
+        const sp = percent(hero.sp, hero.fullSp);
+        const color = (value) => (value === null ? '#a8a29e' : value < 30 ? '#f87171' : value < 60 ? '#fbbf24' : '#86efac');
+        return `<span style="margin-right:10px">${escapeHtml(hero.name)} <span style="color:${color(hp)}">HP ${hp ?? '?'}%</span> <span style="color:${color(sp)}">體 ${sp ?? '?'}%</span></span>`;
+      })
+      .join('');
+    const limit = Number(readSettingsFromPanel().durWarnBattles) || 0;
+    const durability = Object.values(readJsonStorage(DUR_TRACK_KEY, {}))
+      .filter((entry) => entry.equipped)
+      .map((entry) => ({ entry, forecast: durabilityForecast(entry) }))
+      .filter(({ forecast }) => forecast && limit && forecast.left <= limit * 2)
+      .sort((first, second) => first.forecast.left - second.forecast.left)
+      .map(({ entry, forecast }) => `<span style="margin-right:10px;color:${forecast.left <= limit ? '#f87171' : '#fbbf24'}">${escapeHtml(entry.name)} 耐久 ${entry.dur}/${entry.fullDur}・約 ${forecast.left} 場</span>`)
+      .join('');
+    return `${teamText ? `<div>${teamText}</div>` : ''}${durability ? `<div>${durability}</div>` : ''}`;
+  }
+
+  function pageReportHtml(report, withStatus) {
+    const messages = report.messages.filter((message) => String(message.m || '').trim());
+    const loot = parseLoot(messages);
+    const money = huntMessageMoney(messages);
+    const rareNames = rareLootNames();
+    const lootHtml = loot.length
+      ? loot
+          .map(([name, quantity]) => {
+            const rare = isRareLoot(name, rareNames);
+            return `<span style="display:inline-block;margin:2px 4px 2px 0;padding:0 7px;border-radius:10px;border:1px solid ${rare ? '#f59e0b' : '#57534e'};background:${rare ? '#451a03' : '#292524'};color:${rare ? '#fcd34d' : '#e7e5e4'}">${escapeHtml(name)}${quantity > 1 ? ` ×${quantity}` : ''}</span>`;
+          })
+          .join('')
+      : '<span style="color:#78716c">沒有掉落</span>';
+    const moneyText = Object.entries(money)
+      .map(([label, amount]) => `${label} $${amount.toLocaleString()}`)
+      .join('・');
+    const lines = messages
+      .map((message) => {
+        const color = REPORT_COLORS[message.s] || REPORT_COLORS.default;
+        const indent = Number(message.indent) ? 18 : 0;
+        return `<div style="padding-left:${indent + (message.crucial ? 4 : 0)}px;color:${color};${message.crucial ? 'border-left:2px solid #f87171;font-weight:bold' : ''}">${escapeHtml(message.m)}</div>`;
+      })
+      .join('');
+    const place = [report.zone, report.stage].filter(Boolean).join(' ');
+    const time = report.time ? new Date(report.time).toLocaleTimeString('zh-TW', { hour12: false }) : '';
+    const section = (key, title, extra, body) => `<details data-ac-sec="${key}" ${pageReport.open[key] ? 'open' : ''} style="margin:4px 0;border:1px solid #44403c;border-radius:4px;background:rgba(41,37,36,.55)">
+        <summary style="cursor:pointer;padding:4px 8px;font-weight:bold">${title}<span style="float:right;font-weight:normal;color:#a8a29e">${extra}</span></summary>
+        <div style="padding:4px 8px 6px">${body}</div></details>`;
+    return `${section('loot', '🎁 本場掉落・狀態', [place, time].filter(Boolean).join('・'), `<div>${lootHtml}</div>${moneyText ? `<div style="color:#fcd34d">${escapeHtml(moneyText)}</div>` : ''}${withStatus ? `<div data-ac-status>${teamStatusHtml()}</div>` : ''}`)}
+      ${section('log', '📜 戰報內容', `${messages.length} 行 <button type="button" data-ac-toggle-game style="margin-left:6px;padding:0 6px;border:1px solid #57534e;border-radius:4px;background:#292524;color:#d6d3d1">${pageReport.showGame ? '收起原本的' : '顯示原本的'}</button>`, `<div style="font:12px/1.6 monospace;max-height:420px;overflow:auto">${lines}</div>`)}`;
+  }
+
+  function renderPageReport(force = false) {
+    const settings = readSettingsFromPanel();
+    let block = document.getElementById(PAGE_REPORT_ID);
+    const restoreGame = () => document.querySelectorAll(`[${PAGE_HIDDEN_ATTR}]`).forEach((element) => element.removeAttribute(PAGE_HIDDEN_ATTR));
+    if (tabShutDown || !settings.pageReportEnabled) {
+      if (block) block.remove();
+      restoreGame();
+      return;
+    }
+    const detailMatch = /^\/reports\/(\d+)/.exec(location.pathname);
+    let anchor = null;
+    let hide = [];
+    let report = null;
+    let withStatus = false;
+    if (detailMatch) {
+      const parts = detailReportParts();
+      report = pageReport.detail[Number(detailMatch[1])] || null;
+      if (parts) {
+        anchor = parts.label;
+        hide = [parts.label, parts.messages].filter(Boolean);
+      }
+    } else if (/^\/(?:hunt)?$/.test(location.pathname) || location.pathname.startsWith('/hunt')) {
+      const area = huntReportArea();
+      report = (pageReport.hunt && pageReport.hunt.report) || storedHuntReport();
+      withStatus = true;
+      if (area) {
+        anchor = area;
+        hide = [area];
+      }
+    }
+    if (!anchor || !report) {
+      if (block && !document.body.contains(anchor)) block.remove();
+      return;
+    }
+    const signature = `${location.pathname}|${report.id || report.time || ''}|${pageReport.showGame}|${settings.pageReportHideGame}`;
+    if (!block || block.nextElementSibling !== anchor) {
+      if (block) block.remove();
+      block = document.createElement('div');
+      block.id = PAGE_REPORT_ID;
+      block.style.cssText = 'margin:8px 0 10px;color:#d6d3d1;font:12px/1.6 sans-serif;user-select:text';
+      anchor.parentElement.insertBefore(block, anchor);
+      force = true;
+    }
+    restoreGame();
+    if (settings.pageReportHideGame && !pageReport.showGame) hide.forEach((element) => element.setAttribute(PAGE_HIDDEN_ATTR, ''));
+    // 同一份戰報不重畫，免得一直被收回去；狀態列（血量、耐久）會變，照樣更新
+    if (!force && block.dataset.signature === signature) {
+      const status = block.querySelector('[data-ac-status]');
+      if (status && withStatus) status.innerHTML = teamStatusHtml();
+      return;
+    }
+    block.dataset.signature = signature;
+    block.innerHTML = pageReportHtml(report, withStatus);
+  }
+
+  function installPageReport() {
+    const style = document.createElement('style');
+    style.textContent = `[${PAGE_HIDDEN_ATTR}] { display:none !important; }`;
+    document.head.appendChild(style);
+    document.addEventListener('toggle', (event) => {
+      const key = event.target.dataset && event.target.dataset.acSec;
+      if (key && event.target.closest(`#${PAGE_REPORT_ID}`)) pageReport.open[key] = event.target.open;
+    }, true);
+    document.addEventListener('click', (event) => {
+      if (!event.target.closest || !event.target.closest('[data-ac-toggle-game]')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      pageReport.showGame = !pageReport.showGame;
+      renderPageReport(true);
+    }, true);
+    let pending = null;
+    new MutationObserver((mutations) => {
+      if (pending || mutations.every((mutation) => mutation.target.closest && mutation.target.closest(`#${PAGE_REPORT_ID}`))) return;
+      pending = setTimeout(() => {
+        pending = null;
+        renderPageReport();
+      }, 300);
+    }).observe(document.body, { childList: true, subtree: true });
+  }
+
   function installForgeDetailEnhancer() {
     let pending = null;
     new MutationObserver((mutations) => {
@@ -16238,6 +16520,8 @@
     // 自動換名稱的門檻改了：鍛造正在等好名稱的話馬上再看一次，不用等下一輪
     if (['forgeAutoNamePercent', 'forgeAutoNameEnabled'].includes(event.target.dataset.field)) wakeForgeRunner();
     if (['scratchItemValues', 'scratchMarketNames'].includes(event.target.dataset.field) && activeTab === 'scratch') renderScratchStats();
+    if (/^lootSource/.test(event.target.dataset.field || '') && activeTab === 'loot') renderLootLedger();
+    if (/^pageReport/.test(event.target.dataset.field || '')) renderPageReport(true);
     if (['forgeNameWeightMode', 'forgeNamePriorities'].includes(event.target.dataset.field)) {
       renderNameWeightTable();
       recipeOptionsCache.at = 0;
@@ -16312,6 +16596,7 @@
   applyPanelTheme();
   // 用到的常數在檔案後段才定義，要等全部載入完才裝
   installItemTableHelpers();
+  installPageReport();
   refreshAreaList();
   renderCombatStats();
   renderCardBuyStatus();
@@ -16319,6 +16604,7 @@
   renderTrainStatus();
   // data-role 的欄位不會進設定的 change 處理，篩選道具要自己接
   panel.querySelector('[data-role="draw-item"]').addEventListener('change', renderDrawStats);
+  panel.querySelector('[data-role="loot-period"]').addEventListener('change', renderLootLedger);
   panel.querySelector('[data-role="recipe-show-all"]').addEventListener('change', renderRecipePicker);
   panel.querySelector('[data-role="scratch-card"]').addEventListener('change', renderScratchStats);
   panel.querySelector('[data-role="scratch-scope"]').addEventListener('change', renderScratchStats);
