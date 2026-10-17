@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.96
+// @version      3.97
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -14772,7 +14772,9 @@
 
   function scheduleForgeRunner(delay) {
     const settings = readSettingsFromPanel();
-    delay = casualForgeAway(settings) ? delay + randomGap(60000, 480000) : lowProfileDelay(settings, delay);
+    // 休閒離開中回來收爐：同一趟還有角色要開、要先補體力（只等幾秒的那種），就一口氣做完再走，不要每開一爐又離開 1～8 分鐘
+    if (casualForgeAway(settings)) delay += delay < 20000 ? randomSkewedSeconds(1, 8) * 1000 * accountPersonality().speed : randomGap(60000, 480000);
+    else delay = lowProfileDelay(settings, delay);
     backgroundTimer.clearTimeout(forgeRunner.timerId);
     const runId = forgeRunner.runId;
     nextTickAt.forge = Date.now() + Math.max(0, Number(delay) || 0);
