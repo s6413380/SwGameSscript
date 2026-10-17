@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.90
+// @version      3.91
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -12186,10 +12186,82 @@
   }
 
   function recipePredictionText(settings, recipe) {
-    const model = materialRegression(settings.forgeRecipeType, settings.recipeNameAdjust ? loadNameWeights() || { days: {} } : null);
-    const predicted = model && model.sampleCount >= 5 ? predictRecipe(model, recipe) : null;
-    if (!predicted) return '';
-    return `<div class="hint" style="margin:2px 0 0">預估（普通品質、依 ${model.sampleCount} 件資料）：${REGRESSION_FIELDS.map(([field, label]) => `${label} ${Math.round(predicted[field])}`).join('・')}</div>`;
+    return forgeEstimateHtml(settings.forgeRecipeType, recipe, settings.forgeRecipeName, true);
+  }
+
+  // 鍛造預估：這個配方（從鍛造紀錄學的、扣掉名稱影響的基本值）× 名稱今天各屬性的倍率（測名表的 %）＝ 普通品質大概的數值。
+  // 鍊金價用同類型裝備「數值 → 鍊金價」配出來的關係算
+  const ESTIMATE_MIN_SAMPLES = 5;
+  const RECYCLE_FIELDS = ['atk', 'def', 'int', 'lck', 'fullDur'];
+  const recycleModels = { at: 0, byType: {} };
+
+  function recycleModel(type) {
+    if (Date.now() - recycleModels.at > 60000) Object.assign(recycleModels, { at: Date.now(), byType: {} });
+    if (type in recycleModels.byType) return recycleModels.byType[type];
+    const items = [...forgedRecords().values()].filter((equipment) => equipment.type === type && Number(equipment.recyclePrice) > 0);
+    let model = null;
+    if (items.length >= 8) {
+      const rows = items.map((equipment) => [1, ...RECYCLE_FIELDS.map((field) => Number(equipment[field]) || 0)]);
+      const prices = items.map((equipment) => Number(equipment.recyclePrice));
+      const size = rows[0].length;
+      const gram = Array.from({ length: size }, (_, first) =>
+        Array.from({ length: size }, (__, second) => rows.reduce((sum, row) => sum + row[first] * row[second], 0) + (first === second && first ? 1 : 0))
+      );
+      const moment = Array.from({ length: size }, (_, index) => rows.reduce((sum, row, rowIndex) => sum + row[index] * prices[rowIndex], 0));
+      const beta = invertMatrix(gram).map((row) => row.reduce((sum, value, index) => sum + value * moment[index], 0));
+      model = { beta, count: items.length };
+    }
+    recycleModels.byType[type] = model;
+    return model;
+  }
+
+  function predictRecycle(model, stats) {
+    if (!model) return null;
+    return Math.max(0, RECYCLE_FIELDS.reduce((sum, field, index) => sum + model.beta[index + 1] * (stats[field] || 0), model.beta[0]));
+  }
+
+  function forgeEstimate(type, recipe, name) {
+    const parsed = typeof recipe === 'string' ? parseRecipeLoosely(recipe) : recipe;
+    if (!type || !parsed.length) return null;
+    const weights = loadNameWeights();
+    const entry = weights && name ? (weights.days[localDayKey(Date.now())] || {})[String(name).trim()] : null;
+    const nameEntry = entry && entry.good ? entry : null;
+    let stats = null;
+    let samples = 0;
+    // 名稱今天測過：用扣掉名稱影響的模型再乘上這個名稱的倍率；沒測過就用沒扣名稱的模型（等於過去名稱的平均）
+    if (nameEntry) {
+      const model = materialRegression(type, weights);
+      if (model && model.sampleCount >= ESTIMATE_MIN_SAMPLES) {
+        stats = predictRecipe(model, parsed);
+        samples = model.sampleCount;
+        if (stats) NAME_ADJUSTED_FIELDS.forEach((field) => (stats[field] *= nameEntry.w[NAME_WEIGHT_FIELDS.indexOf(field)]));
+      }
+    }
+    const nameApplied = Boolean(stats);
+    if (!stats) {
+      const model = materialRegression(type, null);
+      if (!model || model.sampleCount < ESTIMATE_MIN_SAMPLES) return null;
+      stats = predictRecipe(model, parsed);
+      samples = model.sampleCount;
+    }
+    if (!stats) return null;
+    Object.keys(stats).forEach((field) => (stats[field] = Math.max(0, stats[field])));
+    // 精良：數值 ×1.5、重量 ×0.9（品質倍率表）
+    const fine = Object.fromEntries(Object.entries(stats).map(([field, value]) => [field, value * (field === 'wgt' ? 0.9 : 1.5)]));
+    const priceModel = recycleModel(type);
+    return { stats, samples, nameApplied, nameKnown: Boolean(nameEntry), price: predictRecycle(priceModel, stats), finePrice: predictRecycle(priceModel, fine), priceSamples: priceModel ? priceModel.count : 0 };
+  }
+
+  function forgeEstimateHtml(type, recipe, name, explain = false) {
+    const estimate = forgeEstimate(type, recipe, name);
+    if (!estimate) return explain ? '<div class="hint" style="margin:2px 0 0">預估：這種裝備的鍛造紀錄不到 5 件，還算不出來</div>' : '';
+    const { stats } = estimate;
+    const statText = REGRESSION_FIELDS.map(([field, label]) => `${label} ${Math.round(stats[field]).toLocaleString()}`).join('・');
+    const price = estimate.price !== null ? `・鍊金約 <b style="color:#fbbf24">$${Math.round(estimate.price).toLocaleString()}</b>（精良約 $${Math.round(estimate.finePrice).toLocaleString()}）` : '';
+    const note = estimate.nameApplied ? `已乘上「${escapeHtml(name)}」今天的倍率` : name ? `「${escapeHtml(name)}」今天測名表沒有普通／精良的測試，用過去名稱的平均` : '還沒取名稱';
+    return `<div style="margin:2px 0 0;font-size:11px;color:#c4b5fd">預估成品（普通品質）：${statText}${price}</div>${
+      explain ? `<div class="hint" style="margin:0">${note}；依 ${estimate.samples} 件鍛造紀錄。測名表的 % 是名稱讓這項屬性有上限的幾成，這裡已經幫你換成數字</div>` : ''
+    }`;
   }
 
   // 勾選清單一律列出配方裡的材料，所以直接用勾選結果覆蓋配方
@@ -14021,6 +14093,7 @@
           <div>${chips || '<span style="color:#666">沒有配方</span>'}
             ${row.materials.length ? `<span style="color:#a0a0aa">共 ${row.total}${row.cap ? `/${row.cap}` : ''}</span>` : ''}
             ${row.possible === null ? '' : `<span style="color:${row.possible ? '#4ade80' : '#f87171'}">・夠 ${row.possible} 爐</span>`}</div>
+          ${forgeEstimateHtml(row.type, row.materials.map(({ name, quantity }) => [name, quantity]), row.itemName)}
           ${row.problems.length ? `<div style="color:#f87171">⚠ ${row.problems.join('；')}</div>` : ''}
         </div>`;
       })
