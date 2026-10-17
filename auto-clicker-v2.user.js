@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.97
+// @version      3.98
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -200,6 +200,8 @@
     lowProfileSleepHours: '2-9',
     // 完全休息的時段（上班、出門…）：跟睡覺一樣完全不動
     lowProfileOffHours: '',
+    // 完全休息時鍛造照常（打怪照樣停）
+    lowProfileOffHoursForge: false,
     // 玩法：serious＝認真玩（一段一段長時間玩）；casual＝休閒（每小時玩一點，離開時偶爾回來點幾下）
     lowProfileStyle: 'serious',
     // 自動玩法：這些時段認真玩，其他時間休閒
@@ -882,7 +884,8 @@
       <label class="row"><input data-field="lowProfileForgeCheckin" type="checkbox" style="flex:none;width:auto"> 休閒離開時鍛造好了就回來收（晚 1～8 分鐘），順便點幾下狩獵</label>
       <div class="row">每天 <input data-field="lowProfileSleepHours" placeholder="留空＝不睡" style="width:70px;flex:none"> 點睡覺（例：2-9；不會比設定早睡，晚 0～45 分鐘才睡，起床前後飄 30 分鐘，偶爾多睡）</div>
       <div class="row">每天 <input data-field="lowProfileOffHours" placeholder="留空＝沒有" style="width:110px;flex:none"> 點完全休息（例：9-12,14-17；不會比設定早，開始、結束都晚 0～15 分鐘）</div>
-      <div class="hint">完全休息跟睡覺一樣：不打怪、不開爐、不收鍛造，休閒的「回來看一下」也不會有。不管哪種玩法都照這個時段停</div>
+      <label class="row"><input data-field="lowProfileOffHoursForge" type="checkbox" style="flex:none;width:auto"> 完全休息時照常鍛造（只停打怪，收爐、開爐照跑，每步多等幾秒）</label>
+      <div class="hint">完全休息跟睡覺一樣：不打怪、不開爐、不收鍛造（勾了上面「照常鍛造」就只停打怪），休閒的「回來看一下」也不會有。不管哪種玩法都照這個時段停</div>
       <div class="hint">開了之後掛機、API 鍛造每一步多等 1～8 秒（多數短、偶爾長），偶爾分心停 0.5～2 分鐘，要補給、換裝時晚幾秒才反應，動作之間的間隔也拉長；玩一陣子就整個停下休息，晚上睡覺。休息、睡覺時不會打怪、開爐，也不會躲紅名（血量、活人驗證照常監控）。反應變慢，補給門檻設高一點比較安全</div>
       <div class="hint" data-role="low-profile-personality"></div>
       <label class="row"><input data-field="relayEnabled" type="checkbox" style="flex:none;width:auto"> <b>使用中繼站</b>（總開關）</label>
@@ -3927,6 +3930,7 @@
     'lowProfileBreakMaxMinutes',
     'lowProfileSleepHours',
     'lowProfileOffHours',
+    'lowProfileOffHoursForge',
     'lowProfileStyle',
     'lowProfileSeriousHours',
     'lowProfileCasualMinutes',
@@ -14773,7 +14777,8 @@
   function scheduleForgeRunner(delay) {
     const settings = readSettingsFromPanel();
     // 休閒離開中回來收爐：同一趟還有角色要開、要先補體力（只等幾秒的那種），就一口氣做完再走，不要每開一爐又離開 1～8 分鐘
-    if (casualForgeAway(settings)) delay += delay < 20000 ? randomSkewedSeconds(1, 8) * 1000 * accountPersonality().speed : randomGap(60000, 480000);
+    if (settings.lowProfileEnabled && settings.lowProfileOffHoursForge && offHoursEndAt(settings, Date.now())) delay += randomSkewedSeconds(1, 8) * 1000 * accountPersonality().speed;
+    else if (casualForgeAway(settings)) delay += delay < 20000 ? randomSkewedSeconds(1, 8) * 1000 * accountPersonality().speed : randomGap(60000, 480000);
     else delay = lowProfileDelay(settings, delay);
     backgroundTimer.clearTimeout(forgeRunner.timerId);
     const runId = forgeRunner.runId;
@@ -17017,7 +17022,7 @@
       renderNameWeightTable();
       recipeOptionsCache.at = 0;
     }
-    if (['lowProfileEnabled', 'lowProfileStyle', 'lowProfileCasualMinutes', 'lowProfileSeriousHours', 'lowProfileOffHours', 'lowProfileSleepHours'].includes(event.target.dataset.field)) resetLowProfileRhythm();
+    if (['lowProfileEnabled', 'lowProfileStyle', 'lowProfileCasualMinutes', 'lowProfileSeriousHours', 'lowProfileOffHours', 'lowProfileOffHoursForge', 'lowProfileSleepHours'].includes(event.target.dataset.field)) resetLowProfileRhythm();
     if (event.target.dataset.trainChoice) updateTrainFromChoices();
     if (event.target.dataset.cardRule) updateCardRulesFromRows();
     if (event.target.dataset.field === 'trainEnabled') renderTrainStatus();
