@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.91
+// @version      3.92
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -73,6 +73,9 @@
     ['other', '其他', ['pick', 'transfer', 'cardBuy', 'alert', 'cloud', 'log', 'api', 'backup']],
   ];
   const TAB_STORAGE_KEY = 'autoClickerV2Tab';
+  // 每個角色上次鍛造了什麼；正在配方頁改的是哪個角色的配方（按 ④ 的「載入」）。面板一建好就可能畫配方頁，所以放最前面
+  const HERO_LAST_FORGE_KEY = 'autoClickerV2HeroLastForge';
+  const recipeEditing = { heroId: 0 };
   const GROUP_TABS_STORAGE_KEY = 'autoClickerV2GroupTabs';
 
   function tabGroupOf(tabId) {
@@ -937,7 +940,7 @@
       <div class="row">開 ${numberInput('forgeByApiCount', 'min="0"')} 爐就停（0＝不限）</div>
       <fieldset class="group">
         <legend>鍛造佇列</legend>
-        <div class="hint" style="margin-top:0">每個角色類型旁邊的「用途」選 <b>用</b> 或 <b>賣</b>：<b>用</b>＝做來自己用（武器挑攻擊高、防具挑防禦高的名稱）；<b style="color:#fbbf24">賣</b>＝做來鍊金（挑耐久、智、幸高的名稱，不管重量）。新增角色到「配方」頁 ④ 給誰用 按「加入」</div>
+        <div class="hint" style="margin-top:0">每個角色類型旁邊的「用途」選 <b>用</b> 或 <b>賣</b>：<b>用</b>＝自己用（武器挑攻防、大衣挑智防幸，重量也算）；<b style="color:#fbbf24">賣</b>＝做來鍊金（挑攻防智幸耐總和高的名稱，不管重量）。新增角色到「配方」頁 ④ 給誰用 按「加入」</div>
         <div data-role="forge-plan-overview" style="font-size:12px"></div>
       </fieldset>
       <fieldset class="group" data-fold="closed">
@@ -952,9 +955,9 @@
         <legend>進階（平常不用動）</legend>
         <fieldset class="group" data-fold="closed">
           <legend>自己排挑名稱的屬性順序</legend>
-          <div class="row">挑名稱的權重 <select data-field="forgeNameWeightMode" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="auto">內建（照用／賣）</option><option value="manual">手動：照下面的順序</option></select></div>
+          <div class="row">挑名稱的權重 <select data-field="forgeNameWeightMode" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="auto">有寫到的類型照下面，其他照內建</option><option value="manual">同左</option></select></div>
           <textarea data-field="forgeNamePriorities" rows="4" style="width:100%;box-sizing:border-box"></textarea>
-          <div class="hint">一行一組，例：「雙手斧、雙手劍：攻>重>耐」。越前面越重要（3 個就是 3:2:1）；選「賣」的角色會自動拿掉「重」；沒寫到的類型照內建</div>
+          <div class="hint">一行一組，例：「雙手斧、雙手劍：攻>防>重」。越前面越重要（3 個就是 3:2:1）；有寫到的類型就照這裡，選「賣」的會自動拿掉「重」；沒寫到的照內建（武器 攻防重、大衣 智防幸重、其他防具 防重攻；賣＝攻防智幸耐一樣重）</div>
         </fieldset>
         <fieldset class="group" data-fold="closed">
           <legend>編輯佇列（列出所有角色）</legend>
@@ -8483,6 +8486,14 @@
           setStatus(`材料庫存 ${mineStock.length} 種`);
         })
         .catch((error) => setStatus(`讀取材料失敗（${error.message}）`));
+    } else if (action === 'recipe-load') {
+      loadHeroRecipe(Number(event.target.dataset.hero));
+    } else if (action === 'recipe-clear') {
+      setPanelField('forgeRecipe', '');
+      saveSettings(readSettingsFromPanel());
+      renderRecipePicker();
+    } else if (action === 'recipe-step') {
+      stepRecipeMaterial(event.target.dataset.name, Number(event.target.dataset.step));
     } else if (action === 'recipe-queue') {
       queueHeroForForge(Number(event.target.dataset.hero));
     } else if (action === 'forge-unqueue') {
@@ -10669,6 +10680,33 @@
       ...(hero ? { heroName: hero.name, skills: { forge: hero.forge, tailor: hero.tailor, craft: hero.craft } } : {}),
     };
     writeJsonStorage(FORGE_PENDING_KEY, pending);
+    // 每個角色上次鍛造了什麼：配方頁 ④ 可以一鍵載入來改
+    const last = readJsonStorage(HERO_LAST_FORGE_KEY, {});
+    last[body.heroId] = { type: pending[body.heroId].type, name: body.name, recipe: pending[body.heroId].materials.map(([name, quantity]) => `${name}×${quantity}`).join('、'), at: Date.now() };
+    writeJsonStorage(HERO_LAST_FORGE_KEY, last);
+  }
+
+
+  // 把角色的配方載進配方頁：佇列裡有設定的用設定，沒有就用他上次鍛造的
+  function loadHeroRecipe(heroId) {
+    const settings = readSettingsFromPanel();
+    const plan = forgeByApiPlans(settings)[heroId];
+    const last = readJsonStorage(HERO_LAST_FORGE_KEY, {})[heroId];
+    const source = plan && plan.recipe ? plan : last;
+    const hero = forgeHeroes.find((candidate) => candidate.id === heroId);
+    if (!source || !source.recipe) {
+      setStatus(`${hero ? hero.name : heroId} 沒有設定過配方，也還沒有鍛造紀錄`);
+      return;
+    }
+    if (source.type) setPanelField('forgeRecipeType', source.type);
+    setPanelField('forgeRecipe', normalizeRecipe(source.recipe));
+    if (source.name) setPanelField('forgeRecipeName', source.name);
+    recipeEditing.heroId = heroId;
+    saveSettings(readSettingsFromPanel());
+    renderRecipePicker();
+    renderRecipeFavorites();
+    renderRecipeHeroes();
+    setStatus(`已載入 ${hero ? hero.name : heroId} 的配方，改好按他那列的「存回」`);
   }
 
   function parseJsonText(text) {
@@ -12170,7 +12208,7 @@
           }${price(mine) ? ` <span style="color:#fbbf24">市價 ${unitPriceText(price(mine))}</span>` : ''}${
             effectOf(mine.name) ? `<div style="margin-left:20px;color:#fb923c">${escapeHtml(effectOf(mine.name))}</div>` : ''
           }</label>
-          <input type="number" min="1" data-recipe-qty="${escapeHtml(mine.name)}" value="${quantity || 1}" style="flex:none;width:44px"></div>`;
+          <button data-action="recipe-step" data-name="${escapeHtml(mine.name)}" data-step="-1" style="flex:none;padding:0 7px" title="少一個">−</button><input type="number" min="1" data-recipe-qty="${escapeHtml(mine.name)}" value="${quantity || 1}" style="flex:none;width:38px;text-align:center"><button data-action="recipe-step" data-name="${escapeHtml(mine.name)}" data-step="1" style="flex:none;padding:0 7px" title="多一個（沒勾的會自動勾）">＋</button></div>`;
       })
       .join('');
     panel.querySelector('[data-role="recipe-picker"]').innerHTML =
@@ -12178,8 +12216,11 @@
     const total = recipe.reduce((sum, [, quantity]) => sum + quantity, 0);
     const cap = MATERIAL_CAPS[settings.forgeRecipeType];
     const possible = mineStock.length && recipe.length ? forgesPossible(recipe, stock) : null;
+    const fill = cap ? Math.min(100, Math.round((total / cap) * 100)) : 0;
     panel.querySelector('[data-role="recipe-total"]').innerHTML =
-      `已選 <b style="color:${total > cap ? '#ef4444' : '#fff'}">${total}</b>／上限 ${cap}` +
+      `<div style="height:6px;margin:2px 0;border-radius:3px;background:#2a2a30;overflow:hidden"><div style="width:${fill}%;height:100%;background:${total > cap ? '#ef4444' : total === cap ? '#22c55e' : '#3b82f6'}"></div></div>` +
+      `已選 <b style="color:${total > cap ? '#ef4444' : '#fff'}">${total}</b>／上限 ${cap}${cap && total < cap ? `（還能放 ${cap - total} 個）` : total > cap ? `（多了 ${total - cap} 個）` : '（剛好滿）'}` +
+      ` <button data-action="recipe-clear" style="padding:0 6px;font-size:11px">清空</button>` +
       (possible === null ? '' : `，材料夠鍛 <b style="color:${possible ? '#22c55e' : '#ef4444'}">${possible}</b> 爐`) +
       recipePredictionText(settings, recipe) +
       recipeTableSummary(recipe);
@@ -12264,6 +12305,18 @@
     }`;
   }
 
+  // ＋／－：直接改這個材料的數量；加到沒勾的會自動勾、減到 0 就取消勾選
+  function stepRecipeMaterial(name, step) {
+    const settings = readSettingsFromPanel();
+    const recipe = new Map(parseRecipeLoosely(settings.forgeRecipe));
+    const quantity = Math.max(0, (recipe.get(name) || 0) + step);
+    if (quantity) recipe.set(name, quantity);
+    else recipe.delete(name);
+    setPanelField('forgeRecipe', [...recipe].map(([material, count]) => `${material}×${count}`).join('、'));
+    saveSettings(readSettingsFromPanel());
+    renderRecipePicker();
+  }
+
   // 勾選清單一律列出配方裡的材料，所以直接用勾選結果覆蓋配方
   function updateRecipeFromPicker() {
     const parts = [...panel.querySelectorAll('[data-recipe-mine]')]
@@ -12285,6 +12338,7 @@
     }
     const plans = forgeByApiPlans(settings);
     plans[heroId] = { ...(plans[heroId] || {}), type: settings.forgeRecipeType, recipe: settings.forgeRecipe };
+    if (recipeEditing.heroId === heroId && String(settings.forgeRecipeName || '').trim()) plans[heroId].name = settings.forgeRecipeName.trim();
     setPanelField('forgeByApiPlans', JSON.stringify(plans));
     const heroIds = forgeByApiHeroIds(settings);
     if (!heroIds.includes(heroId)) setPanelField('forgeByApiHeroIds', [...heroIds, heroId].join(','));
@@ -13197,20 +13251,14 @@
   // 用：武器看攻擊、防具看防禦，輕一點、耐久高一點也好
   const WEAPON_TYPES = ['單手劍', '細劍', '短刀', '單手錘', '雙手劍', '太刀', '雙手斧', '長槍'];
   const ARMOR_TYPES = ['盾牌', '頭盔', '帽子', '盔甲', '大衣'];
+  // 自用：每種裝備看重的屬性，重量也算（輕一點好用）
   const USE_NAME_WEIGHTS = {
-    weapon: [['攻', 0.6], ['重', 0.15], ['耐', 0.15], ['幸', 0.1]],
-    armor: [['防', 0.55], ['重', 0.25], ['攻', 0.1], ['耐', 0.1]],
+    weapon: [['攻', 0.4], ['防', 0.35], ['重', 0.25]],
+    大衣: [['智', 0.3], ['防', 0.3], ['幸', 0.25], ['重', 0.15]],
+    armor: [['防', 0.5], ['重', 0.3], ['攻', 0.2]],
   };
-  // 賣（鍊金）：回收價主要看耐久、智、幸，攻防比較少，不看重量；照雲端 3400 多件紀錄的回收價配出來的
-  const SELL_NAME_WEIGHTS = {
-    盔甲: [['耐', 0.39], ['防', 0.28], ['攻', 0.22], ['智', 0.11]],
-    單手錘: [['耐', 0.4], ['幸', 0.3], ['攻', 0.26], ['智', 0.04]],
-    雙手劍: [['耐', 0.66], ['幸', 0.15], ['智', 0.12], ['攻', 0.07]],
-    太刀: [['耐', 0.64], ['防', 0.1], ['智', 0.1], ['攻', 0.09], ['幸', 0.07]],
-    雙手斧: [['耐', 0.43], ['攻', 0.3], ['幸', 0.2], ['智', 0.07]],
-    頭盔: [['耐', 0.35], ['防', 0.29], ['智', 0.23], ['幸', 0.07], ['攻', 0.06]],
-  };
-  const SELL_NAME_WEIGHTS_DEFAULT = [['耐', 0.66], ['攻', 0.12], ['幸', 0.1], ['智', 0.09], ['防', 0.03]];
+  // 賣（鍊金）：看攻防智幸耐的總和，不管重量
+  const SELL_NAME_WEIGHTS = [['攻', 0.2], ['防', 0.2], ['智', 0.2], ['幸', 0.2], ['耐', 0.2]];
   const FORGE_PURPOSES = { use: '用', sell: '賣' };
 
   function forgePurposeOf(value) {
@@ -13218,7 +13266,8 @@
   }
 
   function purposeNameWeights(type, purpose) {
-    if (purpose === 'sell') return SELL_NAME_WEIGHTS[type] || SELL_NAME_WEIGHTS_DEFAULT;
+    if (purpose === 'sell') return SELL_NAME_WEIGHTS;
+    if (USE_NAME_WEIGHTS[type]) return USE_NAME_WEIGHTS[type];
     if (WEAPON_TYPES.includes(type)) return USE_NAME_WEIGHTS.weapon;
     if (ARMOR_TYPES.includes(type)) return USE_NAME_WEIGHTS.armor;
     return null;
@@ -13227,8 +13276,8 @@
   // 這種裝備、這種用途挑名稱的權重：[[屬性, 比重]]、說明文字；都沒有就 null（用六圍平均）
   function nameWeightsFor(settings, type, purpose = 'use') {
     const purposeLabel = FORGE_PURPOSES[forgePurposeOf(purpose)];
-    if (settings.forgeNameWeightMode === 'manual') {
-      // 賣的不看重量，手動順序裡的「重」拿掉
+    {
+      // 自己排過順序的類型照自己排的；賣的不看重量，「重」拿掉
       const stats = (namePriorityFor(settings, type) || []).filter((stat) => purpose !== 'sell' || stat !== '重');
       if (stats.length) {
         const total = stats.reduce((sum, _, index) => sum + stats.length - index, 0);
@@ -13965,6 +14014,7 @@
     const settings = readSettingsFromPanel();
     const queued = forgeByApiHeroIds(settings);
     const plans = forgeByApiPlans(settings);
+    const lastForges = readJsonStorage(HERO_LAST_FORGE_KEY, {});
     box.innerHTML = forgeHeroes
       .slice()
       .sort((first, second) => Number(queued.includes(second.id)) - Number(queued.includes(first.id)) || (second.forge || 0) - (first.forge || 0))
@@ -13979,13 +14029,18 @@
         else if (hero.actionState) tags.push('<span style="color:#a0a0aa">忙別的事</span>');
         const unavailable = hero.actionState || inHuntTeam(hero);
         const small = 'flex:none;padding:1px 7px;font-size:12px';
-        return `<div style="padding:4px 2px;border-bottom:1px solid #2e2e34">
+        const last = lastForges[hero.id];
+        const editing = recipeEditing.heroId === hero.id;
+        return `<div style="padding:4px 2px;border-bottom:1px solid #2e2e34;${editing ? 'background:#1e293b' : ''}">
           <div style="display:flex;gap:4px;align-items:center">
             <b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(hero.name)}">${escapeHtml(hero.name)}</b>
-            ${sameRecipe ? '<span style="flex:none;color:#4ade80">✓ 使用中</span>' : `<button data-action="recipe-queue" data-hero="${hero.id}" style="${small};font-weight:bold" title="${inQueue ? '改用上面的配方' : '排進自動鍛造佇列，用上面的配方'}">${inQueue ? '改用' : '加入'}</button>`}
+            ${(plan.recipe || last) ? `<button data-action="recipe-load" data-hero="${hero.id}" style="${small}" title="把這個角色的配方（沒有就用上次鍛造的）載到上面來改">載入</button>` : ''}
+            ${sameRecipe ? '<span style="flex:none;color:#4ade80">✓ 使用中</span>' : `<button data-action="recipe-queue" data-hero="${hero.id}" style="${small};font-weight:bold" title="${inQueue ? '改用上面的配方' : '排進自動鍛造佇列，用上面的配方'}">${editing ? '存回' : inQueue ? '改用' : '加入'}</button>`}
             ${inQueue ? `<button data-action="forge-unqueue" data-hero="${hero.id}" style="${small}">移出</button>` : ''}
             <button data-action="recipe-forge-once" data-hero="${hero.id}" style="${small}" ${unavailable ? 'disabled' : ''}>鍛一次</button>
           </div>
+          ${editing ? '<div style="color:#93c5fd">← 上面正在改這個角色的配方</div>' : ''}
+          ${last && !inQueue ? `<div style="color:#a0a0aa" title="${escapeHtml(last.recipe)}">上次：${escapeHtml(last.type || '')} ${escapeHtml(last.recipe)}${last.name ? `「${escapeHtml(last.name)}」` : ''}・${new Date(last.at).toLocaleDateString('zh-TW', { month: 'numeric', day: 'numeric' })}</div>` : ''}
           <div style="color:#a0a0aa">鍛 ${hero.forge ?? '?'}・裁 ${hero.tailor ?? '?'}・工 ${hero.craft ?? '?'}${tags.length ? `・${tags.join('・')}` : ''}${
             inQueue
               ? `・用途 <select data-forge-purpose="${hero.id}" style="padding:0;color:${plan.purpose === 'sell' ? '#fbbf24' : '#fff'};background:#2a2a30;border:1px solid #44444c;border-radius:4px"><option value="use" ${plan.purpose === 'sell' ? '' : 'selected'}>用</option><option value="sell" ${plan.purpose === 'sell' ? 'selected' : ''}>賣</option></select>`
