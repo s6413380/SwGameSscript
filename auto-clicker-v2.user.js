@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.94
+// @version      3.95
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -6677,13 +6677,18 @@
     const signature = `api:${report.id}`;
     if (signature === combatStats.lastSignature) return;
     combatStats.lastSignature = signature;
+    const { lines, indented, sides } = battleInputOfReport(report);
+    recordBattle(lines, indented, () => JSON.stringify(report).slice(0, 20000), sides);
+  }
+
+  function battleInputOfReport(report) {
     const messages = report.messages.filter((message) => String(message.m || '').trim());
     const lines = messages.map((message) => String(message.m).trim());
     // 群體技能的子行（第 1 擊、第 2 擊…）帶 indent，等同畫面上的縮排，交給解析器算在上面那行出手的人身上
     const indented = messages.map((message) => Boolean(message.indent));
     const names = (side) => (Array.isArray(side) ? side.map((fighter) => fighter && fighter.name).filter(Boolean) : []);
     const sides = { party: names(report.a), enemies: names(report.b), damaged: messages.map((message) => message.dmged) };
-    recordBattle(lines, indented.some(Boolean) ? indented : null, () => JSON.stringify(report).slice(0, 20000), sides);
+    return { lines, indented: indented.some(Boolean) ? indented : null, sides };
   }
 
   function watchBattleLog(settings) {
@@ -12623,8 +12628,23 @@
     scanItemTables();
   }, true);
 
+  // 狩獵頁的戰報、掉落也會出現「普通的石頭劍」，往上找到的「攻擊」是戰鬥文字，不是裝備詳細資料
+  function looksLikeEquipmentDetail(heading, root) {
+    if (heading.closest(`#${PAGE_REPORT_ID}`) || root.querySelector(`#${PAGE_REPORT_ID}`)) return false;
+    if (root.querySelector('div.transition.mt-1.mb-2') || heading.closest('div.transition.mt-1.mb-2')) return false;
+    const text = [...root.childNodes]
+      .filter((node) => !(node.nodeType === 1 && node.hasAttribute(FORGE_DETAIL_MARK)))
+      .map((node) => node.textContent)
+      .join(' ');
+    return text.length < 2000 && !/戰鬥過程|造成\s*\d/.test(text);
+  }
+
   function enhanceEquipmentDetails() {
     if (tabShutDown) return;
+    // 舊版放錯地方的（戰報裡）先清掉
+    document.querySelectorAll(`[${FORGE_DETAIL_MARK}]`).forEach((box) => {
+      if (box.closest(`#${PAGE_REPORT_ID}`) || box.closest('div.transition.mt-1.mb-2') || /造成\s*\d/.test(box.parentElement ? box.parentElement.textContent : '')) box.remove();
+    });
     const showForge = readSettingsFromPanel().forgeDetailEnabled;
     const locked = lockedEquipmentIds();
     const forSale = sellMarkedIds();
@@ -12633,6 +12653,11 @@
       let root = heading.parentElement;
       for (let depth = 0; root && depth < 10 && !/攻擊/.test(root.textContent) && !/防禦/.test(root.textContent); depth++) root = root.parentElement;
       if (!root || !/攻擊/.test(root.textContent)) return;
+      if (!looksLikeEquipmentDetail(heading, root)) {
+        const stray = root.querySelector(`[${FORGE_DETAIL_MARK}]`);
+        if (stray) stray.remove();
+        return;
+      }
       // 另一支工具腳本已經顯示材料就不重複（鎖定按鈕照樣放）
       const otherTool = root.querySelector('[data-sgo-mats], .sgo-base.forge-info');
       const equipment = findDetailEquipment(root, title);
@@ -13026,7 +13051,7 @@
   // 頁面上的戰報：狩獵頁顯示最新一場，戰報詳情頁顯示那一份。用遊戲回應裡的戰報資料畫，不多發請求
   const PAGE_REPORT_ID = 'ac-page-report';
   const PAGE_HIDDEN_ATTR = 'data-ac-hidden';
-  const pageReport = { hunt: null, detail: {}, signature: '', showGame: false, open: { loot: true, log: true } };
+  const pageReport = { hunt: null, detail: {}, signature: '', showGame: false, open: { loot: true, battle: true, log: true }, openMembers: new Set() };
   // 遊戲戰報每行的樣式名 → 顏色（跟遊戲一樣）
   const REPORT_COLORS = {
     default: '#d6d3d1', info: '#67e8f9', exp: '#14b8a6', subInfo: '#fed7aa', sub: '#78716c', skill: '#5eead4',
@@ -13081,6 +13106,45 @@
     return `${teamText ? `<div>${teamText}</div>` : ''}${durability ? `<div>${durability}</div>` : ''}`;
   }
 
+  // 這一場每個我方角色的傷害、爆擊、回復、控制、擊殺，點角色展開各招式
+  function pageBattleHtml(report) {
+    let members;
+    try {
+      const { lines, indented, sides } = battleInputOfReport(report);
+      members = parseBattle(lines, indented, sides).members;
+    } catch {
+      return '';
+    }
+    const entries = Object.entries(members).sort(byDamage);
+    if (!entries.length) return '';
+    const totals = sumMembers(members);
+    const top = Math.max(1, ...entries.map(([, member]) => member.damage));
+    const cell = 'padding:1px 5px;text-align:right;white-space:nowrap';
+    const rows = entries
+      .map(([name, member]) => {
+        const skills = Object.entries(member.skills)
+          .sort(byDamage)
+          .map(([skill, skillStats]) => `<tr style="color:#a8a29e"><td style="padding:1px 5px 1px 16px">${escapeHtml(skill)}</td><td style="${cell}">${formatAmount(skillStats.damage)}</td>
+            <td style="${cell}">${percentText(skillStats.damage, member.damage)}</td><td style="${cell}">${skillStats.casts} 次</td><td style="${cell}">${skillStats.hits ? `${skillStats.hits} 中` : ''}</td>
+            <td style="${cell}">${skillStats.hits ? `爆 ${percentText(skillStats.crits, skillStats.hits)}` : ''}</td><td colspan="3"></td></tr>`)
+          .join('');
+        const extra = [
+          member.healthHealing ? `<span style="color:#86efac">回血 ${formatAmount(member.healthHealing)}</span>` : '',
+          member.staminaHealing ? `<span style="color:#67e8f9">回體 ${formatAmount(member.staminaHealing)}</span>` : '',
+        ].filter(Boolean).join(' ');
+        return `<tr data-ac-member="${escapeHtml(name)}" style="cursor:pointer" title="點一下看各招式">
+            <td style="padding:1px 5px;white-space:nowrap">▸ <b>${escapeHtml(name)}</b></td>
+            <td style="${cell};position:relative"><span style="position:absolute;left:0;top:2px;bottom:2px;width:${Math.round((member.damage / top) * 100)}%;background:rgba(248,113,113,.25);border-radius:2px"></span><span style="position:relative">${formatAmount(member.damage)}</span></td>
+            <td style="${cell}">${percentText(member.damage, totals.damage)}</td>
+            <td style="${cell}">${member.hits} 中</td><td style="${cell}">爆 ${percentText(member.crits, member.hits)}</td>
+            <td style="${cell}">${extra}</td><td style="${cell}">${member.controls ? `控 ${member.controls}` : ''}</td><td style="${cell}">${member.kills ? `殺 ${member.kills}` : ''}</td></tr>
+          <tbody data-ac-skills="${escapeHtml(name)}" style="display:${pageReport.openMembers.has(name) ? 'table-row-group' : 'none'}">${skills}</tbody>`;
+      })
+      .join('');
+    return `<table style="width:100%;border-collapse:collapse;font:12px/1.6 monospace"><tbody>${rows}</tbody></table>
+      <div style="color:#a8a29e">全隊 傷害 ${formatAmount(totals.damage)}・爆擊 ${percentText(totals.crits, totals.hits)}${totals.healthHealing ? `・回血 ${formatAmount(totals.healthHealing)}` : ''}${totals.controls ? `・控制 ${totals.controls}` : ''}・擊殺 ${totals.kills}</div>`;
+  }
+
   function pageReportHtml(report, withStatus) {
     const messages = report.messages.filter((message) => String(message.m || '').trim());
     const loot = parseLoot(messages);
@@ -13109,7 +13173,9 @@
     const section = (key, title, extra, body) => `<details data-ac-sec="${key}" ${pageReport.open[key] ? 'open' : ''} style="margin:4px 0;border:1px solid #44403c;border-radius:4px;background:rgba(41,37,36,.55)">
         <summary style="cursor:pointer;padding:4px 8px;font-weight:bold">${title}<span style="float:right;font-weight:normal;color:#a8a29e">${extra}</span></summary>
         <div style="padding:4px 8px 6px">${body}</div></details>`;
+    const battle = pageBattleHtml(report);
     return `${section('loot', '🎁 本場掉落・狀態', [place, time].filter(Boolean).join('・'), `<div>${lootHtml}</div>${moneyText ? `<div style="color:#fcd34d">${escapeHtml(moneyText)}</div>` : ''}${withStatus ? `<div data-ac-status>${teamStatusHtml()}</div>` : ''}`)}
+      ${battle ? section('battle', '⚔️ 傷害・技能', '點角色看各招式', battle) : ''}
       ${section('log', '📜 戰報內容', `${messages.length} 行 <button type="button" data-ac-toggle-game style="margin-left:6px;padding:0 6px;border:1px solid #57534e;border-radius:4px;background:#292524;color:#d6d3d1">${pageReport.showGame ? '收起原本的' : '顯示原本的'}</button>`, `<div style="font:12px/1.6 monospace;max-height:420px;overflow:auto">${lines}</div>`)}`;
   }
 
@@ -13175,6 +13241,18 @@
     document.addEventListener('toggle', (event) => {
       const key = event.target.dataset && event.target.dataset.acSec;
       if (key && event.target.closest(`#${PAGE_REPORT_ID}`)) pageReport.open[key] = event.target.open;
+    }, true);
+    document.addEventListener('click', (event) => {
+      const row = event.target.closest && event.target.closest(`#${PAGE_REPORT_ID} [data-ac-member]`);
+      if (!row) return;
+      const name = row.dataset.acMember;
+      const skills = [...row.closest('table').querySelectorAll('[data-ac-skills]')].find((body) => body.dataset.acSkills === name);
+      if (!skills) return;
+      const open = skills.style.display === 'none';
+      skills.style.display = open ? 'table-row-group' : 'none';
+      row.querySelector('td').firstChild.textContent = open ? '▾ ' : '▸ ';
+      if (open) pageReport.openMembers.add(name);
+      else pageReport.openMembers.delete(name);
     }, true);
     document.addEventListener('click', (event) => {
       if (!event.target.closest || !event.target.closest('[data-ac-toggle-game]')) return;
