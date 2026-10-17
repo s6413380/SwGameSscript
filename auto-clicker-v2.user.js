@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.95
+// @version      3.96
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -252,6 +252,12 @@
     equipApiHeroIds: '',
     // 可以換上的裝備名稱（逗號分隔）；留空＝閒置裝備都能用
     equipApiAllowedNames: '',
+    // 用條件挑替換裝備（不用勾裝備）：攻擊、防禦下限（0＝不限），附魔「名稱」或「名稱≥數值」，逗號分隔
+    equipRuleEnabled: false,
+    equipRuleMinAtk: 0,
+    equipRuleMinDef: 0,
+    equipRuleEnchants: '',
+    equipRuleEnchantMode: 'any',
     // 練等：回城換上要練的英雄，到練等關卡練到指定等級，再回城換回原本的隊伍、回原本的關卡
     trainEnabled: false,
     trainHeroIds: '',
@@ -1000,6 +1006,16 @@
           <div data-role="equip-heroes" class="choices"><div class="hint">還沒讀到隊伍</div></div>
           <div class="row"><button data-action="load-hunt-team">重新讀取隊伍</button></div>
           <div class="subhead">可以換上的裝備</div>
+          <label class="row"><input data-field="equipRuleEnabled" type="checkbox" style="flex:none;width:auto"> <b>用條件挑</b>（不用勾裝備，勾了下面的勾選清單就不看）</label>
+          <div data-equip-rule>
+            <div class="row">攻擊 ≥ ${numberInput('equipRuleMinAtk', 'min="0" style="flex:none;width:60px"')} 防禦 ≥ ${numberInput('equipRuleMinDef', 'min="0" style="flex:none;width:60px"')}<span class="hint" style="margin:0">0＝不限</span></div>
+            <div class="row">附魔<input data-field="equipRuleEnchants" list="autoClickerEnchantNames" placeholder="例如 物理減傷、火焰傷害≥20；留空＝不限">
+              <select data-field="equipRuleEnchantMode" style="flex:none;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="any">有一個就行</option><option value="all">全部都要</option></select></div>
+            <datalist id="autoClickerEnchantNames"></datalist>
+            <div data-role="equip-rule-enchants" style="font-size:12px"></div>
+            <div data-role="equip-rule-preview" class="hint"></div>
+            <div class="row"><button data-action="equip-rule-preview">看符合的裝備</button></div>
+          </div>
           <div class="row"><input data-field="equipApiAllowedNames" placeholder="留空＝閒置裝備都能用"><button data-action="load-equipment-choices">勾選</button></div>
           <div data-role="equipment-choices" class="choices"></div>
           <div class="hint">從閒置中的裝備挑同類型、耐久最高的；先脫下舊的再穿上新的，每步間隔 1～3 秒，記在「紀錄」頁</div>
@@ -4568,6 +4584,80 @@
     return equipment.quality ? `${equipment.quality}・${equipment.name}` : equipment.name;
   }
 
+  // 「物理減傷」「火焰傷害≥20」「物理減傷>10」
+  function parseEnchantRules(text) {
+    return String(text || '')
+      .split(/[,，、\s]+/)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const match = /^(.+?)\s*(>=|≥|＞|>)\s*(\d+(?:\.\d+)?)$/.exec(part);
+        return match ? { name: match[1], min: Number(match[3]), strict: match[2] === '>' || match[2] === '＞' } : { name: part, min: null, strict: false };
+      });
+  }
+
+  function matchesEquipRule(settings, equipment) {
+    if ((Number(settings.equipRuleMinAtk) || 0) > (Number(equipment.atk) || 0)) return false;
+    if ((Number(settings.equipRuleMinDef) || 0) > (Number(equipment.def) || 0)) return false;
+    const rules = parseEnchantRules(settings.equipRuleEnchants);
+    if (!rules.length) return true;
+    const enchantments = equipment.enchantments || {};
+    const hit = (rule) => {
+      if (!(rule.name in enchantments)) return false;
+      if (rule.min === null) return true;
+      const value = Number(enchantments[rule.name]) || 0;
+      return rule.strict ? value > rule.min : value >= rule.min;
+    };
+    return settings.equipRuleEnchantMode === 'all' ? rules.every(hit) : rules.some(hit);
+  }
+
+  function equipmentEnchantText(equipment) {
+    return Object.entries(equipment.enchantments || {})
+      .map(([name, value]) => `${name}${value}`)
+      .join('、');
+  }
+
+  // 條件設好就列出閒置裝備裡符合的，順便把看過的附魔名稱做成可以點的標籤
+  async function renderEquipRulePreview(refresh = false) {
+    const box = panel.querySelector('[data-role="equip-rule-preview"]');
+    if (!box) return;
+    if (refresh || !state.equipments.length) {
+      try {
+        await refreshEquipments();
+      } catch (error) {
+        box.textContent = `讀取裝備清單失敗（${error.message}）`;
+        return;
+      }
+    }
+    const settings = readSettingsFromPanel();
+    const names = [...new Set(state.equipments.flatMap((equipment) => Object.keys(equipment.enchantments || {})))].sort((first, second) => first.localeCompare(second, 'zh-Hant'));
+    panel.querySelector('#autoClickerEnchantNames').innerHTML = names.map((name) => `<option value="${escapeHtml(name)}">`).join('');
+    const chosen = new Set(parseEnchantRules(settings.equipRuleEnchants).map((rule) => rule.name));
+    panel.querySelector('[data-role="equip-rule-enchants"]').innerHTML = names.length
+      ? `<span class="hint" style="margin:0">點一下加入／移除：</span>${names
+          .map((name) => `<button type="button" data-equip-rule-enchant="${escapeHtml(name)}" style="margin:1px 2px;padding:0 6px;border-radius:9px;font-size:11px;${chosen.has(name) ? 'background:#14532d;color:#bbf7d0;border:1px solid #22c55e' : ''}">${escapeHtml(name)}</button>`)
+          .join('')}`
+      : '<span class="hint" style="margin:0">裝備清單裡沒有附魔過的裝備</span>';
+    const idle = state.equipments.filter((equipment) => equipment.equipped === null && equipment.state === 0);
+    const matched = idle.filter((equipment) => matchesEquipRule(settings, equipment) && equipment.dur >= settings.equipApiMinDurability);
+    const byType = new Map();
+    matched.forEach((equipment) => byType.set(equipment.type, [...(byType.get(equipment.type) || []), equipment]));
+    box.innerHTML = matched.length
+      ? `閒置裝備 ${idle.length} 件，符合條件又耐久夠的 <b style="color:#4ade80">${matched.length}</b> 件：${[...byType.entries()]
+          .map(([type, list]) => `<div>・${escapeHtml(type)} ${list.length} 件（例：${escapeHtml(equipmentLabel(list[0]))} 攻 ${list[0].atk} 防 ${list[0].def}${equipmentEnchantText(list[0]) ? `・${escapeHtml(equipmentEnchantText(list[0]))}` : ''}）</div>`)
+          .join('')}`
+      : `閒置裝備 ${idle.length} 件，<b style="color:#f87171">沒有符合條件</b>（耐久也要 ≥ ${settings.equipApiMinDurability}）`;
+  }
+
+  function toggleEquipRuleEnchant(name) {
+    const rules = parseEnchantRules(readSettingsFromPanel().equipRuleEnchants);
+    const kept = rules.filter((rule) => rule.name !== name);
+    const parts = kept.map((rule) => (rule.min === null ? rule.name : `${rule.name}${rule.strict ? '>' : '≥'}${rule.min}`));
+    if (kept.length === rules.length) parts.push(name);
+    setPanelField('equipRuleEnchants', parts.join('、'));
+    renderEquipRulePreview();
+  }
+
   // 舊設定只存名稱，名稱相符也算
   function isAllowedEquipment(allowed, equipment) {
     return !allowed.length || allowed.includes(equipmentLabel(equipment)) || allowed.includes(equipment.name);
@@ -4977,7 +5067,7 @@
           equipment.state === 0 &&
           equipment.type === worn.type &&
           (!settings.equipApiSameName || equipment.name === worn.name) &&
-          isAllowedEquipment(allowed, equipment) &&
+          (settings.equipRuleEnabled ? matchesEquipRule(settings, equipment) : isAllowedEquipment(allowed, equipment)) &&
           equipment.dur >= settings.equipApiMinDurability
       )
       .reduce((best, equipment) => (!best || equipment.dur > best.dur ? equipment : best), null);
@@ -8385,6 +8475,8 @@
       loadHuntTeam();
     } else if (action === 'load-equipment-choices') {
       showEquipmentChoices();
+    } else if (action === 'equip-rule-preview') {
+      renderEquipRulePreview(true);
     } else if (event.target.dataset.loadHeroes) {
       showHeroChoices(event.target.dataset.loadHeroes);
     } else if (event.target.dataset.loadItems) {
@@ -15953,6 +16045,11 @@
       .join('');
   }
 
+  panel.addEventListener('click', (event) => {
+    const button = event.target.closest && event.target.closest('[data-equip-rule-enchant]');
+    if (button) toggleEquipRuleEnchant(button.dataset.equipRuleEnchant);
+  });
+
   panel.addEventListener('change', (event) => {
     const heroId = event.target.dataset && event.target.dataset.forgeName;
     if (heroId) setForgePlanName(Number(heroId), event.target.value);
@@ -16900,6 +16997,7 @@
     if (event.target.dataset.huntInclude !== undefined) updateExcludedHeroesFromChoices();
     if (event.target.dataset.equipHero !== undefined) updateEquipHeroesFromChoices();
     if (event.target.dataset.equipmentChoice !== undefined) updateAllowedEquipmentFromChoices();
+    if (/^equipRule|^equipApiMinDurability$/.test(event.target.dataset.field || '') && state.equipments.length) renderEquipRulePreview();
     if (event.target.dataset.pickChoice) updatePickFromChoices(event.target.dataset.pickChoice);
     if (event.target.dataset.forgeApiHero !== undefined) updateForgeApiHeroesFromChoices();
     if (event.target.dataset.forgePlan) updateForgeApiPlansFromChoices();
