@@ -109,8 +109,7 @@
     <button data-low="off">關</button><button data-low="serious">認真</button><button data-low="casual">休閒</button><button data-low="auto" title="認真時段（遊戲面板設定，預設 20-24 點）認真玩，其他時間休閒">自動</button>
     休閒每小時 <input id="low-casual-minutes" type="number" min="0" max="60" style="width:48px"> 分鐘
     自動：<input id="low-serious-hours" placeholder="20-24" style="width:90px" title="這些時段認真玩，其他時間休閒；可寫多段 12-13,20-24"> 點認真
-    睡覺 <input id="low-sleep-hours" placeholder="留空＝不睡" style="width:60px" title="每天睡覺時段，只能一段，例：2-9；不會比設定早睡"> 點
-    完全休息 <input id="low-off-hours" placeholder="留空＝沒有" style="width:90px" title="這些時段完全不動，跟睡覺一樣；可寫多段 9-12,14-17"> 點
+    完全休息 <input id="low-off-hours" placeholder="留空＝沒有" style="width:90px" title="這些時段完全不動（睡覺也寫這裡）；可寫多段 2-9,14-17"> 點
     <span id="low-schedule" style="color:#c4b5fd"></span>
     小號頻率 <input id="side-hunt-percent" type="number" min="10" max="100" step="5" style="width:52px" title="主帳號照常打，其他帳號打怪頻率是主帳號的幾 %；主帳號在各帳號卡片上設"> %
     <span class="muted" id="low-text"></span></span>
@@ -953,8 +952,6 @@
     if (document.activeElement !== hours && Date.now() > lowMinutesHoldUntil) hours.value = values.lowProfileSeriousHours ?? '20-24';
     const off = document.getElementById('low-off-hours');
     if (document.activeElement !== off && Date.now() > lowMinutesHoldUntil) off.value = values.lowProfileOffHours ?? '';
-    const sleep = document.getElementById('low-sleep-hours');
-    if (document.activeElement !== sleep && Date.now() > lowMinutesHoldUntil) sleep.value = values.lowProfileSleepHours ?? '';
     const side = document.getElementById('side-hunt-percent');
     if (document.activeElement !== side && Date.now() > lowMinutesHoldUntil) side.value = values.sideHuntPercent ?? 50;
     mainAccountName = String(values.mainAccountName || '').trim();
@@ -1010,10 +1007,6 @@
     const name = target.dataset.main === mainAccountName ? '' : target.dataset.main;
     mainAccountName = name;
     changeLow({ mainAccountName: name });
-  });
-  document.getElementById('low-sleep-hours').addEventListener('change', (event) => {
-    lowMinutesHoldUntil = Date.now() + 15000;
-    changeLow({ lowProfileSleepHours: event.target.value.trim() });
   });
   document.getElementById('low-off-hours').addEventListener('change', (event) => {
     lowMinutesHoldUntil = Date.now() + 15000;

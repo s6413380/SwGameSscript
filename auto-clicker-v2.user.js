@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.98
+// @version      3.99
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -125,6 +125,7 @@
   const LOOT_RARE_PAUSE_OFF_KEY = 'autoClickerV2LootRarePauseOff';
   const PLAYER_IGNORE_DEFAULT = '大草原1-3、黑暗山洞1-3';
   const PLAYER_IGNORE_DEFAULT_KEY = 'autoClickerV2PlayerIgnoreDefault';
+  const SLEEP_MERGED_KEY = 'autoClickerV2SleepMergedIntoOff';
   const AREA_PRESET_KEY = 'autoClickerV2AreaPreset';
 
   function areaKey(areaIndex, name) {
@@ -197,10 +198,11 @@
     lowProfilePlayMaxMinutes: 90,
     lowProfileBreakMinMinutes: 5,
     lowProfileBreakMaxMinutes: 20,
-    lowProfileSleepHours: '2-9',
-    // 完全休息的時段（上班、出門…）：跟睡覺一樣完全不動
-    lowProfileOffHours: '',
-    // 完全休息時鍛造照常（打怪照樣停）
+    // 舊版的睡覺時段；載入時併進完全休息，之後不再使用
+    lowProfileSleepHours: '',
+    // 完全休息的時段（睡覺、上班、出門…）：完全不動
+    lowProfileOffHours: '2-9',
+    // 完全休息時鍛造照常（打怪照樣停），等佇列的爐子全部好了才一起收、一起開
     lowProfileOffHoursForge: false,
     // 玩法：serious＝認真玩（一段一段長時間玩）；casual＝休閒（每小時玩一點，離開時偶爾回來點幾下）
     lowProfileStyle: 'serious',
@@ -617,6 +619,18 @@
       saved.stageTargetNumber = match ? Number(match[2]) : 0;
     }
     if (saved) delete saved.stageTarget;
+    // 睡覺和完全休息是同一件事：舊的睡覺時段（沒存過＝舊預設 2-9）併進完全休息，只做一次
+    if (saved && !readJsonStorage(SLEEP_MERGED_KEY, false)) {
+      const sleep = String('lowProfileSleepHours' in saved ? saved.lowProfileSleepHours || '' : '2-9').trim();
+      if (sleep) {
+        const off = String(saved.lowProfileOffHours || '').split(/[,，、\s]+/).filter(Boolean);
+        if (!off.includes(sleep)) off.unshift(sleep);
+        saved.lowProfileOffHours = off.join(',');
+      }
+      saved.lowProfileSleepHours = '';
+      saveSettings(saved);
+    }
+    writeJsonStorage(SLEEP_MERGED_KEY, true);
     // 舊版要填 heroId，有填就代表在用 API 補給；現在自動用狩獵隊伍，只要把開關打開
     if (saved && !('resourceApiEnabled' in saved)) {
       ['resource', 'health'].forEach((groupId) => {
@@ -882,11 +896,10 @@
       <div class="row">休閒：每小時玩 ${numberInput('lowProfileCasualMinutes', 'min="0" max="60"')} 分鐘（每小時前後飄 30%，分 1～2 段）</div>
       <div class="row">休閒離開時每 ${numberInput('lowProfileCheckinMinMinutes', 'min="1"')}～${numberInput('lowProfileCheckinMaxMinutes', 'min="1"')} 分鐘回來點 ${numberInput('lowProfileCheckinMinHunts', 'min="1"')}～${numberInput('lowProfileCheckinMaxHunts', 'min="1"')} 下狩獵</div>
       <label class="row"><input data-field="lowProfileForgeCheckin" type="checkbox" style="flex:none;width:auto"> 休閒離開時鍛造好了就回來收（晚 1～8 分鐘），順便點幾下狩獵</label>
-      <div class="row">每天 <input data-field="lowProfileSleepHours" placeholder="留空＝不睡" style="width:70px;flex:none"> 點睡覺（例：2-9；不會比設定早睡，晚 0～45 分鐘才睡，起床前後飄 30 分鐘，偶爾多睡）</div>
-      <div class="row">每天 <input data-field="lowProfileOffHours" placeholder="留空＝沒有" style="width:110px;flex:none"> 點完全休息（例：9-12,14-17；不會比設定早，開始、結束都晚 0～15 分鐘）</div>
-      <label class="row"><input data-field="lowProfileOffHoursForge" type="checkbox" style="flex:none;width:auto"> 完全休息時照常鍛造（只停打怪，收爐、開爐照跑，每步多等幾秒）</label>
-      <div class="hint">完全休息跟睡覺一樣：不打怪、不開爐、不收鍛造（勾了上面「照常鍛造」就只停打怪），休閒的「回來看一下」也不會有。不管哪種玩法都照這個時段停</div>
-      <div class="hint">開了之後掛機、API 鍛造每一步多等 1～8 秒（多數短、偶爾長），偶爾分心停 0.5～2 分鐘，要補給、換裝時晚幾秒才反應，動作之間的間隔也拉長；玩一陣子就整個停下休息，晚上睡覺。休息、睡覺時不會打怪、開爐，也不會躲紅名（血量、活人驗證照常監控）。反應變慢，補給門檻設高一點比較安全</div>
+      <div class="row">每天 <input data-field="lowProfileOffHours" placeholder="留空＝沒有" style="width:110px;flex:none"> 點完全休息（睡覺也寫這裡，例：2-9,14-17；不會比設定早，開始、結束都晚 0～15 分鐘）</div>
+      <label class="row"><input data-field="lowProfileOffHoursForge" type="checkbox" style="flex:none;width:auto"> 完全休息時照常鍛造（只停打怪；等佇列的爐子全部好了才一起收、一起開）</label>
+      <div class="hint">完全休息：不打怪、不開爐、不收鍛造（勾了上面「照常鍛造」就只停打怪），休閒的「回來看一下」也不會有。不管哪種玩法都照這個時段停</div>
+      <div class="hint">開了之後掛機、API 鍛造每一步多等 1～8 秒（多數短、偶爾長），偶爾分心停 0.5～2 分鐘，要補給、換裝時晚幾秒才反應，動作之間的間隔也拉長；玩一陣子就整個停下休息，完全休息時段不動。休息時不會打怪、開爐，也不會躲紅名（血量、活人驗證照常監控）。反應變慢，補給門檻設高一點比較安全</div>
       <div class="hint" data-role="low-profile-personality"></div>
       <label class="row"><input data-field="relayEnabled" type="checkbox" style="flex:none;width:auto"> <b>使用中繼站</b>（總開關）</label>
       <div class="hint">要先開中繼站（啟動中繼站.cmd）。打開才能用總覽頁、「全體」暫停、成長紀錄備份，單開一個帳號也能用；關掉就完全不連中繼站，下面的多開輪流、同步也跟著不作用</div>
@@ -3928,7 +3941,6 @@
     'lowProfilePlayMaxMinutes',
     'lowProfileBreakMinMinutes',
     'lowProfileBreakMaxMinutes',
-    'lowProfileSleepHours',
     'lowProfileOffHours',
     'lowProfileOffHoursForge',
     'lowProfileStyle',
@@ -6099,7 +6111,8 @@
 
   // 「2-9」＝每天 2 點睡到 9 點。睡覺只會晚 0～45 分鐘、不會比設定早；起床前後飄 30 分鐘，偶爾多睡 30～90 分鐘（那天少玩）
   function sleepWindows(settings, now = Date.now()) {
-    const match = String(settings.lowProfileSleepHours || '').trim().match(/^(\d{1,2}(?:\.\d+)?)[-~～](\d{1,2}(?:\.\d+)?)$/);
+    // 睡覺已經併進完全休息
+    const match = ''.match(/^(\d{1,2}(?:\.\d+)?)[-~～](\d{1,2}(?:\.\d+)?)$/);
     if (!match) return [];
     const from = Number(match[1]);
     const to = Number(match[2]);
@@ -14774,10 +14787,14 @@
     setStatus(`［鍛造］${message}`);
   }
 
+  function offHoursForging(settings) {
+    return Boolean(settings.lowProfileEnabled && settings.lowProfileOffHoursForge && offHoursEndAt(settings, Date.now()));
+  }
+
   function scheduleForgeRunner(delay) {
     const settings = readSettingsFromPanel();
     // 休閒離開中回來收爐：同一趟還有角色要開、要先補體力（只等幾秒的那種），就一口氣做完再走，不要每開一爐又離開 1～8 分鐘
-    if (settings.lowProfileEnabled && settings.lowProfileOffHoursForge && offHoursEndAt(settings, Date.now())) delay += randomSkewedSeconds(1, 8) * 1000 * accountPersonality().speed;
+    if (offHoursForging(settings)) delay += randomSkewedSeconds(1, 8) * 1000 * accountPersonality().speed;
     else if (casualForgeAway(settings)) delay += delay < 20000 ? randomSkewedSeconds(1, 8) * 1000 * accountPersonality().speed : randomGap(60000, 480000);
     else delay = lowProfileDelay(settings, delay);
     backgroundTimer.clearTimeout(forgeRunner.timerId);
@@ -14896,6 +14913,20 @@
       forgeHeroes = heroes;
       forgeHeroesAt = Date.now();
       renderRecipeHeroes();
+      // 完全休息：人不在，爐子一個一個好了不會馬上來收；等佇列裡全部都好了才一起收、一起開
+      if (offHoursForging(settings)) {
+        const stillForging = heroes.filter(
+          (hero) => heroIds.includes(hero.id) && hero.actionState === 5 && !hero.canComplete && Date.parse(hero.actionCompleteTime) > Date.now()
+        );
+        if (stillForging.length) {
+          const lastDone = Math.max(...stillForging.map((hero) => Date.parse(hero.actionCompleteTime)).filter(Number.isFinite), Date.now() + 60000);
+          const done = heroes.filter((hero) => heroIds.includes(hero.id) && hero.actionState === 5).length - stillForging.length;
+          const at = new Date(lastDone);
+          forgeLog(`完全休息中：還有 ${stillForging.length} 爐在做${done ? `（${done} 爐已好）` : ''}，等 ${at.getHours()}:${String(at.getMinutes()).padStart(2, '0')} 全部好了再一起收`);
+          scheduleForgeRunner(lastDone - Date.now() + randomGap(60000, 300000));
+          return;
+        }
+      }
       const actions = [];
       for (const hero of heroes.filter((candidate) => heroIds.includes(candidate.id) && candidate.actionState === 5 && candidate.canComplete)) {
         let completed;
@@ -17022,7 +17053,7 @@
       renderNameWeightTable();
       recipeOptionsCache.at = 0;
     }
-    if (['lowProfileEnabled', 'lowProfileStyle', 'lowProfileCasualMinutes', 'lowProfileSeriousHours', 'lowProfileOffHours', 'lowProfileOffHoursForge', 'lowProfileSleepHours'].includes(event.target.dataset.field)) resetLowProfileRhythm();
+    if (['lowProfileEnabled', 'lowProfileStyle', 'lowProfileCasualMinutes', 'lowProfileSeriousHours', 'lowProfileOffHours', 'lowProfileOffHoursForge'].includes(event.target.dataset.field)) resetLowProfileRhythm();
     if (event.target.dataset.trainChoice) updateTrainFromChoices();
     if (event.target.dataset.cardRule) updateCardRulesFromRows();
     if (event.target.dataset.field === 'trainEnabled') renderTrainStatus();
