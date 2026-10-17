@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.93
+// @version      3.94
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -73,6 +73,8 @@
     ['other', '其他', ['pick', 'transfer', 'cardBuy', 'alert', 'cloud', 'log', 'api', 'backup']],
   ];
   const TAB_STORAGE_KEY = 'autoClickerV2Tab';
+  // 鍛造完成的回應在載入途中就可能進來，標記要賣的清單鍵放前面
+  const SELL_MARKED_KEY = 'autoClickerV2SellMarkedEquipments';
   // 每個角色上次鍛造了什麼；正在配方頁改的是哪個角色的配方（按 ④ 的「載入」）。面板一建好就可能畫配方頁，所以放最前面
   const HERO_LAST_FORGE_KEY = 'autoClickerV2HeroLastForge';
   const recipeEditing = { heroId: 0 };
@@ -1127,6 +1129,8 @@
       <div class="row">每勾一個間隔 ${numberInput('qualityPickMinMilliseconds', 'min="0"')} ～ ${numberInput('qualityPickMaxMilliseconds', 'min="0"')} 毫秒</div>
       <div class="row"><button data-action="quality-pick">開始</button><button data-action="quality-pick-stop">停止</button></div>
       <div class="hint">只處理畫面上這一頁；已經是目標狀態的不會再點</div>
+      <div class="row"><button data-action="pick-sell-marked" style="font-weight:bold">勾選 💰 要賣的</button><span data-role="sell-marked-count" class="hint" style="flex:1"></span></div>
+      <div class="hint">自動鍛造用途選「賣」的角色做出來的裝備會自動標 💰（背包表格名稱前也看得到）；在裝備詳細資料也能手動按「💰 標記要賣」。勾好再用遊戲的鍊金或販賣，鎖定的不會勾</div>
       <fieldset class="group">
         <legend>背包表格</legend>
         <label class="row"><input data-field="itemTableSortEnabled" type="checkbox" style="flex:none;width:auto"> 點表頭排序（再點一次反向；品質照品質高低）</label>
@@ -8551,6 +8555,8 @@
       exportCheckedEquipments();
     } else if (action === 'quality-pick') {
       pickItemsByQuality(readSettingsFromPanel());
+    } else if (action === 'pick-sell-marked') {
+      pickSellMarked(readSettingsFromPanel());
     } else if (action === 'quality-pick-stop') {
       if (qualityPick.running) qualityPick.runId++;
     } else if (action === 'growth-sync-now') {
@@ -9982,8 +9988,10 @@
       const find = (group) => texts.find((text) => known[group].has(text)) || '';
       return { checkbox, element, quality: find('quality'), type: find('type'), name: find('name') };
     });
+    pruneSellMarked(equipments);
     // 全選框那列沒有品質、別的分頁的列看不到，都不算
     const items = rows.filter((row) => row.quality && isVisible(row.element));
+    items.equipments = equipments;
     // 找不到時把看到的東西寫進狀態，貼給人看才知道是哪一步對不上
     items.diagnosis = items.length
       ? ''
@@ -10041,6 +10049,67 @@
       .filter((input) => input.checked)
       .map((input) => input.value)
       .join(',');
+  }
+
+  // 列上讀不到裝備 id 時退一步：名稱、品質、類型都一樣的裝備全部都標了要賣，才算這列
+  function sellMarkedRowMatcher(rows) {
+    const forSale = sellMarkedIds();
+    const key = (name, quality, type) => `${name}|${quality}|${type}`;
+    const totals = new Map();
+    const marked = new Map();
+    rows.equipments.forEach((equipment) => {
+      const equipmentKey = key(equipment.name, equipment.quality, equipment.type);
+      totals.set(equipmentKey, (totals.get(equipmentKey) || 0) + 1);
+      if (forSale.has(Number(equipment.id))) marked.set(equipmentKey, (marked.get(equipmentKey) || 0) + 1);
+    });
+    return (row) => {
+      const id = rowEquipmentId(row.element);
+      if (id) return forSale.has(id);
+      const rowKey = key(row.name, row.quality, row.type);
+      return Boolean(marked.get(rowKey)) && marked.get(rowKey) === totals.get(rowKey);
+    };
+  }
+
+  async function pickSellMarked(settings) {
+    if (qualityPick.running) return;
+    const runId = ++qualityPick.runId;
+    qualityPick.running = true;
+    try {
+      const rows = await scanItemRows();
+      const countBox = panel.querySelector('[data-role="sell-marked-count"]');
+      if (countBox) countBox.textContent = `共標記 ${sellMarkedIds().size} 件`;
+      if (!rows.length) {
+        setStatus(`畫面上找不到物品，請先切到遊戲「物品」頁（${rows.diagnosis}）`);
+        return;
+      }
+      const locked = lockedEquipmentIds();
+      const isMarked = sellMarkedRowMatcher(rows);
+      const targets = rows.filter((row) => !isBoxChecked(row.checkbox) && isMarked(row) && !locked.has(rowEquipmentId(row.element)));
+      if (!targets.length) {
+        setStatus(sellMarkedIds().size ? '這一頁沒有還沒勾的 💰 要賣裝備（換頁再按一次）' : '還沒有標記 💰 要賣的裝備');
+        return;
+      }
+      const minimum = Math.min(settings.qualityPickMinMilliseconds, settings.qualityPickMaxMilliseconds);
+      const maximum = Math.max(settings.qualityPickMinMilliseconds, settings.qualityPickMaxMilliseconds);
+      let done = 0;
+      for (const { checkbox } of targets) {
+        if (runId !== qualityPick.runId) {
+          setStatus(`已停止勾選，完成 ${done}／${targets.length} 個`);
+          return;
+        }
+        if (!checkbox.isConnected || isBoxChecked(checkbox)) continue;
+        if (done) await wait(randomGap(minimum, maximum));
+        if (runId !== qualityPick.runId || isBoxChecked(checkbox)) continue;
+        checkbox.click();
+        done++;
+        setStatus(`勾選 💰 要賣的 ${done}／${targets.length}`);
+      }
+      setStatus(`已勾選 ${done} 件 💰 要賣的，用遊戲的鍊金或販賣就好`);
+    } catch (error) {
+      setStatus(`勾選失敗（${error.message}）`);
+    } finally {
+      qualityPick.running = false;
+    }
   }
 
   async function pickItemsByQuality(settings) {
@@ -10668,6 +10737,17 @@
     return (other && other[itemId]) || `#${itemId}`;
   }
 
+  // 佇列裡用途設「賣」的角色做出來的，成品標 💰，勾選頁可以一次勾起來賣或鍊金
+  function forgePurposeOfHero(heroId) {
+    try {
+      const settings = readSettingsFromPanel();
+      if (!forgeByApiHeroIds(settings).includes(Number(heroId))) return 'use';
+      return forgePurposeOf((forgeByApiPlans(settings)[heroId] || {}).purpose);
+    } catch {
+      return 'use';
+    }
+  }
+
   // 鍛造師的鍛造、裁縫、工藝會影響成品（裁縫管布料皮革、工藝管石材寶石），只有開工當下的數值才準
   function rememberForgeStart(requestBody, data) {
     const body = parseJsonText(requestBody);
@@ -10680,6 +10760,7 @@
       materials: body.selectedMines.map((mine) => [itemName(mine.itemId), Number(mine.quantity) || 0]),
       time: Date.now(),
       ...(hero ? { heroName: hero.name, skills: { forge: hero.forge, tailor: hero.tailor, craft: hero.craft } } : {}),
+      ...(forgePurposeOfHero(body.heroId) === 'sell' ? { purpose: 'sell' } : {}),
     };
     writeJsonStorage(FORGE_PENDING_KEY, pending);
     // 每個角色上次鍛造了什麼：配方頁 ④ 可以一鍵載入來改
@@ -10759,6 +10840,7 @@
       };
       delete pending[heroId];
       matched.push(equipment);
+      if (forge.purpose === 'sell') markEquipmentForSale(equipment.id, true);
     });
     if (!matched.length) return false;
     writeJsonStorage(OWN_FORGE_MATERIALS_KEY, saved);
@@ -12468,6 +12550,27 @@
     return locked.has(equipmentId);
   }
 
+  function sellMarkedIds() {
+    return new Set(readJsonStorage(SELL_MARKED_KEY, []).map(Number));
+  }
+
+  function markEquipmentForSale(equipmentId, marked) {
+    const ids = sellMarkedIds();
+    if (marked) ids.add(equipmentId);
+    else ids.delete(equipmentId);
+    writeJsonStorage(SELL_MARKED_KEY, [...ids]);
+    return marked;
+  }
+
+  // 賣掉、鍊金掉的就不在清單裡了：讀到完整裝備清單時順便清掉
+  function pruneSellMarked(equipments) {
+    const ids = sellMarkedIds();
+    if (!ids.size || !equipments.length) return;
+    const existing = new Set(equipments.map((equipment) => Number(equipment.id)));
+    const kept = [...ids].filter((id) => existing.has(id));
+    if (kept.length !== ids.size) writeJsonStorage(SELL_MARKED_KEY, kept);
+  }
+
   const EQUIPMENT_SELL_PATTERN = /\/api\/equipments\/(\d+)\/(sell|recycle)(?:[?#]|$)/;
   const EQUIPMENT_RECYCLE_ALL_PATTERN = /\/api\/equipments\/recycleAll(?:[?#]|$)/;
 
@@ -12508,10 +12611,23 @@
     scanItemTables();
   }, true);
 
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest && event.target.closest('[data-equip-sell-mark]');
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const id = Number(button.dataset.equipSellMark);
+    const marked = markEquipmentForSale(id, !sellMarkedIds().has(id));
+    showToast(marked ? '已標記 💰 要賣：勾選頁按「勾選 💰 要賣的」就會勾到' : '已取消 💰 要賣標記');
+    enhanceEquipmentDetails();
+    scanItemTables();
+  }, true);
+
   function enhanceEquipmentDetails() {
     if (tabShutDown) return;
     const showForge = readSettingsFromPanel().forgeDetailEnabled;
     const locked = lockedEquipmentIds();
+    const forSale = sellMarkedIds();
     equipmentDetailHeadings().forEach((heading) => {
       const title = heading.textContent.replace(/\s+/g, ' ').trim();
       let root = heading.parentElement;
@@ -12528,7 +12644,8 @@
       }
       const lines = showForge && !otherTool ? forgeDetailLines(equipment) : [];
       const isLocked = locked.has(equipment.id);
-      const signature = `${equipment.id}|${isLocked}|${lines.join('|')}`;
+      const isForSale = forSale.has(equipment.id);
+      const signature = `${equipment.id}|${isLocked}|${isForSale}|${lines.join('|')}`;
       if (box && box.dataset.signature === signature) return;
       if (!box) {
         box = document.createElement('div');
@@ -12541,7 +12658,12 @@
         lines.map((line) => `<div>${escapeHtml(line)}</div>`).join('') +
         `<button type="button" data-equip-lock="${equipment.id}" style="margin-top:6px;padding:3px 10px;border-radius:4px;border:1px solid ${isLocked ? '#f59e0b' : '#57534e'};background:${isLocked ? '#78350f' : '#292524'};color:${isLocked ? '#fde68a' : '#d6d3d1'};font-size:13px;cursor:pointer">${
           isLocked ? '🔒 已鎖定（點一下解鎖）' : '🔓 鎖定（不能販賣、不能鍊金）'
-        }</button>`;
+        }</button>` +
+        (isLocked
+          ? ''
+          : ` <button type="button" data-equip-sell-mark="${equipment.id}" style="margin-top:6px;padding:3px 10px;border-radius:4px;border:1px solid ${isForSale ? '#22c55e' : '#57534e'};background:${isForSale ? '#14532d' : '#292524'};color:${isForSale ? '#bbf7d0' : '#d6d3d1'};font-size:13px;cursor:pointer">${
+              isForSale ? '💰 要賣（點一下取消）' : '💰 標記要賣'
+            }</button>`);
     });
   }
 
@@ -12630,6 +12752,7 @@
   const ITEM_SORT_ATTR = 'data-ac-sort';
   const ITEM_SORT_DIR_ATTR = 'data-ac-sort-dir';
   const ITEM_LOCKED_ATTR = 'data-ac-locked';
+  const ITEM_SELL_ATTR = 'data-ac-sell';
   const itemSort = {};
 
   function isItemsPage() {
@@ -12717,11 +12840,15 @@
   function markLockedEquipmentRows(table) {
     const nameColumn = itemHeadCells(table).findIndex((cell) => cell.textContent.replace(/\s+/g, '') === '名稱');
     const locked = lockedEquipmentIds();
+    const forSale = sellMarkedIds();
     table.querySelectorAll(':scope > tbody > tr').forEach((row) => {
-      const isLocked = locked.size > 0 && locked.has(rowEquipmentId(row));
+      const id = locked.size || forSale.size ? rowEquipmentId(row) : 0;
+      const isLocked = locked.has(id);
+      const isForSale = !isLocked && forSale.has(id);
       if (row.hasAttribute(ITEM_LOCKED_ATTR) !== isLocked) row.toggleAttribute(ITEM_LOCKED_ATTR, isLocked);
       const nameCell = row.children[nameColumn];
       if (nameCell && nameCell.hasAttribute(ITEM_LOCKED_ATTR) !== isLocked) nameCell.toggleAttribute(ITEM_LOCKED_ATTR, isLocked);
+      if (nameCell && nameCell.hasAttribute(ITEM_SELL_ATTR) !== isForSale) nameCell.toggleAttribute(ITEM_SELL_ATTR, isForSale);
     });
   }
 
@@ -12744,7 +12871,8 @@
       [${ITEM_SORT_DIR_ATTR}="asc"]::after { content:' ▲'; color:#5eead4; }
       [${ITEM_SORT_DIR_ATTR}="desc"]::after { content:' ▼'; color:#5eead4; }
       tr[${ITEM_LOCKED_ATTR}] { background:rgba(245,158,11,.12) !important; }
-      td[${ITEM_LOCKED_ATTR}]::before { content:'🔒 '; }`;
+      td[${ITEM_LOCKED_ATTR}]::before { content:'🔒 '; }
+      td[${ITEM_SELL_ATTR}]::before { content:'💰 '; }`;
     document.head.appendChild(style);
     let pending = null;
     new MutationObserver(() => {
