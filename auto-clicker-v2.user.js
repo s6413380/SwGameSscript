@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.04
+// @version      4.05
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -10831,6 +10831,9 @@
   // 材料送出的只有道具 id，名稱要從之前讀過的道具清單查；材料用完就從清單消失了，所以平常看到就先存起來
   const OWN_FORGE_MATERIALS_KEY = 'autoClickerV2ForgeMaterials';
   const FORGE_PENDING_KEY = 'autoClickerV2ForgePending';
+  const FORGE_PENDING_PER_HERO = 6;
+  // 開工 3 天還對不上（在別處收走後賣掉、回收）就不等了
+  const FORGE_PENDING_MAX_AGE = 3 * 24 * 3600 * 1000;
   const ITEM_NAMES_KEY = 'autoClickerV2ItemNames';
   const FORGE_TYPE_NAMES = {
     sword: '單手劍', rapier: '細劍', dagger: '短刀', hammer: '單手錘', shield: '盾牌',
@@ -11262,18 +11265,22 @@
     if (!body || !body.heroId || !Array.isArray(body.selectedMines)) return;
     const pending = readJsonStorage(FORGE_PENDING_KEY, {});
     const hero = ((data && data.heroes) || []).find((candidate) => candidate.id === body.heroId);
-    pending[body.heroId] = {
+    // 自動鍛造收爐後馬上開下一爐，上一爐的成品常常還沒對上；每個角色排多筆，不能用新的蓋掉舊的
+    const forges = pendingForgesOf(pending, body.heroId);
+    forges.push({
       name: body.name,
       type: FORGE_TYPE_NAMES[body.type] || body.type,
       materials: body.selectedMines.map((mine) => [itemName(mine.itemId), Number(mine.quantity) || 0]),
       time: Date.now(),
       ...(hero ? { heroName: hero.name, skills: { forge: hero.forge, tailor: hero.tailor, craft: hero.craft } } : {}),
       ...(forgePurposeOfHero(body.heroId) === 'sell' ? { purpose: 'sell' } : {}),
-    };
+    });
+    const started = forges[forges.length - 1];
+    pending[body.heroId] = forges.slice(-FORGE_PENDING_PER_HERO);
     writeJsonStorage(FORGE_PENDING_KEY, pending);
     // 每個角色上次鍛造了什麼：配方頁 ④ 可以一鍵載入來改
     const last = readJsonStorage(HERO_LAST_FORGE_KEY, {});
-    last[body.heroId] = { type: pending[body.heroId].type, name: body.name, recipe: pending[body.heroId].materials.map(([name, quantity]) => `${name}×${quantity}`).join('、'), at: Date.now() };
+    last[body.heroId] = { type: started.type, name: body.name, recipe: started.materials.map(([name, quantity]) => `${name}×${quantity}`).join('、'), at: Date.now() };
     writeJsonStorage(HERO_LAST_FORGE_KEY, last);
   }
 
@@ -11310,8 +11317,9 @@
 
   // 完成鍛造的回應有新裝備就用它，沒有就重讀裝備清單，挑鍛造開始後做出來、同名同類型、還沒對過的最新一件
   async function rememberForgeComplete(heroId, data) {
-    const forge = readJsonStorage(FORGE_PENDING_KEY, {})[heroId];
-    if (!forge) return;
+    const forges = pendingForgesOf(readJsonStorage(FORGE_PENDING_KEY, {}), heroId);
+    if (!forges.length) return;
+    const names = new Set(forges.map((forge) => forge.name));
     const found = [];
     const walk = (value, depth) => {
       if (!value || typeof value !== 'object' || depth > 5) return;
@@ -11319,7 +11327,7 @@
         value.forEach((child) => walk(child, depth + 1));
         return;
       }
-      if (typeof value.id === 'number' && typeof value.quality === 'string' && value.name === forge.name) found.push(value);
+      if (typeof value.id === 'number' && typeof value.quality === 'string' && names.has(value.name)) found.push(value);
       Object.values(value).forEach((child) => walk(child, depth + 1));
     };
     walk(data, 0);
@@ -11329,30 +11337,47 @@
   }
 
   // 完成當下沒對上的（角色身上同名舊裝備、請求失敗、在沒裝腳本的地方按完成），之後讀到裝備清單再補對
+  // 舊版一個角色只存一筆（物件），新版是陣列
+  function pendingForgesOf(pending, heroId) {
+    const value = pending[heroId];
+    if (Array.isArray(value)) return value.filter(Boolean);
+    return value ? [value] : [];
+  }
+
   function matchPendingForges(equipments) {
     const pending = readJsonStorage(FORGE_PENDING_KEY, {});
     const saved = readJsonStorage(OWN_FORGE_MATERIALS_KEY, {});
     const matched = [];
-    Object.entries(pending).forEach(([heroId, forge]) => {
-      const equipment = equipments
-        .filter((item) => item && item.name === forge.name && !saved[item.id] && (!forge.type || item.type === forge.type))
-        .filter((item) => !forge.heroName || !item.crafterHeroName || item.crafterHeroName === forge.heroName)
-        // 修練也走 completeAction，同名的舊裝備不能算成這次做的
-        .filter((item) => !item.craftedTime || Date.parse(item.craftedTime) >= forge.time - 60000)
-        .sort((first, second) => second.id - first.id)[0];
-      if (!equipment) return;
-      saved[equipment.id] = {
-        materials: forge.materials,
-        time: equipment.craftedTime || new Date().toISOString(),
-        ...(forge.skills ? { skills: forge.skills } : {}),
-      };
-      delete pending[heroId];
-      matched.push(equipment);
-      if (forge.purpose === 'sell') markEquipmentForSale(equipment.id, true);
+    let changed = false;
+    Object.keys(pending).forEach((heroId) => {
+      const forges = pendingForgesOf(pending, heroId).sort((first, second) => first.time - second.time);
+      const left = forges.filter((forge, index) => {
+        // 同一個角色一次只能做一爐：這爐的成品在下一爐開工之前就做好了，用這段時間分開同名的成品
+        const nextStart = index + 1 < forges.length ? forges[index + 1].time : Infinity;
+        const equipment = equipments
+          .filter((item) => item && item.name === forge.name && !saved[item.id] && (!forge.type || item.type === forge.type))
+          .filter((item) => !forge.heroName || !item.crafterHeroName || item.crafterHeroName === forge.heroName)
+          // 修練也走 completeAction，同名的舊裝備不能算成這次做的
+          .filter((item) => !item.craftedTime || (Date.parse(item.craftedTime) >= forge.time - 60000 && Date.parse(item.craftedTime) <= nextStart + 60000))
+          .sort((first, second) => first.id - second.id)[0];
+        if (!equipment) return Date.now() - forge.time < FORGE_PENDING_MAX_AGE;
+        saved[equipment.id] = {
+          materials: forge.materials,
+          time: equipment.craftedTime || new Date().toISOString(),
+          ...(forge.skills ? { skills: forge.skills } : {}),
+        };
+        matched.push(equipment);
+        if (forge.purpose === 'sell') markEquipmentForSale(equipment.id, true);
+        return false;
+      });
+      if (left.length === forges.length && Array.isArray(pending[heroId])) return;
+      changed = true;
+      if (left.length) pending[heroId] = left;
+      else delete pending[heroId];
     });
+    if (changed) writeJsonStorage(FORGE_PENDING_KEY, pending);
     if (!matched.length) return false;
     writeJsonStorage(OWN_FORGE_MATERIALS_KEY, saved);
-    writeJsonStorage(FORGE_PENDING_KEY, pending);
     rememberForgedEquipments(matched);
     return true;
   }
