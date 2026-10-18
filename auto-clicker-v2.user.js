@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.05
+// @version      4.07
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -14,6 +14,40 @@
 
   if (window.__autoClickerLoaded) return;
   window.__autoClickerLoaded = true;
+
+  // 網站的 localStorage 只有約 5MB（遊戲和腳本共用）；滿了以後遊戲存東西（例如賭場的 casinoLogs）會丟錯，
+  // 遊戲沒接住，整個畫面就黑掉。吞掉「空間不足」這種錯，頂多那筆沒存到
+  try {
+    const originalSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      try {
+        return originalSetItem.call(this, key, value);
+      } catch (error) {
+        if (error && error.name === 'QuotaExceededError') {
+          console.warn(`[愛吉吉] 瀏覽器儲存空間已滿，${key} 沒存到`);
+          return undefined;
+        }
+        throw error;
+      }
+    };
+  } catch {
+    // 改不了就算了
+  }
+  // 雲端快取、刮刮樂紀錄很大，放 localStorage 會把網站空間吃光；改放 IndexedDB（空間大很多），記憶體留一份給同步讀取
+  const BIG_STORAGE_KEYS = new Set(['autoClickerV2CloudEquipments', 'autoClickerV2CloudScratch', 'autoClickerV2CloudDraws', 'autoClickerV2Scratch']);
+  const bigStorage = {
+    values: new Map(),
+    db: null,
+    failed: false,
+    ready: null,
+    channel: (() => {
+      try {
+        return new BroadcastChannel('autoClickerV2BigStorage');
+      } catch {
+        return null;
+      }
+    })(),
+  };
 
   // 載入器用 <script> 插入時，執行當下的 currentScript 就是整份程式碼，表頭的 @version 讀得到；
   // 直接用 Tampermonkey 安裝時改看 GM_info（@grant none 也有）
@@ -267,6 +301,7 @@
     // 面板換成大耳狗風格（天空藍、雲朵、粉紅點綴），預設關
     cinnamonTheme: false,
     itemStepSeconds: 1,
+    crashReloadEnabled: true,
     combatEnabled: true,
     combatKeyword: '戰鬥過程',
     combatSelector: '',
@@ -1416,6 +1451,10 @@
 
     <div data-tab="log">
       <pre data-role="log" style="margin:0;max-height:260px;overflow:auto;font:11px monospace;white-space:pre-wrap"></pre>
+      <div class="row" style="margin-top:8px"><b style="flex:1">網頁黑掉紀錄</b>
+        <button data-action="crash-log-copy">複製</button><button data-action="crash-log-clear">清除</button></div>
+      <label class="row"><input data-field="crashReloadEnabled" type="checkbox" style="flex:none;width:auto"> 遊戲畫面黑掉（整個不見）就自動重新整理，原本在跑的接著跑</label>
+      <div data-role="crash-log" class="hint" style="max-height:160px;overflow:auto;white-space:pre-wrap;font:11px monospace"></div>
       <div class="row" style="margin-top:8px"><b style="flex:1">吃藥／換裝紀錄（API，新的在上面）</b>
         <button data-action="item-log-copy">複製</button><button data-action="item-log-clear">清除</button></div>
       <textarea data-role="item-log" readonly rows="10" style="width:100%;box-sizing:border-box;font:11px monospace"></textarea>
@@ -2411,6 +2450,13 @@
   ];
   // 重新整理後要自動開始的模式；只放這個分頁的 sessionStorage，關掉分頁就沒了
   const RESUME_AFTER_RELOAD_KEY = 'autoClickerV2ResumeAfterReload';
+  // 遊戲沒有錯誤邊界：畫面渲染出一次錯，整個 #root 就被清空變黑屏，只能重新整理
+  const CRASH_LOG_KEY = 'autoClickerV2CrashLog';
+  const CRASH_LOG_LIMIT = 10;
+  const CRASH_BLANK_MILLISECONDS = 8000;
+  // 剛重新整理又黑掉就不再自動重新整理，免得一直重整
+  const CRASH_RELOAD_GAP_MILLISECONDS = 3 * 60000;
+  const pageErrors = [];
 
   // 載入器每次開頁面都從中繼站抓最新版，所以分頁只要重新整理就是新版；這裡定期比對版本號，有新版就找空檔重新整理
   const UPDATE_CHECK_MILLISECONDS = 60000;
@@ -2509,6 +2555,103 @@
     return [state.running && !state.forgeMode ? 'hunt' : '', (state.running && state.forgeMode) || forgeRunner.running ? 'forge' : '', miningRunner.running ? 'mine' : '']
       .filter(Boolean)
       .join(',');
+  }
+
+  function notePageError(text) {
+    const time = new Date().toLocaleTimeString('zh-TW', { hour12: false });
+    pageErrors.unshift(`${time} ${String(text).slice(0, 600)}`);
+    pageErrors.length = Math.min(pageErrors.length, 12);
+  }
+
+  function errorText(value) {
+    if (value instanceof Error) return value.stack || value.message;
+    if (typeof value === 'string') return value;
+    try {
+      return JSON.stringify(value).slice(0, 300);
+    } catch {
+      return String(value);
+    }
+  }
+
+  // 記下黑掉前的錯誤訊息（React 渲染錯誤會出現在 window error 或 console.error），之後才找得到是哪裡壞
+  function installCrashGuard() {
+    window.addEventListener('error', (event) => notePageError(errorText(event.error || event.message)));
+    window.addEventListener('unhandledrejection', (event) => notePageError(`Promise：${errorText(event.reason)}`));
+    const originalConsoleError = console.error;
+    console.error = function (...args) {
+      try {
+        notePageError(args.map(errorText).join(' '));
+      } catch {
+        // 記不了也要照常印出
+      }
+      return originalConsoleError.apply(this, args);
+    };
+    renderCrashLog();
+    const last = readJsonStorage(CRASH_LOG_KEY, [])[0];
+    if (last && Date.now() - last.at < 10 * 60000) {
+      setStatus(`${formatLocalTime(last.at)} 遊戲畫面黑掉${last.reloaded ? '，已自動重新整理' : ''}（錯誤內容在「紀錄」頁）`);
+    }
+    let seenContent = false;
+    let blankSince = 0;
+    (function watchBlank() {
+      if (tabShutDown) return;
+      const root = document.getElementById('root');
+      if (root && root.childElementCount) {
+        seenContent = true;
+        blankSince = 0;
+      } else if (root && seenContent) {
+        if (!blankSince) blankSince = Date.now();
+        else if (Date.now() - blankSince > CRASH_BLANK_MILLISECONDS) {
+          recoverFromBlankPage();
+          return;
+        }
+      }
+      backgroundTimer.setTimeout(watchBlank, 2000);
+    })();
+  }
+
+  function recoverFromBlankPage() {
+    const settings = readSettingsFromPanel();
+    const log = readJsonStorage(CRASH_LOG_KEY, []);
+    const recent = log.find((entry) => entry.reloaded && Date.now() - entry.at < CRASH_RELOAD_GAP_MILLISECONDS);
+    const reload = settings.crashReloadEnabled && !recent;
+    log.unshift({
+      at: Date.now(),
+      version: SCRIPT_VERSION,
+      url: location.pathname,
+      lastAction: lastActionText(),
+      running: resumeModes(),
+      errors: pageErrors.slice(0, 8),
+      reloaded: reload,
+    });
+    writeJsonStorage(CRASH_LOG_KEY, log.slice(0, CRASH_LOG_LIMIT));
+    renderCrashLog();
+    if (!reload) {
+      alertUser(recent ? '遊戲畫面又黑掉了（剛自動重新整理過，這次不再重整），請手動重新整理，並把「紀錄」頁的網頁黑掉紀錄貼給開發者' : '遊戲畫面黑掉了，請重新整理頁面');
+      return;
+    }
+    try {
+      if (resumeModes()) sessionStorage.setItem(RESUME_AFTER_RELOAD_KEY, resumeModes());
+    } catch {
+      // 記不住就只重新整理，不自動開始
+    }
+    backgroundTimer.clearTimeout(state.timerId);
+    setStatus('遊戲畫面黑掉了，自動重新整理');
+    backgroundTimer.setTimeout(() => location.reload(), 500);
+  }
+
+  function crashLogText() {
+    return readJsonStorage(CRASH_LOG_KEY, [])
+      .map(
+        (entry) =>
+          `[${formatLocalTime(entry.at)}] v${entry.version} ${entry.url}${entry.reloaded ? '（已自動重新整理）' : ''}\n最後動作：${entry.lastAction}\n當時在跑：${entry.running || '沒有'}\n錯誤：\n${(entry.errors || []).join('\n') || '（沒有抓到錯誤訊息）'}`
+      )
+      .join('\n\n');
+  }
+
+  function renderCrashLog() {
+    const box = panel.querySelector('[data-role="crash-log"]');
+    if (box) box.textContent = crashLogText() || '還沒有黑掉過';
   }
 
   function reloadForUpdateIfIdle() {
@@ -2611,6 +2754,21 @@
       started: forgeRunner.started,
       limit: settings.forgeByApiCount,
     };
+  }
+
+  const relayBackoff = { until: 0, failures: 0 };
+
+  async function relayFetch(url, options) {
+    if (Date.now() < relayBackoff.until) throw new Error('中繼站連不上，稍後再試');
+    try {
+      const response = await window.fetch(url, options);
+      relayBackoff.failures = 0;
+      return response;
+    } catch (error) {
+      relayBackoff.failures++;
+      relayBackoff.until = Date.now() + Math.min(60000, 2000 * 2 ** Math.min(relayBackoff.failures, 5));
+      throw error;
+    }
   }
 
   function relayOn(settings) {
@@ -3953,7 +4111,7 @@
     commandPoll.at = Date.now();
     commandPoll.busy = true;
     try {
-      const response = await window.fetch(`${dashboardBaseUrl(settings)}/command?id=${encodeURIComponent(dashboard.reportingId)}`, { cache: 'no-store' });
+      const response = await relayFetch(`${dashboardBaseUrl(settings)}/command?id=${encodeURIComponent(dashboard.reportingId)}`, { cache: 'no-store' });
       if (response.status === 404 || response.status === 405) {
         commandPoll.unsupported = true;
         return;
@@ -3989,7 +4147,7 @@
       else if (!settings.turnTakingEnabled) await Promise.race([refreshing, wait(3000)]);
       if (!dashboard.profile) return;
       const reportingId = `${dashboard.profile.id}-${tabKey}`;
-      const response = await window.fetch(`${dashboardBaseUrl(settings)}/status?id=${encodeURIComponent(reportingId)}`, {
+      const response = await relayFetch(`${dashboardBaseUrl(settings)}/status?id=${encodeURIComponent(reportingId)}`, {
         method: 'POST',
         // text/plain 是簡單請求，不用多一次 CORS 預檢
         headers: { 'Content-Type': 'text/plain' },
@@ -4006,7 +4164,7 @@
       if (reply && Array.isArray(reply.commands) && reply.commands.length) await runDashboardCommands(reply.commands);
     } catch (error) {
       // 連線失敗才是中繼站的問題；其他是腳本自己算回報時出錯
-      dashboard.sendError = /fetch|network|NetworkError|Load failed/i.test(error.message)
+      dashboard.sendError = /fetch|network|NetworkError|Load failed|連不上/i.test(error.message)
         ? `連不上 ${settings.dashboardUrl}（${error.message}），monitor-server.ps1 有在跑嗎？`
         : `回報時腳本出錯（${error.message}），請把這行貼給開發者`;
     } finally {
@@ -4243,7 +4401,7 @@
     if (Date.now() - globalPause.checkedAt < GLOBAL_POLL_MILLISECONDS) return;
     globalPause.checkedAt = Date.now();
     try {
-      const response = await window.fetch(`${dashboardBaseUrl(settings)}/global`, { cache: 'no-store' });
+      const response = await relayFetch(`${dashboardBaseUrl(settings)}/global`, { cache: 'no-store' });
       if (!response.ok) throw new Error(response.status === 404 ? 'monitor-server.ps1 是舊版，請關掉重開' : `HTTP ${response.status}`);
       applyGlobalPause(await response.json());
     } catch (error) {
@@ -4351,7 +4509,7 @@
     if (!relayOn(settings) || !settings.dashboardEnabled || Date.now() - queueOverview.checkedAt < QUEUE_POLL_MILLISECONDS) return;
     queueOverview.checkedAt = Date.now();
     try {
-      const response = await window.fetch(`${dashboardBaseUrl(settings)}/status`, { cache: 'no-store' });
+      const response = await relayFetch(`${dashboardBaseUrl(settings)}/status`, { cache: 'no-store' });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const { now, accounts = [] } = await response.json();
       // 時間換成相對中繼站的現在，分頁之間時鐘差一點也排得對
@@ -9127,6 +9285,14 @@
       showTabGroup(event.target.dataset.tabGroup);
     } else if (event.target.dataset.tabButton) {
       showTab(event.target.dataset.tabButton);
+    } else if (action === 'crash-log-copy') {
+      navigator.clipboard.writeText(crashLogText() || '還沒有黑掉過').then(
+        () => setStatus('已複製網頁黑掉紀錄'),
+        () => setStatus('複製失敗，請直接選取文字複製')
+      );
+    } else if (action === 'crash-log-clear') {
+      writeJsonStorage(CRASH_LOG_KEY, []);
+      renderCrashLog();
     } else if (action === 'minimize') {
       setMinimized(panelBody.style.display !== 'none');
     } else if (action === 'enlarge') {
@@ -10842,6 +11008,10 @@
   };
 
   function writeJsonStorage(key, value) {
+    if (BIG_STORAGE_KEYS.has(key)) {
+      writeBigStorage(key, JSON.stringify(value));
+      return;
+    }
     try {
       localStorage.setItem(key, JSON.stringify(value));
     } catch {
@@ -11400,10 +11570,90 @@
 
   function readJsonStorage(key, fallback) {
     try {
-      const raw = localStorage.getItem(key);
+      const raw = BIG_STORAGE_KEYS.has(key) && bigStorage.values.has(key) ? bigStorage.values.get(key) : localStorage.getItem(key);
       return raw === null ? fallback : JSON.parse(raw);
     } catch {
       return fallback;
+    }
+  }
+
+  function writeBigStorage(key, raw) {
+    bigStorage.values.set(key, raw);
+    if (bigStorage.failed) {
+      try {
+        localStorage.setItem(key, raw);
+      } catch {
+        // 存不進去只影響統計
+      }
+      return;
+    }
+    // 還沒開好資料庫：先放記憶體，開好時會一起寫進去
+    if (!bigStorage.db) return;
+    try {
+      const transaction = bigStorage.db.transaction('kv', 'readwrite');
+      transaction.objectStore('kv').put(raw, key);
+      // 其他分頁記憶體裡是舊的，通知它們重讀
+      transaction.oncomplete = () => bigStorage.channel && bigStorage.channel.postMessage({ key });
+    } catch {
+      // 寫不進去只影響統計
+    }
+  }
+
+  // 開資料庫，把舊版放在 localStorage 的大資料搬過去，搬完才從 localStorage 刪掉
+  function openBigStorage() {
+    bigStorage.ready = new Promise((resolve) => {
+      const giveUp = () => {
+        bigStorage.failed = true;
+        resolve();
+      };
+      let request;
+      try {
+        request = indexedDB.open('autoClickerV2', 1);
+      } catch {
+        giveUp();
+        return;
+      }
+      request.onupgradeneeded = () => request.result.createObjectStore('kv');
+      request.onerror = giveUp;
+      request.onsuccess = () => {
+        const db = request.result;
+        let transaction;
+        try {
+          transaction = db.transaction('kv', 'readwrite');
+        } catch {
+          giveUp();
+          return;
+        }
+        const store = transaction.objectStore('kv');
+        BIG_STORAGE_KEYS.forEach((key) => {
+          const get = store.get(key);
+          get.onsuccess = () => {
+            // 開好之前這個分頁剛寫的最新，其次是資料庫裡的，最後才是舊版 localStorage
+            if (!bigStorage.values.has(key)) {
+              const value = typeof get.result === 'string' ? get.result : localStorage.getItem(key);
+              if (value !== null) bigStorage.values.set(key, value);
+            }
+            const value = bigStorage.values.get(key);
+            if (value !== undefined && value !== get.result) store.put(value, key);
+          };
+        });
+        transaction.oncomplete = () => {
+          BIG_STORAGE_KEYS.forEach((key) => localStorage.removeItem(key));
+          bigStorage.db = db;
+          resolve();
+        };
+        transaction.onerror = giveUp;
+      };
+    });
+    if (bigStorage.channel) {
+      bigStorage.channel.onmessage = (event) => {
+        const key = event.data && event.data.key;
+        if (!bigStorage.db || !BIG_STORAGE_KEYS.has(key)) return;
+        const get = bigStorage.db.transaction('kv').objectStore('kv').get(key);
+        get.onsuccess = () => {
+          if (typeof get.result === 'string') bigStorage.values.set(key, get.result);
+        };
+      };
     }
   }
 
@@ -12346,11 +12596,7 @@
       };
       added++;
     });
-    try {
-      localStorage.setItem(CLOUD_EQUIPMENTS_KEY, JSON.stringify(saved));
-    } catch {
-      // 存不進去只影響材料統計
-    }
+    writeJsonStorage(CLOUD_EQUIPMENTS_KEY, saved);
     return added;
   }
 
@@ -12401,6 +12647,7 @@
     cloudSync.running = true;
     cloudSync.at = Date.now();
     try {
+      await bigStorage.ready;
       const url = settings.cloudUrl || DEFAULT_CLOUD_URL;
       if (!/^https:\/\/script\.google\.com\//.test(url)) throw new Error('網址要是 https://script.google.com/ 開頭的 Apps Script 網址');
       const saved = loadCloudState(url);
@@ -17607,6 +17854,8 @@
   }
   setEnlarged(panel.hasAttribute('data-enlarged'));
   showEquipRulePart(equipRuleView.part);
+  openBigStorage();
+  installCrashGuard();
   setMinimized(startMinimized);
   setStatus(`已載入 v${SCRIPT_VERSION}`);
   let resumeAfterReload = null;
