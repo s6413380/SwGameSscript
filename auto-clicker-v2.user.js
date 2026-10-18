@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.07
+// @version      4.08
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1250,7 +1250,7 @@
       <fieldset class="group">
         <legend>背包表格</legend>
         <label class="row"><input data-field="itemTableSortEnabled" type="checkbox" style="flex:none;width:auto"> 點表頭排序（再點一次反向；品質照品質高低）</label>
-        <div class="hint">鎖定的裝備在背包表格會標 🔒、整列淡黃色</div>
+        <div class="hint">鎖定的裝備在背包表格會標 🔒、整列淡黃色；不讓自動換裝換上的，名稱後面標 🚫</div>
         <div class="row"><button data-action="equip-export">匯出勾選的裝備</button><label style="flex:none"><input data-field="equipExportBase" type="checkbox" style="width:auto"> 換算成普通品質</label></div>
         <div class="hint">在遊戲背包的裝備表勾好裝備再按，複製成表格（貼進 Excel、Google 試算表會自動分欄）：名稱、類型、品質、攻防智幸重、耐久上限、孔、鍊金價、鍛造素材</div>
         <textarea data-role="equip-export" rows="4" readonly style="display:none;width:100%;box-sizing:border-box;font:11px monospace"></textarea>
@@ -5059,7 +5059,8 @@
           .map((name) => `<button type="button" data-equip-rule-enchant="${escapeHtml(name)}" style="margin:1px 2px;padding:0 6px;border-radius:9px;font-size:11px;${chosen.has(name) ? 'background:#14532d;color:#bbf7d0;border:1px solid #22c55e' : ''}">${escapeHtml(name)}</button>`)
           .join('')}`
       : '<span class="hint" style="margin:0">裝備清單裡沒有附魔過的裝備</span>';
-    const idle = state.equipments.filter((equipment) => equipment.equipped === null && equipment.state === 0);
+    const blocked = noAutoEquipIds();
+    const idle = state.equipments.filter((equipment) => equipment.equipped === null && equipment.state === 0 && !blocked.has(equipment.id));
     const matched = idle.filter((equipment) => matchesEquipRule(settings, equipment) && equipment.dur >= settings.equipApiMinDurability);
     const byType = new Map();
     matched.forEach((equipment) => byType.set(equipment.type, [...(byType.get(equipment.type) || []), equipment]));
@@ -5516,11 +5517,13 @@
     const minimum = heroMinDurability(settings, heroId);
     if (part) return pickIdleEquipment(settings, plan, part, minimum, worn.type);
     const allowed = equipAllowedNames(settings);
+    const blocked = noAutoEquipIds();
     return state.equipments
       .filter(
         (equipment) =>
           equipment.equipped === null &&
           equipment.state === 0 &&
+          !blocked.has(equipment.id) &&
           equipment.type === worn.type &&
           (!settings.equipApiSameName || equipment.name === worn.name) &&
           (settings.equipRuleEnabled ? matchesEquipRule(settings, equipment) : isAllowedEquipment(allowed, equipment)) &&
@@ -5532,11 +5535,13 @@
   function pickIdleEquipment(settings, plan, part, minimum, preferredType) {
     const types = equipPartTypes(plan, part);
     const rank = (equipment) => [equipment.type === preferredType ? 1 : 0, equipment.dur];
+    const blocked = noAutoEquipIds();
     return state.equipments
       .filter(
         (equipment) =>
           equipment.equipped === null &&
           equipment.state === 0 &&
+          !blocked.has(equipment.id) &&
           types.includes(equipment.type) &&
           isAllowedForPart(settings, plan, part, equipment) &&
           equipment.dur >= minimum
@@ -13330,6 +13335,21 @@
     return locked.has(equipmentId);
   }
 
+  // 另一種鎖：留著自己手動穿的（或留給別的角色），自動換裝不會把它換上去；跟 🔒 分開，各鎖各的
+  const NO_AUTO_EQUIP_KEY = 'autoClickerV2NoAutoEquip';
+
+  function noAutoEquipIds() {
+    return new Set(readJsonStorage(NO_AUTO_EQUIP_KEY, []).map(Number));
+  }
+
+  function toggleNoAutoEquip(equipmentId) {
+    const ids = noAutoEquipIds();
+    if (ids.has(equipmentId)) ids.delete(equipmentId);
+    else ids.add(equipmentId);
+    writeJsonStorage(NO_AUTO_EQUIP_KEY, [...ids]);
+    return ids.has(equipmentId);
+  }
+
   function sellMarkedIds() {
     return new Set(readJsonStorage(SELL_MARKED_KEY, []).map(Number));
   }
@@ -13392,6 +13412,18 @@
   }, true);
 
   document.addEventListener('click', (event) => {
+    const button = event.target.closest && event.target.closest('[data-equip-no-auto]');
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const blocked = toggleNoAutoEquip(Number(button.dataset.equipNoAuto));
+    showToast(blocked ? '已鎖定：自動換裝不會換上這件' : '已解除：自動換裝可以換上這件');
+    state.equipApiSkipped.clear();
+    enhanceEquipmentDetails();
+    scanItemTables();
+  }, true);
+
+  document.addEventListener('click', (event) => {
     const button = event.target.closest && event.target.closest('[data-equip-sell-mark]');
     if (!button) return;
     event.preventDefault();
@@ -13423,6 +13455,7 @@
     const showForge = readSettingsFromPanel().forgeDetailEnabled;
     const locked = lockedEquipmentIds();
     const forSale = sellMarkedIds();
+    const blocked = noAutoEquipIds();
     equipmentDetailHeadings().forEach((heading) => {
       const title = heading.textContent.replace(/\s+/g, ' ').trim();
       let root = heading.parentElement;
@@ -13445,7 +13478,8 @@
       const lines = showForge && !otherTool ? forgeDetailLines(equipment) : [];
       const isLocked = locked.has(equipment.id);
       const isForSale = forSale.has(equipment.id);
-      const signature = `${equipment.id}|${isLocked}|${isForSale}|${lines.join('|')}`;
+      const isBlocked = blocked.has(equipment.id);
+      const signature = `${equipment.id}|${isLocked}|${isForSale}|${isBlocked}|${lines.join('|')}`;
       if (box && box.dataset.signature === signature) return;
       if (!box) {
         box = document.createElement('div');
@@ -13458,6 +13492,9 @@
         lines.map((line) => `<div>${escapeHtml(line)}</div>`).join('') +
         `<button type="button" data-equip-lock="${equipment.id}" style="margin-top:6px;padding:3px 10px;border-radius:4px;border:1px solid ${isLocked ? '#f59e0b' : '#57534e'};background:${isLocked ? '#78350f' : '#292524'};color:${isLocked ? '#fde68a' : '#d6d3d1'};font-size:13px;cursor:pointer">${
           isLocked ? '🔒 已鎖定（點一下解鎖）' : '🔓 鎖定（不能販賣、不能鍊金）'
+        }</button>` +
+        ` <button type="button" data-equip-no-auto="${equipment.id}" style="margin-top:6px;padding:3px 10px;border-radius:4px;border:1px solid ${isBlocked ? '#ef4444' : '#57534e'};background:${isBlocked ? '#7f1d1d' : '#292524'};color:${isBlocked ? '#fecaca' : '#d6d3d1'};font-size:13px;cursor:pointer">${
+          isBlocked ? '🚫 自動換裝不換上（點一下解除）' : '🚫 不讓自動換裝換上'
         }</button>` +
         (isLocked
           ? ''
@@ -13553,6 +13590,7 @@
   const ITEM_SORT_DIR_ATTR = 'data-ac-sort-dir';
   const ITEM_LOCKED_ATTR = 'data-ac-locked';
   const ITEM_SELL_ATTR = 'data-ac-sell';
+  const ITEM_NO_AUTO_ATTR = 'data-ac-no-auto';
   const itemSort = {};
 
   function isItemsPage() {
@@ -13641,14 +13679,17 @@
     const nameColumn = itemHeadCells(table).findIndex((cell) => cell.textContent.replace(/\s+/g, '') === '名稱');
     const locked = lockedEquipmentIds();
     const forSale = sellMarkedIds();
+    const blocked = noAutoEquipIds();
     table.querySelectorAll(':scope > tbody > tr').forEach((row) => {
-      const id = locked.size || forSale.size ? rowEquipmentId(row) : 0;
+      const id = locked.size || forSale.size || blocked.size ? rowEquipmentId(row) : 0;
       const isLocked = locked.has(id);
       const isForSale = !isLocked && forSale.has(id);
       if (row.hasAttribute(ITEM_LOCKED_ATTR) !== isLocked) row.toggleAttribute(ITEM_LOCKED_ATTR, isLocked);
       const nameCell = row.children[nameColumn];
       if (nameCell && nameCell.hasAttribute(ITEM_LOCKED_ATTR) !== isLocked) nameCell.toggleAttribute(ITEM_LOCKED_ATTR, isLocked);
       if (nameCell && nameCell.hasAttribute(ITEM_SELL_ATTR) !== isForSale) nameCell.toggleAttribute(ITEM_SELL_ATTR, isForSale);
+      const isBlocked = blocked.has(id);
+      if (nameCell && nameCell.hasAttribute(ITEM_NO_AUTO_ATTR) !== isBlocked) nameCell.toggleAttribute(ITEM_NO_AUTO_ATTR, isBlocked);
     });
   }
 
@@ -13672,7 +13713,8 @@
       [${ITEM_SORT_DIR_ATTR}="desc"]::after { content:' ▼'; color:#5eead4; }
       tr[${ITEM_LOCKED_ATTR}] { background:rgba(245,158,11,.12) !important; }
       td[${ITEM_LOCKED_ATTR}]::before { content:'🔒 '; }
-      td[${ITEM_SELL_ATTR}]::before { content:'💰 '; }`;
+      td[${ITEM_SELL_ATTR}]::before { content:'💰 '; }
+      td[${ITEM_NO_AUTO_ATTR}]::after { content:' 🚫'; }`;
     document.head.appendChild(style);
     let pending = null;
     new MutationObserver(() => {
