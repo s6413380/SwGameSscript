@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.00
+// @version      4.01
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -879,6 +879,7 @@
   panel.innerHTML = `
     <div class="row" style="font-weight:bold;margin:0 0 6px;cursor:move" data-role="header">
       <span style="flex:1"><span data-role="app-name">愛吉吉</span> <span style="font-weight:normal;opacity:.7">v${SCRIPT_VERSION}</span> ⠿ <span data-role="mini-status" style="font-weight:normal;opacity:.85"></span></span>
+      <button data-action="enlarge" title="拉大／縮回原狀">⤢</button>
       <button data-action="minimize" title="縮到最小／展開">–</button>
       <button data-action="close" title="關閉：這個分頁的腳本全部停止（重新整理頁面才會恢復）">×</button>
     </div>
@@ -1418,6 +1419,8 @@
   const style = document.createElement('style');
   style.textContent = `
     [data-auto-clicker] .row { display:flex; gap:6px; align-items:center; margin:5px 0; }
+    [data-auto-clicker][data-enlarged] .choices,
+    [data-auto-clicker][data-enlarged] [style*="max-height"] { max-height:60vh !important; }
     [data-auto-clicker] label:not(.row) { display:block; margin:5px 0; }
     [data-auto-clicker] input, [data-auto-clicker] textarea {
       flex:1; min-width:0; padding:3px 5px; font:12px monospace; color:#fff;
@@ -1610,13 +1613,42 @@
   }
 
   const MINIMIZED_STORAGE_KEY = 'autoClickerV2Minimized';
+  const ENLARGED_STORAGE_KEY = 'autoClickerV2Enlarged';
   const panelBody = panel.querySelector('[data-role="body"]');
   const miniStatusElement = panel.querySelector('[data-role="mini-status"]');
+
+  function panelWidth() {
+    return panel.hasAttribute('data-enlarged') ? 'min(760px, 94vw)' : '290px';
+  }
+
+  // 拉大＝變寬變高、裡面的捲動區也放大；縮回就回到原本 290px 寬
+  function setEnlarged(enlarged) {
+    panel.toggleAttribute('data-enlarged', enlarged);
+    panel.style.maxHeight = enlarged ? '96vh' : '90vh';
+    if (panelBody.style.display !== 'none') panel.style.width = panelWidth();
+    const button = panel.querySelector('[data-action="enlarge"]');
+    button.textContent = enlarged ? '⤡' : '⤢';
+    button.title = enlarged ? '縮回原狀' : '拉大';
+    keepPanelInView();
+    try {
+      localStorage.setItem(ENLARGED_STORAGE_KEY, enlarged ? '1' : '');
+    } catch {
+      // 記不住大小不影響使用
+    }
+  }
+
+  // 拖到右邊之後再拉大，右半邊會跑出畫面，往左推回來
+  function keepPanelInView() {
+    if (panel.style.left === '') return;
+    const rect = panel.getBoundingClientRect();
+    const overflow = rect.right - window.innerWidth;
+    if (overflow > 0) panel.style.left = Math.max(0, rect.left - overflow - 8) + 'px';
+  }
 
   // 縮到最小只留標題列，標題列上顯示執行狀態，不用展開也知道有沒有在跑
   function setMinimized(minimized) {
     panelBody.style.display = minimized ? 'none' : '';
-    panel.style.width = minimized ? 'auto' : '290px';
+    panel.style.width = minimized ? 'auto' : panelWidth();
     panel.querySelector('[data-action="minimize"]').textContent = minimized ? '▢' : '–';
     updateMiniStatus();
     try {
@@ -9029,6 +9061,8 @@
       showTab(event.target.dataset.tabButton);
     } else if (action === 'minimize') {
       setMinimized(panelBody.style.display !== 'none');
+    } else if (action === 'enlarge') {
+      setEnlarged(!panel.hasAttribute('data-enlarged'));
     } else if (action === 'close') {
       const message = '關閉後這個分頁的腳本全部停止（掛機、鍛造、監控、總覽回報、自動更新），總覽頁也不會再顯示這個分頁；只保留角色成長值紀錄。重新整理頁面才會恢復。要關閉嗎？';
       if (window.confirm(message)) shutDownTab();
@@ -17467,6 +17501,12 @@
   } catch {
     // 讀不到就展開
   }
+  try {
+    if (localStorage.getItem(ENLARGED_STORAGE_KEY) === '1') panel.setAttribute('data-enlarged', '');
+  } catch {
+    // 讀不到就用原本大小
+  }
+  setEnlarged(panel.hasAttribute('data-enlarged'));
   setMinimized(startMinimized);
   setStatus(`已載入 v${SCRIPT_VERSION}`);
   let resumeAfterReload = null;
