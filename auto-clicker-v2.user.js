@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.03
+// @version      4.04
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -201,6 +201,8 @@
     playerEscapeEnabled: false,
     playerEscapeMode: 'back',
     playerEscapeRed: true,
+    // 擊殺英雄數（zoneUsers 的 stats.kill）到這個數就算危險，0＝不看；紅名洗白後還是看得出殺過多少
+    playerEscapeKills: 0,
     playerBlacklist: '',
     playerEscapeArea: '',
     playerEscapeNumber: 1,
@@ -1130,6 +1132,7 @@
         <div class="row">做法<select data-field="playerEscapeMode" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="back">往回退一關（還有就再退）</option><option value="escape">先去避難關卡，那裡也有再往回退</option></select></div>
         <div class="row">避難關卡 ${escapeTargetHtml('playerEscape')}</div>
         <label class="row"><input data-field="playerEscapeRed" type="checkbox" style="flex:none;width:auto"> 紅名玩家算危險</label>
+        <div class="row">擊殺英雄 ≥ ${numberInput('playerEscapeKills', 'min="0" style="flex:none;width:70px"')} 的玩家也算危險<span class="hint" style="margin:0">0＝不看</span></div>
         <div class="row">黑名單<input data-field="playerBlacklist" placeholder="玩家暱稱或 ID，逗號分隔"></div>
         <div class="row">不理會的關卡<input data-field="playerIgnoreStages" placeholder="例：大草原1-3、黑暗山洞1-3"></div>
         <div class="row"><label style="flex:none"><input data-field="playerReturnEnabled" type="checkbox" style="width:auto"> 躲開後</label> ${numberInput('playerReturnMinutes', 'min="1"')} 分鐘沒再遇到危險玩家，就走回原本掛機的關卡</div>
@@ -5762,8 +5765,20 @@
     return (state.zoneUsers || []).filter(
       (user) =>
         user.id !== ownId &&
-        ((settings.playerEscapeRed && user.nameColor === RED_NAME_COLOR) || blacklist.includes(String(user.id)) || blacklist.includes(String(user.nickname || '').trim()))
+        ((settings.playerEscapeRed && user.nameColor === RED_NAME_COLOR) ||
+          isKillerPlayer(settings, user) ||
+          blacklist.includes(String(user.id)) ||
+          blacklist.includes(String(user.nickname || '').trim()))
     );
+  }
+
+  function playerKills(user) {
+    return Number(user.stats && user.stats.kill) || 0;
+  }
+
+  function isKillerPlayer(settings, user) {
+    const minimum = Number(settings.playerEscapeKills) || 0;
+    return minimum > 0 && playerKills(user) >= minimum;
   }
 
   // API 打怪看地圖編號 0；按鈕模式看關卡欄位有沒有城鎮名稱
@@ -5828,7 +5843,9 @@
       return false;
     }
     notePlayerDanger(settings);
-    const names = found.map((user) => `${user.nickname || user.id}${user.nameColor === RED_NAME_COLOR ? '（紅名）' : ''}`).join('、');
+    const names = found
+      .map((user) => `${user.nickname || user.id}${user.nameColor === RED_NAME_COLOR ? '（紅名）' : ''}${isKillerPlayer(settings, user) ? `（擊殺 ${playerKills(user)}）` : ''}`)
+      .join('、');
     const reason = `同地圖有危險玩家：${names}`;
     // 目標是自己剛換的（已經避難或退過）就不再回避難關卡，免得在兩個有人的地方來回跑
     const escaped = state.playerEscapeTarget === targetLabel(settings) || isEscapeTarget(settings, 'playerEscape');
