@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      3.99
+// @version      4.00
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -104,6 +104,24 @@
   // 換裝：每位角色各自一組設定，可以登記多件備用裝備依序嘗試
   const CHARACTER_COUNT = 4;
   const SPARE_COUNT = 4;
+
+  // API 換裝的部位：遊戲前端看不到裝備欄規則（伺服器判斷），先照類型分部位，換的時候一律先脫同一件再穿
+  const ONE_HAND_WEAPONS = ['單手劍', '細劍', '短刀', '單手錘'];
+  const TWO_HAND_WEAPONS = ['雙手劍', '太刀', '雙手斧', '長槍'];
+  const EQUIP_PARTS = [
+    { id: 'weapon', name: '武器', types: [...ONE_HAND_WEAPONS, ...TWO_HAND_WEAPONS] },
+    { id: 'shield', name: '盾牌', types: ['盾牌'] },
+    { id: 'head', name: '頭部', types: ['頭盔', '帽子'] },
+    { id: 'body', name: '身體', types: ['盔甲', '大衣'] },
+    { id: 'neck', name: '飾品', types: ['項鍊'] },
+  ];
+  const EQUIP_GRIPS = [
+    ['', '不限（換同類型）'],
+    ['single', '單持（一把單手武器，可配盾）'],
+    ['dual', '雙持（兩把單手武器）'],
+    ['two', '雙手武器'],
+  ];
+  const equipPlanView = { heroes: [], open: new Set() };
 
   function equipKey(characterIndex, name) {
     return `equip${characterIndex + 1}${name}`;
@@ -256,6 +274,8 @@
     equipApiHeroIds: '',
     // 可以換上的裝備名稱（逗號分隔）；留空＝閒置裝備都能用
     equipApiAllowedNames: '',
+    // {heroId: {on, minDur, grip, fill, parts:{weapon:{on, types[], names[]}, …}}}：角色各自的換裝設定，沒開的照共用設定
+    equipHeroPlans: '{}',
     // 用條件挑替換裝備（不用勾裝備）：攻擊、防禦下限（0＝不限），附魔「名稱」或「名稱≥數值」，逗號分隔
     equipRuleEnabled: false,
     equipRuleMinAtk: 0,
@@ -1018,9 +1038,10 @@
           <label class="row"><input data-field="equipEmptyMoveEnabled" type="checkbox" style="flex:none;width:auto"> 沒有可替換的裝備就改去（勾了就不暫停）</label>
           <div class="row">${escapeTargetHtml('equipEmpty')}</div>
           <div class="subhead">要換裝的角色</div>
-          <input type="hidden" data-field="equipApiHeroIds">
+          <input type="hidden" data-field="equipApiHeroIds"><input type="hidden" data-field="equipHeroPlans">
           <div data-role="equip-heroes" class="choices"><div class="hint">還沒讀到隊伍</div></div>
-          <div class="row"><button data-action="load-hunt-team">重新讀取隊伍</button></div>
+          <div class="row"><button data-action="load-hunt-team">重新讀取隊伍</button><button data-action="equip-plan-load">讀取裝備清單</button></div>
+          <div class="hint">勾了角色後展開「個別設定」：武器持法（單持／雙持／雙手）、每個部位（武器、盾牌、頭部、身體、飾品）換不換、能換哪些類型與裝備、耐久門檻都能分開設；沒開個別設定的角色照下面的共用設定（同類型換同類型）</div>
           <div class="subhead">可以換上的裝備</div>
           <label class="row"><input data-field="equipRuleEnabled" type="checkbox" style="flex:none;width:auto"> <b>用條件挑</b>（不用勾裝備，勾了下面的勾選清單就不看）</label>
           <div data-equip-rule>
@@ -4575,15 +4596,174 @@
   }
 
   function renderEquipHeroes(heroes) {
-    const selected = equipHeroIds(readSettingsFromPanel());
-    panel.querySelector('[data-role="equip-heroes"]').innerHTML = heroes.length
+    equipPlanView.heroes = heroes;
+    const settings = readSettingsFromPanel();
+    const selected = equipHeroIds(settings);
+    const plans = equipHeroPlans(settings);
+    const box = panel.querySelector('[data-role="equip-heroes"]');
+    const html = heroes.length
       ? heroes
           .map(
             (hero) => `<label style="display:block"><input type="checkbox" data-equip-hero value="${hero.id}"
-              ${selected.includes(hero.id) ? 'checked' : ''} style="width:auto;flex:none"> ${escapeHtml(hero.name)}</label>`
+              ${selected.includes(hero.id) ? 'checked' : ''} style="width:auto;flex:none"> ${escapeHtml(hero.name)}</label>${
+              selected.includes(hero.id) ? equipPlanHtml(settings, hero, plans[hero.id]) : ''
+            }`
           )
           .join('')
       : '<div class="hint">隊伍裡沒有角色</div>';
+    // 打怪中隊伍資料常常重讀；內容沒變就不重畫，正在打字時也不要把輸入框換掉
+    if (box.dataset.html === html) return;
+    if (box.contains(document.activeElement) && document.activeElement.type === 'number') return;
+    box.dataset.html = html;
+    box.innerHTML = html;
+  }
+
+  function equipHeroPlans(settings) {
+    try {
+      const plans = JSON.parse(settings.equipHeroPlans || '{}');
+      return plans && typeof plans === 'object' ? plans : {};
+    } catch {
+      return {};
+    }
+  }
+
+  // 有開個別設定才回傳；部位設定缺的補預設（換、類型不限、裝備照共用清單）
+  function equipHeroPlan(settings, heroId) {
+    const plan = equipHeroPlans(settings)[heroId];
+    if (!plan || !plan.on) return null;
+    const parts = {};
+    EQUIP_PARTS.forEach((part) => {
+      const saved = (plan.parts || {})[part.id] || {};
+      parts[part.id] = { on: saved.on !== false, types: saved.types || [], names: saved.names || [] };
+    });
+    return { minDur: Number(plan.minDur) || 0, grip: plan.grip || '', fill: Boolean(plan.fill), parts };
+  }
+
+  function equipPartOf(type) {
+    return EQUIP_PARTS.find((part) => part.types.includes(type)) || null;
+  }
+
+  // 持法決定武器能換成哪幾類，再跟這個部位勾的類型取交集
+  function equipPartTypes(plan, part) {
+    let types = part.types;
+    if (part.id === 'weapon' && (plan.grip === 'single' || plan.grip === 'dual')) types = ONE_HAND_WEAPONS;
+    if (part.id === 'weapon' && plan.grip === 'two') types = TWO_HAND_WEAPONS;
+    const chosen = plan.parts[part.id].types;
+    return chosen.length ? types.filter((type) => chosen.includes(type)) : types;
+  }
+
+  function heroMinDurability(settings, heroId) {
+    const plan = equipHeroPlan(settings, heroId);
+    return plan && plan.minDur > 0 ? plan.minDur : settings.equipApiMinDurability;
+  }
+
+  // 個別設定的角色只看有開的部位；沒開個別設定的照舊全部都看
+  function isMonitoredEquipment(settings, equipment) {
+    if (!equipHeroIds(settings).includes(equipment.equipped)) return false;
+    const plan = equipHeroPlan(settings, equipment.equipped);
+    if (!plan) return true;
+    const part = equipPartOf(equipment.type);
+    return part ? plan.parts[part.id].on : true;
+  }
+
+  function equipPlanSummary(plan) {
+    if (!plan || !plan.on) return '照共用設定';
+    const normalized = { ...plan, parts: Object.fromEntries(EQUIP_PARTS.map((part) => [part.id, { on: ((plan.parts || {})[part.id] || {}).on !== false }])) };
+    const grip = EQUIP_GRIPS.find(([value]) => value === (plan.grip || ''));
+    const parts = EQUIP_PARTS.filter((part) => normalized.parts[part.id].on).map((part) => part.name);
+    return [grip && plan.grip ? grip[1].replace(/（.*$/, '') : '', parts.length ? `換 ${parts.join('、')}` : '都不換', Number(plan.minDur) > 0 ? `耐久<${plan.minDur}` : '', plan.fill ? '空著補' : '']
+      .filter(Boolean)
+      .join('・');
+  }
+
+  // 這個部位能勾的裝備：裝備清單裡這幾類的「品質・名稱」，再加上之前勾過但現在清單裡沒有的
+  function equipPartNameChoices(part, chosen) {
+    const byLabel = new Map();
+    state.equipments
+      .filter((equipment) => part.types.includes(equipment.type))
+      .forEach((equipment) => {
+        const label = equipmentLabel(equipment);
+        const entry = byLabel.get(label) || { type: equipment.type, total: 0, idle: 0 };
+        entry.total++;
+        if (equipment.equipped === null && equipment.state === 0) entry.idle++;
+        byLabel.set(label, entry);
+      });
+    chosen.filter((label) => !byLabel.has(label)).forEach((label) => byLabel.set(label, { type: '', total: 0, idle: 0 }));
+    return [...byLabel.entries()].sort(([, first], [, second]) => part.types.indexOf(first.type) - part.types.indexOf(second.type));
+  }
+
+  function equipPlanHtml(settings, hero, saved) {
+    const id = hero.id;
+    const plan = saved || {};
+    const parts = plan.parts || {};
+    const input = (key, extra = '') => `data-equip-plan="${id}" data-plan-key="${key}" ${extra}`;
+    const checkbox = (key, checked, extra = '') => `<input type="checkbox" ${input(key, extra)} ${checked ? 'checked' : ''} style="width:auto;flex:none">`;
+    const partRows = EQUIP_PARTS.map((part) => {
+      const partPlan = parts[part.id] || {};
+      const types = partPlan.types || [];
+      const names = partPlan.names || [];
+      const typeChips = part.types.length > 1
+        ? `<div style="margin-left:18px">${part.types
+            .map((type) => `<label style="display:inline-block;margin-right:8px">${checkbox(`type:${part.id}`, types.includes(type), `value="${escapeHtml(type)}"`)} ${escapeHtml(type)}</label>`)
+            .join('')}<span class="hint" style="margin:0">都不勾＝都可以</span></div>`
+        : '';
+      const choices = equipPartNameChoices(part, names);
+      const nameList = choices.length
+        ? choices
+            .map(([label, entry]) => `<label style="display:block">${checkbox(`name:${part.id}`, names.includes(label), `value="${escapeHtml(label)}"`)} ${escapeHtml(label)}${entry.type ? `（${escapeHtml(entry.type)}，閒置 ${entry.idle}/${entry.total}）` : '（清單裡沒有）'}</label>`)
+            .join('')
+        : `<div class="hint">${state.equipments.length ? '裝備清單裡沒有這類裝備' : '還沒讀裝備清單，按上面的「讀取裝備清單」'}</div>`;
+      return `<div style="margin:4px 0;padding:3px 6px;border-left:2px solid #44444c">
+        <label style="display:block">${checkbox(`part:${part.id}`, partPlan.on !== false)} <b>${part.name}</b>（${part.types.join('、')}）</label>
+        ${typeChips}
+        <details style="margin-left:18px"><summary>指定裝備（已勾 ${names.length} 種；不勾＝照共用清單）</summary>${nameList}</details>
+      </div>`;
+    }).join('');
+    return `<details data-equip-plan-box="${id}" ${equipPlanView.open.has(id) ? 'open' : ''} style="margin:0 0 6px 20px">
+      <summary>個別設定：<span data-equip-plan-summary="${id}">${escapeHtml(equipPlanSummary(plan))}</span></summary>
+      <label style="display:block">${checkbox('on', plan.on)} <b>${escapeHtml(hero.name)} 用自己的設定</b>（不勾＝照共用設定）</label>
+      <div class="row">耐久低於 <input type="number" min="0" ${input('minDur')} value="${Number(plan.minDur) > 0 ? Number(plan.minDur) : ''}" placeholder="${settings.equipApiMinDurability}" style="flex:none;width:60px"> 就換（空白＝共用 ${settings.equipApiMinDurability}）</div>
+      <div class="row">武器持法 <select ${input('grip')} style="padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px">${EQUIP_GRIPS
+        .map(([value, label]) => `<option value="${value}" ${(plan.grip || '') === value ? 'selected' : ''}>${label}</option>`)
+        .join('')}</select></div>
+      <label style="display:block">${checkbox('fill', plan.fill)} 部位空著就補上（雙持缺一把也補；雙手武器、雙持不補盾）</label>
+      ${partRows}
+      <div class="hint">持法限制武器能換成哪幾類：單持、雙持只換單手武器，雙手只換雙手武器。個別設定的角色不看「只換同名裝備」，要限定就在部位裡勾指定裝備</div>
+    </details>`;
+  }
+
+  // 只改這個角色的設定，其他角色（包括現在不在隊伍裡的）原樣保留
+  function updateEquipPlanFromRows(heroId) {
+    const inputs = Array.from(panel.querySelectorAll(`[data-equip-plan="${heroId}"]`));
+    const value = (key) => inputs.find((element) => element.dataset.planKey === key);
+    const checkedValues = (key) => inputs.filter((element) => element.dataset.planKey === key && element.checked).map((element) => element.value);
+    const plan = {
+      on: value('on').checked,
+      minDur: Math.max(0, Number(value('minDur').value) || 0),
+      grip: value('grip').value,
+      fill: value('fill').checked,
+      parts: Object.fromEntries(
+        EQUIP_PARTS.map((part) => [part.id, { on: value(`part:${part.id}`).checked, types: checkedValues(`type:${part.id}`), names: checkedValues(`name:${part.id}`) }])
+      ),
+    };
+    const plans = equipHeroPlans(readSettingsFromPanel());
+    plans[heroId] = plan;
+    setPanelField('equipHeroPlans', JSON.stringify(plans));
+    const summary = panel.querySelector(`[data-equip-plan-summary="${heroId}"]`);
+    if (summary) summary.textContent = equipPlanSummary(plan);
+    state.equipApiSkipped.clear();
+  }
+
+  async function loadEquipPlanChoices() {
+    try {
+      await refreshEquipments();
+    } catch (error) {
+      setStatus(`讀取裝備清單失敗（${error.message}）`);
+      return;
+    }
+    panel.querySelector('[data-role="equip-heroes"]').dataset.html = '';
+    renderEquipHeroes(equipPlanView.heroes);
+    setStatus(`裝備清單共 ${state.equipments.length} 件`);
   }
 
   // 不在目前隊伍裡的已勾角色也保留，換隊員回來時不用重勾
@@ -5055,26 +5235,42 @@
     const heroIds = equipHeroIds(settings);
     if (!heroIds.length) return '換裝：還沒勾要換裝的角色';
     if (!state.equipments.length) return '換裝：還沒讀到裝備清單（按開始後讀取）';
-    const worn = state.equipments.filter((equipment) => heroIds.includes(equipment.equipped));
-    if (!worn.length) return '換裝：勾選的角色身上沒有裝備';
-    const lowest = worn.reduce((best, equipment) => (equipment.dur < best.dur ? equipment : best));
+    const worn = state.equipments.filter((equipment) => isMonitoredEquipment(settings, equipment));
+    if (!worn.length) return '換裝：勾選的角色身上沒有要監控的裝備';
+    // 每個角色門檻可能不同，挑離自己門檻最近的那件
+    const margin = (equipment) => equipment.dur - heroMinDurability(settings, equipment.equipped);
+    const lowest = worn.reduce((best, equipment) => (margin(equipment) < margin(best) ? equipment : best));
     const hero = state.heroStats.get(lowest.equipped);
-    return `換裝：監控 ${worn.length} 件，最低耐久 ${lowest.dur}（${hero ? hero.name : lowest.equipped} 的${lowest.type}），低於 ${settings.equipApiMinDurability} 換`;
+    const planned = equipHeroIds(settings).filter((heroId) => equipHeroPlan(settings, heroId)).length;
+    return `換裝：監控 ${worn.length} 件${planned ? `（${planned} 人用個別設定）` : ''}，最危險 ${hero ? hero.name : lowest.equipped} 的${lowest.type} 耐久 ${lowest.dur}，低於 ${heroMinDurability(settings, lowest.equipped)} 換`;
   }
 
   function findWornEquipmentNeedingSwap(settings) {
     return (
       state.equipments.find(
         (equipment) =>
-          equipHeroIds(settings).includes(equipment.equipped) &&
-          equipment.dur < settings.equipApiMinDurability &&
+          isMonitoredEquipment(settings, equipment) &&
+          equipment.dur < heroMinDurability(settings, equipment.equipped) &&
           !state.equipApiSkipped.has(equipment.id)
       ) || null
     );
   }
 
-  // 同類型（或同名）、閒置中、耐久夠的裡面挑耐久最高的；同類型才會換到同一個部位
+  // 部位指定了裝備就只看那些，沒指定照共用的條件或勾選清單
+  function isAllowedForPart(settings, plan, part, equipment) {
+    const names = plan.parts[part.id].names;
+    if (names.length) return isAllowedEquipment(names, equipment);
+    return settings.equipRuleEnabled ? matchesEquipRule(settings, equipment) : isAllowedEquipment(equipAllowedNames(settings), equipment);
+  }
+
+  // 個別設定的角色在同部位、持法允許的類型裡挑，同類型優先，再挑耐久最高；
+  // 沒開個別設定的照舊：同類型（或同名）、閒置中、耐久夠的裡面挑耐久最高的
   function findReplacementEquipment(settings, worn) {
+    const heroId = worn.equipped;
+    const plan = equipHeroPlan(settings, heroId);
+    const part = plan && equipPartOf(worn.type);
+    const minimum = heroMinDurability(settings, heroId);
+    if (part) return pickIdleEquipment(settings, plan, part, minimum, worn.type);
     const allowed = equipAllowedNames(settings);
     return state.equipments
       .filter(
@@ -5084,9 +5280,59 @@
           equipment.type === worn.type &&
           (!settings.equipApiSameName || equipment.name === worn.name) &&
           (settings.equipRuleEnabled ? matchesEquipRule(settings, equipment) : isAllowedEquipment(allowed, equipment)) &&
-          equipment.dur >= settings.equipApiMinDurability
+          equipment.dur >= minimum
       )
       .reduce((best, equipment) => (!best || equipment.dur > best.dur ? equipment : best), null);
+  }
+
+  function pickIdleEquipment(settings, plan, part, minimum, preferredType) {
+    const types = equipPartTypes(plan, part);
+    const rank = (equipment) => [equipment.type === preferredType ? 1 : 0, equipment.dur];
+    return state.equipments
+      .filter(
+        (equipment) =>
+          equipment.equipped === null &&
+          equipment.state === 0 &&
+          types.includes(equipment.type) &&
+          isAllowedForPart(settings, plan, part, equipment) &&
+          equipment.dur >= minimum
+      )
+      .reduce((best, equipment) => {
+        if (!best) return equipment;
+        const [firstType, firstDur] = rank(equipment);
+        const [secondType, secondDur] = rank(best);
+        return firstType > secondType || (firstType === secondType && firstDur > secondDur) ? equipment : best;
+      }, null);
+  }
+
+  // 雙持兩把、其他部位一把；雙手武器、雙持時盾牌不用補
+  // 持法不限時看身上現在拿什麼：拿雙手武器或兩把單手武器就不補盾
+  function expectedPartCount(plan, part, heroId) {
+    if (part.id === 'weapon') return plan.grip === 'dual' ? 2 : 1;
+    if (part.id !== 'shield') return 1;
+    if (plan.grip === 'dual' || plan.grip === 'two') return 0;
+    if (plan.grip === 'single') return 1;
+    const weapons = state.equipments.filter((equipment) => equipment.equipped === heroId && EQUIP_PARTS[0].types.includes(equipment.type));
+    return weapons.some((equipment) => TWO_HAND_WEAPONS.includes(equipment.type)) || weapons.length >= 2 ? 0 : 1;
+  }
+
+  function fillKey(heroId, part) {
+    return `fill:${heroId}:${part.id}`;
+  }
+
+  // 開了「空著就補上」的角色，部位件數不夠就找一件閒置的穿上；找不到也回傳，讓換裝流程記一次就不再找
+  function findMissingEquipment(settings) {
+    for (const heroId of equipHeroIds(settings)) {
+      const plan = equipHeroPlan(settings, heroId);
+      if (!plan || !plan.fill || !state.heroStats.has(heroId)) continue;
+      for (const part of EQUIP_PARTS) {
+        if (!plan.parts[part.id].on || state.equipApiSkipped.has(fillKey(heroId, part))) continue;
+        const worn = state.equipments.filter((equipment) => equipment.equipped === heroId && part.types.includes(equipment.type)).length;
+        if (worn >= expectedPartCount(plan, part, heroId)) continue;
+        return { heroId, part, worn, replacement: pickIdleEquipment(settings, plan, part, heroMinDurability(settings, heroId), null) };
+      }
+    }
+    return null;
   }
 
   // 遊戲換裝是 POST /api/equipments/{id}/unequip 與 POST /api/equipments/{id}/equip（body 帶 heroId）；
@@ -5154,29 +5400,67 @@
       fail(`脫下失敗（${error.message}）`);
       return;
     }
+    await wait(randomGap(6000, 12000));
+    if (runId !== state.runId) return;
+    const problem = await putOnEquipmentByApi(heroId, replacement);
+    if (runId !== state.runId) return;
+    if (problem) {
+      fail(`已脫下但${problem}，請手動檢查`);
+      return;
+    }
+    const message = `${who} → 換上「${replacement.name}」(耐久 ${replacement.dur}/${replacement.fullDur})`;
+    setStatus(message);
+    logItemUse(message);
+    continueAfterItem(settings);
+  }
+
+  // 成功回傳空字串，失敗回傳原因；用回應的裝備清單確認真的穿上了
+  async function putOnEquipmentByApi(heroId, equipment) {
     try {
-      await wait(randomGap(6000, 12000));
-      if (runId !== state.runId) return;
-      const result = await requestGameApi(`${EQUIPMENTS_API}/${replacement.id}/equip`, {
+      const result = await requestGameApi(`${EQUIPMENTS_API}/${equipment.id}/equip`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ heroId }),
       });
-      const after = equipmentInResult(result, replacement.id);
-      if (!after || after.equipped !== heroId) {
-        if (runId !== state.runId) return;
-        fail(`已脫下但穿上「${replacement.name}」沒有生效（伺服器回應：${describeEquipResult(result)}），請手動檢查`);
-        return;
-      }
+      const after = equipmentInResult(result, equipment.id);
+      if (!after || after.equipped !== heroId) return `穿上「${equipment.name}」沒有生效（伺服器回應：${describeEquipResult(result)}）`;
       state.equipments = result.equipments;
       state.equipmentsAt = Date.now();
+      return '';
     } catch (error) {
-      if (runId !== state.runId) return;
-      fail(`已脫下但穿上「${replacement.name}」失敗（${error.message}），請手動檢查`);
+      return `穿上「${equipment.name}」失敗（${error.message}）`;
+    }
+  }
+
+  // 補空只穿不脫；穿完件數沒變多代表遊戲把同部位舊的換下來了（這個部位穿不了更多），之後不再補
+  async function fillEquipmentByApi(settings, { heroId, part, worn, replacement }) {
+    const runId = state.runId;
+    const hero = state.heroStats.get(heroId);
+    const who = `[補裝] ${hero ? hero.name : heroId} 的${part.name}`;
+    state.equipApiSkipped.add(fillKey(heroId, part));
+    if (!replacement) {
+      setStatus(`${who}：空著但沒有可穿的閒置裝備，本輪不再補`);
+      logItemUse(`${who} ✗ 空著但沒有可穿的閒置裝備`);
+      continueAfterItem(settings);
       return;
     }
+    await requestGameApi(HEROES_API).catch(() => {});
+    await wait(randomGap(4000, 8000));
     if (runId !== state.runId) return;
-    const message = `${who} → 換上「${replacement.name}」(耐久 ${replacement.dur}/${replacement.fullDur})`;
+    const problem = await putOnEquipmentByApi(heroId, replacement);
+    if (runId !== state.runId) return;
+    if (problem) {
+      state.equipmentsAt = 0;
+      setStatus(`${who}：${problem}，本輪不再補`);
+      logItemUse(`${who} ✗ ${problem}`);
+      continueAfterItem(settings);
+      return;
+    }
+    const now = state.equipments.filter((equipment) => equipment.equipped === heroId && part.types.includes(equipment.type)).length;
+    const message = now > worn
+      ? `${who} → 補上「${replacement.name}」(耐久 ${replacement.dur}/${replacement.fullDur})`
+      : `${who} → 穿上「${replacement.name}」但件數沒變（遊戲換下了同部位的舊裝備），本輪不再補`;
+    if (now > worn) state.equipApiSkipped.delete(fillKey(heroId, part));
     setStatus(message);
     logItemUse(message);
     continueAfterItem(settings);
@@ -7777,6 +8061,12 @@
         swapEquipmentByApi(settings, worn);
         return;
       }
+      const missing = findMissingEquipment(settings);
+      if (missing) {
+        if (missing.replacement && waitToReact(settings, 'equip', '補裝')) return;
+        fillEquipmentByApi(settings, missing);
+        return;
+      }
     }
 
     const equipCharacter = state.needRest || settings.equipApiEnabled ? -1 : findCharacterNeedingEquipment(settings);
@@ -8492,6 +8782,8 @@
       loadHuntTeam();
     } else if (action === 'load-equipment-choices') {
       showEquipmentChoices();
+    } else if (action === 'equip-plan-load') {
+      loadEquipPlanChoices();
     } else if (action === 'equip-rule-preview') {
       renderEquipRulePreview(true);
     } else if (event.target.dataset.loadHeroes) {
@@ -17026,6 +17318,15 @@
     file.text().then(importSettings);
   });
 
+  panel.addEventListener('toggle', (event) => {
+    const heroId = event.target.dataset && event.target.dataset.equipPlanBox;
+    if (!heroId) return;
+    if (event.target.open) equipPlanView.open.add(Number(heroId));
+    else equipPlanView.open.delete(Number(heroId));
+    const box = panel.querySelector('[data-role="equip-heroes"]');
+    if (box) box.dataset.html = '';
+  }, true);
+
   // 勾選框、音量這類設定改完就存，不用等按開始
   panel.addEventListener('change', (event) => {
     // 匯入用的檔案選擇與文字框不是設定欄位
@@ -17033,7 +17334,11 @@
     if (event.target.dataset.itemChoice) updateItemNamesFromChoices(event.target.dataset.itemChoice);
     if (event.target.dataset.heroChoice) updateHeroIdsFromChoices(event.target.dataset.heroChoice);
     if (event.target.dataset.huntInclude !== undefined) updateExcludedHeroesFromChoices();
-    if (event.target.dataset.equipHero !== undefined) updateEquipHeroesFromChoices();
+    if (event.target.dataset.equipHero !== undefined) {
+      updateEquipHeroesFromChoices();
+      renderEquipHeroes(equipPlanView.heroes);
+    }
+    if (event.target.dataset.equipPlan !== undefined) updateEquipPlanFromRows(Number(event.target.dataset.equipPlan));
     if (event.target.dataset.equipmentChoice !== undefined) updateAllowedEquipmentFromChoices();
     if (/^equipRule|^equipApiMinDurability$/.test(event.target.dataset.field || '') && state.equipments.length) renderEquipRulePreview();
     if (event.target.dataset.pickChoice) updatePickFromChoices(event.target.dataset.pickChoice);
