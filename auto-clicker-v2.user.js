@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.01
+// @version      4.02
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -122,6 +122,13 @@
     ['two', '雙手武器'],
   ];
   const equipPlanView = { heroes: [], open: new Set() };
+  // 用條件挑：每個部位各一組條件，欄位名稱 equipRule<Weapon>MinAtk 這樣
+  const EQUIP_RULE_STATS = [['MinAtk', 'atk', '攻擊'], ['MinDef', 'def', '防禦'], ['MinInt', 'int', '智力'], ['MinLck', 'lck', '幸運']];
+  const equipRuleView = { part: 'weapon' };
+
+  function equipRuleKey(partId, name) {
+    return `equipRule${partId[0].toUpperCase()}${partId.slice(1)}${name}`;
+  }
 
   function equipKey(characterIndex, name) {
     return `equip${characterIndex + 1}${name}`;
@@ -276,12 +283,15 @@
     equipApiAllowedNames: '',
     // {heroId: {on, minDur, grip, fill, parts:{weapon:{on, types[], names[]}, …}}}：角色各自的換裝設定，沒開的照共用設定
     equipHeroPlans: '{}',
-    // 用條件挑替換裝備（不用勾裝備）：攻擊、防禦下限（0＝不限），附魔「名稱」或「名稱≥數值」，逗號分隔
+    // 用條件挑替換裝備（不用勾裝備）：每個部位各自的攻防智幸下限（0＝不限），附魔「名稱」或「名稱≥數值」，逗號分隔
     equipRuleEnabled: false,
-    equipRuleMinAtk: 0,
-    equipRuleMinDef: 0,
-    equipRuleEnchants: '',
-    equipRuleEnchantMode: 'any',
+    ...Object.fromEntries(
+      EQUIP_PARTS.flatMap((part) => [
+        ...EQUIP_RULE_STATS.map(([name]) => [equipRuleKey(part.id, name), 0]),
+        [equipRuleKey(part.id, 'Enchants'), ''],
+        [equipRuleKey(part.id, 'EnchantMode'), 'any'],
+      ])
+    ),
     // 練等：回城換上要練的英雄，到練等關卡練到指定等級，再回城換回原本的隊伍、回原本的關卡
     trainEnabled: false,
     trainHeroIds: '',
@@ -651,6 +661,15 @@
       saveSettings(saved);
     }
     writeJsonStorage(SLEEP_MERGED_KEY, true);
+    if (saved && ('equipRuleMinAtk' in saved || 'equipRuleEnchants' in saved)) {
+      EQUIP_PARTS.forEach((part) => {
+        saved[equipRuleKey(part.id, 'MinAtk')] = saved.equipRuleMinAtk || 0;
+        saved[equipRuleKey(part.id, 'MinDef')] = saved.equipRuleMinDef || 0;
+        saved[equipRuleKey(part.id, 'Enchants')] = saved.equipRuleEnchants || '';
+        saved[equipRuleKey(part.id, 'EnchantMode')] = saved.equipRuleEnchantMode || 'any';
+      });
+      ['equipRuleMinAtk', 'equipRuleMinDef', 'equipRuleEnchants', 'equipRuleEnchantMode'].forEach((key) => delete saved[key]);
+    }
     // 舊版要填 heroId，有填就代表在用 API 補給；現在自動用狩獵隊伍，只要把開關打開
     if (saved && !('resourceApiEnabled' in saved)) {
       ['resource', 'health'].forEach((groupId) => {
@@ -1046,9 +1065,13 @@
           <div class="subhead">可以換上的裝備</div>
           <label class="row"><input data-field="equipRuleEnabled" type="checkbox" style="flex:none;width:auto"> <b>用條件挑</b>（不用勾裝備，勾了下面的勾選清單就不看）</label>
           <div data-equip-rule>
-            <div class="row">攻擊 ≥ ${numberInput('equipRuleMinAtk', 'min="0" style="flex:none;width:60px"')} 防禦 ≥ ${numberInput('equipRuleMinDef', 'min="0" style="flex:none;width:60px"')}<span class="hint" style="margin:0">0＝不限</span></div>
-            <div class="row">附魔<input data-field="equipRuleEnchants" list="autoClickerEnchantNames" placeholder="例如 物理減傷、火焰傷害≥20；留空＝不限">
-              <select data-field="equipRuleEnchantMode" style="flex:none;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="any">有一個就行</option><option value="all">全部都要</option></select></div>
+            <div class="tabs" style="margin:4px 0">${EQUIP_PARTS.map((part) => `<button type="button" data-equip-rule-part="${part.id}">${part.name}</button>`).join('')}</div>
+            ${EQUIP_PARTS.map((part) => `<div data-equip-rule-block="${part.id}">
+              <div class="hint" style="margin:0">${part.name}（${part.types.join('、')}）的條件，只用在換這個部位</div>
+              <div class="row" style="flex-wrap:wrap">${EQUIP_RULE_STATS.map(([name, , label]) => `${label} ≥ ${numberInput(equipRuleKey(part.id, name), 'min="0" style="flex:none;width:52px"')}`).join(' ')}<span class="hint" style="margin:0">0＝不限</span></div>
+              <div class="row">附魔<input data-field="${equipRuleKey(part.id, 'Enchants')}" list="autoClickerEnchantNames" style="min-width:0;flex:1" placeholder="例如 物理減傷、火焰傷害≥20；留空＝不限">
+                <select data-field="${equipRuleKey(part.id, 'EnchantMode')}" style="flex:none;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="any">有一個就行</option><option value="all">全部都要</option></select></div>
+            </div>`).join('')}
             <datalist id="autoClickerEnchantNames"></datalist>
             <div data-role="equip-rule-enchants" style="font-size:12px"></div>
             <div data-role="equip-rule-preview" class="hint"></div>
@@ -4824,10 +4847,13 @@
       });
   }
 
+  // 看裝備屬於哪個部位就用那個部位的條件；不認得的類型沒有條件
   function matchesEquipRule(settings, equipment) {
-    if ((Number(settings.equipRuleMinAtk) || 0) > (Number(equipment.atk) || 0)) return false;
-    if ((Number(settings.equipRuleMinDef) || 0) > (Number(equipment.def) || 0)) return false;
-    const rules = parseEnchantRules(settings.equipRuleEnchants);
+    const part = equipPartOf(equipment.type);
+    if (!part) return true;
+    const key = (name) => equipRuleKey(part.id, name);
+    if (EQUIP_RULE_STATS.some(([name, stat]) => (Number(settings[key(name)]) || 0) > (Number(equipment[stat]) || 0))) return false;
+    const rules = parseEnchantRules(settings[key('Enchants')]);
     if (!rules.length) return true;
     const enchantments = equipment.enchantments || {};
     const hit = (rule) => {
@@ -4836,7 +4862,7 @@
       const value = Number(enchantments[rule.name]) || 0;
       return rule.strict ? value > rule.min : value >= rule.min;
     };
-    return settings.equipRuleEnchantMode === 'all' ? rules.every(hit) : rules.some(hit);
+    return settings[key('EnchantMode')] === 'all' ? rules.every(hit) : rules.some(hit);
   }
 
   function equipmentEnchantText(equipment) {
@@ -4860,9 +4886,11 @@
     const settings = readSettingsFromPanel();
     const names = [...new Set(state.equipments.flatMap((equipment) => Object.keys(equipment.enchantments || {})))].sort((first, second) => first.localeCompare(second, 'zh-Hant'));
     panel.querySelector('#autoClickerEnchantNames').innerHTML = names.map((name) => `<option value="${escapeHtml(name)}">`).join('');
-    const chosen = new Set(parseEnchantRules(settings.equipRuleEnchants).map((rule) => rule.name));
+    showEquipRulePart(equipRuleView.part, settings);
+    const partName = EQUIP_PARTS.find((part) => part.id === equipRuleView.part).name;
+    const chosen = new Set(parseEnchantRules(settings[equipRuleKey(equipRuleView.part, 'Enchants')]).map((rule) => rule.name));
     panel.querySelector('[data-role="equip-rule-enchants"]').innerHTML = names.length
-      ? `<span class="hint" style="margin:0">點一下加入／移除：</span>${names
+      ? `<span class="hint" style="margin:0">點一下加入／移除（${partName}）：</span>${names
           .map((name) => `<button type="button" data-equip-rule-enchant="${escapeHtml(name)}" style="margin:1px 2px;padding:0 6px;border-radius:9px;font-size:11px;${chosen.has(name) ? 'background:#14532d;color:#bbf7d0;border:1px solid #22c55e' : ''}">${escapeHtml(name)}</button>`)
           .join('')}`
       : '<span class="hint" style="margin:0">裝備清單裡沒有附魔過的裝備</span>';
@@ -4870,20 +4898,39 @@
     const matched = idle.filter((equipment) => matchesEquipRule(settings, equipment) && equipment.dur >= settings.equipApiMinDurability);
     const byType = new Map();
     matched.forEach((equipment) => byType.set(equipment.type, [...(byType.get(equipment.type) || []), equipment]));
+    const partCounts = EQUIP_PARTS.map((part) => `${part.name} ${matched.filter((equipment) => part.types.includes(equipment.type)).length}`).join('、');
     box.innerHTML = matched.length
-      ? `閒置裝備 ${idle.length} 件，符合條件又耐久夠的 <b style="color:#4ade80">${matched.length}</b> 件：${[...byType.entries()]
+      ? `閒置裝備 ${idle.length} 件，符合條件又耐久夠的 <b style="color:#4ade80">${matched.length}</b> 件（${partCounts}）：${[...byType.entries()]
           .map(([type, list]) => `<div>・${escapeHtml(type)} ${list.length} 件（例：${escapeHtml(equipmentLabel(list[0]))} 攻 ${list[0].atk} 防 ${list[0].def}${equipmentEnchantText(list[0]) ? `・${escapeHtml(equipmentEnchantText(list[0]))}` : ''}）</div>`)
           .join('')}`
       : `閒置裝備 ${idle.length} 件，<b style="color:#f87171">沒有符合條件</b>（耐久也要 ≥ ${settings.equipApiMinDurability}）`;
   }
 
   function toggleEquipRuleEnchant(name) {
-    const rules = parseEnchantRules(readSettingsFromPanel().equipRuleEnchants);
+    const field = equipRuleKey(equipRuleView.part, 'Enchants');
+    const rules = parseEnchantRules(readSettingsFromPanel()[field]);
     const kept = rules.filter((rule) => rule.name !== name);
     const parts = kept.map((rule) => (rule.min === null ? rule.name : `${rule.name}${rule.strict ? '>' : '≥'}${rule.min}`));
     if (kept.length === rules.length) parts.push(name);
-    setPanelField('equipRuleEnchants', parts.join('、'));
+    setPanelField(field, parts.join('、'));
     renderEquipRulePreview();
+  }
+
+  function equipRulePartSet(settings, partId) {
+    return EQUIP_RULE_STATS.some(([name]) => Number(settings[equipRuleKey(partId, name)]) > 0) || Boolean(settings[equipRuleKey(partId, 'Enchants')]);
+  }
+
+  // 一次只顯示一個部位的條件；有設條件的部位按鈕標 •
+  function showEquipRulePart(partId, settings = readSettingsFromPanel()) {
+    equipRuleView.part = partId;
+    panel.querySelectorAll('[data-equip-rule-block]').forEach((block) => {
+      block.style.display = block.dataset.equipRuleBlock === partId ? '' : 'none';
+    });
+    panel.querySelectorAll('[data-equip-rule-part]').forEach((button) => {
+      const part = EQUIP_PARTS.find((candidate) => candidate.id === button.dataset.equipRulePart);
+      button.toggleAttribute('data-active', part.id === partId);
+      button.textContent = equipRulePartSet(settings, part.id) ? `${part.name}•` : part.name;
+    });
   }
 
   // 舊設定只存名稱，名稱相符也算
@@ -16412,6 +16459,11 @@
   panel.addEventListener('click', (event) => {
     const button = event.target.closest && event.target.closest('[data-equip-rule-enchant]');
     if (button) toggleEquipRuleEnchant(button.dataset.equipRuleEnchant);
+    const partButton = event.target.closest && event.target.closest('[data-equip-rule-part]');
+    if (partButton) {
+      showEquipRulePart(partButton.dataset.equipRulePart);
+      if (state.equipments.length) renderEquipRulePreview();
+    }
   });
 
   panel.addEventListener('change', (event) => {
@@ -17374,6 +17426,7 @@
     }
     if (event.target.dataset.equipPlan !== undefined) updateEquipPlanFromRows(Number(event.target.dataset.equipPlan));
     if (event.target.dataset.equipmentChoice !== undefined) updateAllowedEquipmentFromChoices();
+    if (/^equipRule/.test(event.target.dataset.field || '')) showEquipRulePart(equipRuleView.part);
     if (/^equipRule|^equipApiMinDurability$/.test(event.target.dataset.field || '') && state.equipments.length) renderEquipRulePreview();
     if (event.target.dataset.pickChoice) updatePickFromChoices(event.target.dataset.pickChoice);
     if (event.target.dataset.forgeApiHero !== undefined) updateForgeApiHeroesFromChoices();
@@ -17507,6 +17560,7 @@
     // 讀不到就用原本大小
   }
   setEnlarged(panel.hasAttribute('data-enlarged'));
+  showEquipRulePart(equipRuleView.part);
   setMinimized(startMinimized);
   setStatus(`已載入 v${SCRIPT_VERSION}`);
   let resumeAfterReload = null;
