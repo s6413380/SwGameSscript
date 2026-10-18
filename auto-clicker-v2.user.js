@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.02
+// @version      4.03
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -288,6 +288,7 @@
     ...Object.fromEntries(
       EQUIP_PARTS.flatMap((part) => [
         ...EQUIP_RULE_STATS.map(([name]) => [equipRuleKey(part.id, name), 0]),
+        [equipRuleKey(part.id, 'MaxWgt'), 0],
         [equipRuleKey(part.id, 'Enchants'), ''],
         [equipRuleKey(part.id, 'EnchantMode'), 'any'],
       ])
@@ -1068,7 +1069,7 @@
             <div class="tabs" style="margin:4px 0">${EQUIP_PARTS.map((part) => `<button type="button" data-equip-rule-part="${part.id}">${part.name}</button>`).join('')}</div>
             ${EQUIP_PARTS.map((part) => `<div data-equip-rule-block="${part.id}">
               <div class="hint" style="margin:0">${part.name}（${part.types.join('、')}）的條件，只用在換這個部位</div>
-              <div class="row" style="flex-wrap:wrap">${EQUIP_RULE_STATS.map(([name, , label]) => `${label} ≥ ${numberInput(equipRuleKey(part.id, name), 'min="0" style="flex:none;width:52px"')}`).join(' ')}<span class="hint" style="margin:0">0＝不限</span></div>
+              <div class="row" style="flex-wrap:wrap">${EQUIP_RULE_STATS.map(([name, , label]) => `${label} ≥ ${numberInput(equipRuleKey(part.id, name), 'min="0" style="flex:none;width:52px"')}`).join(' ')} 重量 ≤ ${numberInput(equipRuleKey(part.id, 'MaxWgt'), 'min="0" style="flex:none;width:52px"')}<span class="hint" style="margin:0">0＝不限</span></div>
               <div class="row">附魔<input data-field="${equipRuleKey(part.id, 'Enchants')}" list="autoClickerEnchantNames" style="min-width:0;flex:1" placeholder="例如 物理減傷、火焰傷害≥20；留空＝不限">
                 <select data-field="${equipRuleKey(part.id, 'EnchantMode')}" style="flex:none;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="any">有一個就行</option><option value="all">全部都要</option></select></div>
             </div>`).join('')}
@@ -4853,6 +4854,9 @@
     if (!part) return true;
     const key = (name) => equipRuleKey(part.id, name);
     if (EQUIP_RULE_STATS.some(([name, stat]) => (Number(settings[key(name)]) || 0) > (Number(equipment[stat]) || 0))) return false;
+    // 太重會拖累角色，重量是上限（0＝不限）
+    const maxWeight = Number(settings[key('MaxWgt')]) || 0;
+    if (maxWeight > 0 && (Number(equipment.wgt) || 0) > maxWeight) return false;
     const rules = parseEnchantRules(settings[key('Enchants')]);
     if (!rules.length) return true;
     const enchantments = equipment.enchantments || {};
@@ -4901,7 +4905,7 @@
     const partCounts = EQUIP_PARTS.map((part) => `${part.name} ${matched.filter((equipment) => part.types.includes(equipment.type)).length}`).join('、');
     box.innerHTML = matched.length
       ? `閒置裝備 ${idle.length} 件，符合條件又耐久夠的 <b style="color:#4ade80">${matched.length}</b> 件（${partCounts}）：${[...byType.entries()]
-          .map(([type, list]) => `<div>・${escapeHtml(type)} ${list.length} 件（例：${escapeHtml(equipmentLabel(list[0]))} 攻 ${list[0].atk} 防 ${list[0].def}${equipmentEnchantText(list[0]) ? `・${escapeHtml(equipmentEnchantText(list[0]))}` : ''}）</div>`)
+          .map(([type, list]) => `<div>・${escapeHtml(type)} ${list.length} 件（例：${escapeHtml(equipmentLabel(list[0]))} 攻 ${list[0].atk} 防 ${list[0].def} 重 ${list[0].wgt}${equipmentEnchantText(list[0]) ? `・${escapeHtml(equipmentEnchantText(list[0]))}` : ''}）</div>`)
           .join('')}`
       : `閒置裝備 ${idle.length} 件，<b style="color:#f87171">沒有符合條件</b>（耐久也要 ≥ ${settings.equipApiMinDurability}）`;
   }
@@ -4917,7 +4921,7 @@
   }
 
   function equipRulePartSet(settings, partId) {
-    return EQUIP_RULE_STATS.some(([name]) => Number(settings[equipRuleKey(partId, name)]) > 0) || Boolean(settings[equipRuleKey(partId, 'Enchants')]);
+    return [...EQUIP_RULE_STATS.map(([name]) => name), 'MaxWgt'].some((name) => Number(settings[equipRuleKey(partId, name)]) > 0) || Boolean(settings[equipRuleKey(partId, 'Enchants')]);
   }
 
   // 一次只顯示一個部位的條件；有設條件的部位按鈕標 •
