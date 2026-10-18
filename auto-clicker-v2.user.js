@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.08
+// @version      4.09
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -14107,6 +14107,9 @@
   // 用「名稱＋鍛造日期」對到當天的比例，就能把名稱造成的加減成除掉，剩下的才是材料與鍛造師的效果
   const NAME_SHEET_URL =
     'https://docs.google.com/spreadsheets/d/1AQgO3da4OrSQk6Jwpm9wUkNfI1a0OYKwDyDuf_dwhaM/export?format=csv&gid=1009041432';
+  // 「今天」分頁：基準比是對今天樣本的最高值算的，跟歷史分頁（對歷史最高值）不同尺度；大家看的「通用 88%」是這頁的數字
+  const NAME_TODAY_SHEET_URL =
+    'https://docs.google.com/spreadsheets/d/1AQgO3da4OrSQk6Jwpm9wUkNfI1a0OYKwDyDuf_dwhaM/export?format=csv&gid=2031406039';
   const NAME_WEIGHTS_KEY = 'autoClickerV2NameWeights';
   const NAME_SHEET_REFRESH_MILLISECONDS = 30 * 60000;
   const NAME_WEIGHT_DAYS = 60;
@@ -14210,6 +14213,33 @@
     return days;
   }
 
+  // 表頭「名子、品質」後面有三組「攻擊…耐久」：原始素質、基礎值、基準比，要第三組
+  function parseNameTodaySheet(text) {
+    const rows = parseCsv(text);
+    const dateRow = rows.findIndex((row) => row[0] === '今天日期');
+    const dayMatch = dateRow >= 0 && /^(\d{4})\/(\d{1,2})\/(\d{1,2})/.exec(String(rows[dateRow + 1] && rows[dateRow + 1][0]).trim());
+    const headerIndex = rows.findIndex((row) => row.includes('名子') && row.includes('品質') && row.includes('六圍平均'));
+    if (!dayMatch || headerIndex < 0) throw new Error('測名表「今天」分頁格式變了');
+    const header = rows[headerIndex];
+    const nameColumn = header.indexOf('名子');
+    const ratioColumn = header.reduce((found, cell, index) => (cell === '攻擊' ? [...found, index] : found), [])[2];
+    if (ratioColumn === undefined) throw new Error('測名表「今天」分頁找不到基準比欄');
+    const sums = {};
+    rows.slice(headerIndex + 1).forEach((row) => {
+      const name = String(row[nameColumn] || '').trim();
+      const ratios = NAME_WEIGHT_FIELDS.map((_, offset) => percentValue(row[ratioColumn + offset]));
+      // 理論上限、下限那兩列是給表格計算用的，不是名稱
+      if (!name || /^理論[上下]限值$/.test(name) || ratios.some((ratio) => ratio === null)) return;
+      const entry = sums[name] || (sums[name] = { total: [0, 0, 0, 0, 0, 0], count: 0 });
+      ratios.forEach((ratio, index) => (entry.total[index] += ratio));
+      entry.count++;
+    });
+    const names = Object.fromEntries(
+      Object.entries(sums).map(([name, { total, count }]) => [name, { w: total.map((sum) => Math.round((sum / count) * 1000) / 1000), n: count, good: true }])
+    );
+    return { day: `${dayMatch[1]}-${pad2(dayMatch[2])}-${pad2(dayMatch[3])}`, names };
+  }
+
   function loadNameWeights() {
     const saved = readJsonStorage(NAME_WEIGHTS_KEY, null);
     return saved && saved.days ? saved : null;
@@ -14226,8 +14256,15 @@
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           return response.text();
         })
-        .then((text) => {
+        .then(async (text) => {
           const fresh = { fetchedAt: Date.now(), days: parseNameSheet(text) };
+          // 「今天」分頁讀不到也不影響歷史資料，挑名稱時改用歷史分頁
+          try {
+            const response = await window.fetch(NAME_TODAY_SHEET_URL, { cache: 'no-store' });
+            if (response.ok) fresh.today = parseNameTodaySheet(await response.text());
+          } catch {
+            // 照用歷史分頁
+          }
           writeJsonStorage(NAME_WEIGHTS_KEY, fresh);
           return fresh;
         })
@@ -14342,9 +14379,12 @@
     box.innerHTML = `${table(using)}${others.length ? `<details><summary>其他裝備（${others.length} 種）</summary>${table(others)}</details>` : ''}`;
   }
 
+  // 排名稱、自動換名稱門檻都用「今天」分頁的數字，跟大家在表上看到的一樣；那頁還停在昨天才用歷史分頁
+  // （扣名稱影響的材料統計還是用歷史分頁，各天同一個尺度才能比）
   function todayNames(goal) {
     const weights = loadNameWeights();
-    const today = weights ? weights.days[localDayKey(Date.now())] || {} : {};
+    const day = localDayKey(Date.now());
+    const today = !weights ? {} : weights.today && weights.today.day === day ? weights.today.names : weights.days[day] || {};
     const fieldIndex = (field) => NAME_WEIGHT_FIELDS.indexOf(field);
     const score = ({ w }) => (goal === 'six' ? w.reduce((sum, value) => sum + value, 0) / w.length : goal === 'total' ? (w[0] + w[1] + w[2] + w[3]) / 4 : w[fieldIndex(goal)]);
     // 只有次等以下（或上等以上）測過的名稱不準，不拿來挑（測名表「今天」分頁也不列）
