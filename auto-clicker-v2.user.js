@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.09
+// @version      4.10
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1259,7 +1259,7 @@
 
     <div data-tab="material">
       <div class="hint">鍛造材料在鍛造時自動記（也讀鍛造工具腳本的紀錄）；裝備數值在物品頁看過就會記下來，之後賣掉也還算得到</div>
-      <div class="row"><select data-role="material-mode" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="tendency">材料屬性傾向（全部類型）</option><option value="regression">依材料貢獻（扣除其他材料）</option><option value="single">依單一材料</option><option value="combo">依材料組合</option><option value="enchant">附魔推測（填材料估附魔）</option></select>
+      <div class="row"><select data-role="material-mode" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="tendency">材料屬性傾向（全部類型）</option><option value="regression">依材料貢獻（扣除其他材料）</option><option value="single">依單一材料</option><option value="combo">依材料組合</option><option value="enchant">附魔推測（填材料估附魔）</option><option value="table">素材表（廣測，石頭＝1）</option></select>
         <select data-role="material-type" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
       <div class="row"><select data-role="material-forger" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
       <div class="row"><select data-role="material-sort" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="count">依件數</option><option value="atk">依攻擊</option><option value="def">依防禦</option><option value="int">依智力</option><option value="lck">依幸運</option><option value="fullDur">依耐久</option><option value="wgt">依重量（輕的先）</option><option value="recyclePrice">依回收價</option></select>
@@ -12395,6 +12395,50 @@
     };
   }
 
+  // 素材表排序：件數／回收價在這裡沒有意義，當成「照種類分組、組內照強度」
+  const MATERIAL_TABLE_SORT_INDEX = { atk: 0, def: 1, int: 2, lck: 3, wgt: 4, fullDur: 5 };
+
+  function materialRatioCell(ratio, index) {
+    // 重量是越輕越好，顏色反過來
+    const good = index === 4 ? ratio <= 0.7 : ratio >= 2;
+    const bad = index === 4 ? ratio >= 1.3 : ratio < 0.5;
+    return `<td style="text-align:right;padding:1px 4px;color:${good ? '#86efac' : bad ? '#71717a' : '#e4e4e7'}">${ratio}</td>`;
+  }
+
+  function materialTableHtml(type, sortKey, filter) {
+    const settings = readSettingsFromPanel();
+    refreshMinePrices();
+    const have = new Map(mineStock.map((mine) => [mine.name, mine.have]));
+    const statIndex = MATERIAL_TABLE_SORT_INDEX[sortKey];
+    const grouped = statIndex === undefined;
+    const rows = Object.entries(MATERIAL_TABLE)
+      .filter(([name, [kind, , effect]]) => !filter || name.includes(filter) || kind.includes(filter) || effect.includes(filter))
+      .map(([name, [kind, ratios, effect]]) => ({ name, kind, ratios, effect, score: materialScore(settings, type, name) }))
+      .sort((first, second) =>
+        grouped
+          ? MATERIAL_TABLE_KINDS.indexOf(first.kind) - MATERIAL_TABLE_KINDS.indexOf(second.kind) || second.score - first.score
+          : statIndex === 4
+            ? first.ratios[4] - second.ratios[4]
+            : second.ratios[statIndex] - first.ratios[statIndex]
+      );
+    if (!rows.length) return '<div class="hint">素材表沒有符合的材料</div>';
+    const head = `<tr style="color:#a0a0aa"><th style="text-align:left">材料</th>${grouped ? '' : '<th>種類</th>'}<th title="照${escapeHtml(type || '六項平均')}的屬性權重算，石頭＝1">強</th>${MATERIAL_STATS.map((stat) => `<th>${stat}</th>`).join('')}<th>有</th><th>市價</th><th style="text-align:left">特效</th></tr>`;
+    const body = rows
+      .map((row, index) => {
+        const header =
+          grouped && (index === 0 || rows[index - 1].kind !== row.kind)
+            ? `<tr><td colspan="11" style="padding:5px 0 1px;color:#93c5fd;border-bottom:1px solid #2e2e34">${row.kind}（${rows.filter((other) => other.kind === row.kind).length}）</td></tr>`
+            : '';
+        const price = minePrices.byName.get(row.name);
+        const stock = have.get(row.name);
+        return `${header}<tr><td style="white-space:nowrap">${escapeHtml(row.name)}</td>${grouped ? '' : `<td style="color:#93c5fd">${row.kind}</td>`}<td style="text-align:right;padding:1px 4px;color:#fbbf24">${row.score.toFixed(2)}</td>${row.ratios.map(materialRatioCell).join('')}<td style="text-align:right;padding:1px 4px;color:${stock ? '#e4e4e7' : '#52525b'}">${stock || ''}</td><td style="text-align:right;padding:1px 4px;color:#fbbf24;white-space:nowrap">${price ? unitPriceText(price) : ''}</td><td style="color:#fb923c">${escapeHtml(row.effect)}</td></tr>`;
+      })
+      .join('');
+    return `<div class="hint">別人用單手劍 × 16 個同一種材料測的，換成普通品質後對石頭的倍數（共 ${Object.keys(MATERIAL_TABLE).length} 種，來源 素材表.xlsx）。綠＝特別高（重量是特別輕），灰＝很低。數值一個一個加上去，配方平均倍數越高越好；重量不是單純相加</div>
+      <div class="hint">排序選「依件數／回收價」＝照種類分組、組內照強；選攻防智幸耐重＝全部照那項排。搜尋可打名稱、種類或特效（例如「破甲」）。「有」要先在配方頁讀過材料庫存</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px">${head}${body}</table>`;
+  }
+
   function renderMaterialSummary() {
     const mode = panel.querySelector('[data-role="material-mode"]').value;
     const typeSelect = panel.querySelector('[data-role="material-type"]');
@@ -12407,6 +12451,16 @@
     const nameAdjust = readSettingsFromPanel().materialNameAdjust;
     // 傾向看全部類型，類型選單用不到
     typeSelect.style.display = mode === 'tendency' ? 'none' : '';
+    // 素材表是別人測的固定數值，跟鍛造者無關；類型只拿來算「強」，所以列全部裝備類型
+    forgerSelect.style.display = mode === 'table' ? 'none' : '';
+    if (mode === 'table') {
+      typeSelect.innerHTML = `<option value="">全部類型</option>${Object.keys(MATERIAL_CAPS).map((type) => `<option>${type}</option>`).join('')}`;
+      typeSelect.value = Object.keys(MATERIAL_CAPS).includes(previousType) ? previousType : '';
+      const html = materialTableHtml(typeSelect.value, panel.querySelector('[data-role="material-sort"]').value, panel.querySelector('[data-role="material-filter"]').value.trim());
+      panel.querySelector('[data-role="material-summary"]').innerHTML = html;
+      lastMaterialCards = { html: `<div style="grid-column:1/-1">${html}</div>`, title: `素材表（石頭＝1）${typeSelect.value ? `・強＝對${typeSelect.value}` : ''}` };
+      return;
+    }
     if (mode === 'tendency') {
       const box = panel.querySelector('[data-role="material-summary"]');
       const result = tendencyHtml(
