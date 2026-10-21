@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.13
+// @version      4.14
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1304,7 +1304,7 @@
         <legend>背包表格</legend>
         <label class="row"><input data-field="itemTableSortEnabled" type="checkbox" style="flex:none;width:auto"> 點表頭排序（再點一次反向；品質照品質高低）</label>
         <label class="row"><input data-field="sellHelperEnabled" type="checkbox" style="flex:none;width:auto"> 販賣視窗顯示市場最低價和「填入／掛單」按鈕</label>
-        <div class="hint">鎖定的裝備在背包表格會標 🔒、整列淡黃色；不讓自動換裝換上的，名稱後面標 🚫</div>
+        <div class="hint">鎖定的裝備在背包表格會標 🔒、整列淡黃色；按了「🚫 保留」（自動換裝不會換上）的，名稱後面標 🚫</div>
         <div class="row"><button data-action="equip-export">匯出勾選的裝備</button><label style="flex:none"><input data-field="equipExportBase" type="checkbox" style="width:auto"> 換算成普通品質</label></div>
         <div class="hint">在遊戲背包的裝備表勾好裝備再按，複製成表格（貼進 Excel、Google 試算表會自動分欄）：名稱、類型、品質、攻防智幸重、耐久上限、孔、鍊金價、鍛造素材</div>
         <textarea data-role="equip-export" rows="4" readonly style="display:none;width:100%;box-sizing:border-box;font:11px monospace"></textarea>
@@ -13692,7 +13692,7 @@
     event.preventDefault();
     event.stopPropagation();
     const blocked = toggleNoAutoEquip(Number(button.dataset.equipNoAuto));
-    showToast(blocked ? '已鎖定：自動換裝不會換上這件' : '已解除：自動換裝可以換上這件');
+    showToast(blocked ? '已保留這件' : '已取消保留');
     state.equipApiSkipped.clear();
     enhanceEquipmentDetails();
     scanItemTables();
@@ -13773,7 +13773,7 @@
           isLocked ? '🔒 已鎖定（點一下解鎖）' : '🔓 鎖定（不能販賣、不能鍊金）'
         }</button>` +
         ` <button type="button" data-equip-no-auto="${equipment.id}" style="margin-top:6px;padding:3px 10px;border-radius:4px;border:1px solid ${isBlocked ? '#ef4444' : '#57534e'};background:${isBlocked ? '#7f1d1d' : '#292524'};color:${isBlocked ? '#fecaca' : '#d6d3d1'};font-size:13px;cursor:pointer">${
-          isBlocked ? '🚫 自動換裝不換上（點一下解除）' : '🚫 不讓自動換裝換上'
+          isBlocked ? '🚫 已保留（點一下取消）' : '🚫 保留'
         }</button>` +
         (isLocked
           ? ''
