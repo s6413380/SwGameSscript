@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.11
+// @version      4.12
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -411,6 +411,10 @@
     materialNameAdjust: true,
     // 遊戲的裝備詳細資料加上鍛造材料、時間、基本值
     forgeDetailEnabled: true,
+    // 裝備詳細資料加東西（鍛造材料、🔒、🚫 按鈕）；關掉整個不看畫面，鎖定照樣有效
+    equipDetailEnabled: true,
+    // 背包的販賣視窗加上比價和「填入／掛單」按鈕
+    sellHelperEnabled: true,
     // API 鍛造前把配方填進遊戲的鍛造表單（人在鍛造頁時才有作用）
     forgeFillGameForm: true,
     recipeNameAdjust: true,
@@ -1292,6 +1296,7 @@
       <fieldset class="group">
         <legend>背包表格</legend>
         <label class="row"><input data-field="itemTableSortEnabled" type="checkbox" style="flex:none;width:auto"> 點表頭排序（再點一次反向；品質照品質高低）</label>
+        <label class="row"><input data-field="sellHelperEnabled" type="checkbox" style="flex:none;width:auto"> 販賣視窗顯示市場最低價和「填入／掛單」按鈕</label>
         <div class="hint">鎖定的裝備在背包表格會標 🔒、整列淡黃色；不讓自動換裝換上的，名稱後面標 🚫</div>
         <div class="row"><button data-action="equip-export">匯出勾選的裝備</button><label style="flex:none"><input data-field="equipExportBase" type="checkbox" style="width:auto"> 換算成普通品質</label></div>
         <div class="hint">在遊戲背包的裝備表勾好裝備再按，複製成表格（貼進 Excel、Google 試算表會自動分欄）：名稱、類型、品質、攻防智幸重、耐久上限、孔、鍊金價、鍛造素材</div>
@@ -1307,6 +1312,7 @@
       <div class="row"><select data-role="material-sort" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="count">依件數</option><option value="atk">依攻擊</option><option value="def">依防禦</option><option value="int">依智力</option><option value="lck">依幸運</option><option value="fullDur">依耐久</option><option value="wgt">依重量（輕的先）</option><option value="recyclePrice">依回收價</option></select>
         <input data-role="material-filter" placeholder="搜尋材料" style="flex:1;min-width:0"></div>
       <label class="row"><input data-field="materialNameAdjust" type="checkbox" style="flex:none;width:auto"> 扣掉名稱影響（用每日測名表的比重）</label>
+      <label class="row"><input data-field="equipDetailEnabled" type="checkbox" style="flex:none;width:auto"> 在遊戲的裝備詳細資料加東西（背包、拍賣、角色頁）；關掉＝不顯示材料和 🔒／🚫 按鈕，已鎖的照樣鎖</label>
       <label class="row"><input data-field="forgeDetailEnabled" type="checkbox" style="flex:none;width:auto"> 在遊戲的裝備詳細資料顯示鍛造材料、時間與基本值</label>
       <div class="row"><button data-action="material-refresh">讀取裝備並統計</button><button data-action="material-viewer">放大檢視</button></div>
       <div data-role="material-summary" style="font-size:12px;max-height:380px;overflow:auto"></div>
@@ -3716,13 +3722,19 @@
   });
 
   // 遊戲的視窗是 React 動態掛上去的，有出現就補上比價
-  new MutationObserver(() => perfTimed('監看：販賣視窗', () => {
-    if (tabShutDown) return;
-    const parts = sellDialogParts();
-    if (!parts || !parts.name) return;
-    const box = parts.dialog.querySelector('[data-role="sell-price"]');
-    if (!box || box.dataset.name !== parts.name) showSellPrices();
-  })).observe(document.documentElement, { subtree: true, childList: true });
+  // 販賣視窗只在背包頁出現；別頁不看，畫面一直動時也合併成一次
+  let sellDialogPending = null;
+  new MutationObserver(() => {
+    if (sellDialogPending || tabShutDown || !isItemsPage()) return;
+    sellDialogPending = setTimeout(() => perfTimed('監看：販賣視窗', () => {
+      sellDialogPending = null;
+      if (!readSettingsFromPanel().sellHelperEnabled) return;
+      const parts = sellDialogParts();
+      if (!parts || !parts.name) return;
+      const box = parts.dialog.querySelector('[data-role="sell-price"]');
+      if (!box || box.dataset.name !== parts.name) showSellPrices();
+    }), 150);
+  }).observe(document.documentElement, { subtree: true, childList: true });
 
   // 被動模式：遊戲自己抓拍賣或人口販子清單時順便看，一個請求都不多發
   function noticeGameMarket(...args) {
@@ -14317,11 +14329,21 @@
     // 同一份戰報不重畫，免得一直被收回去；狀態列（血量、耐久）會變，照樣更新
     if (!force && block.dataset.signature === signature) {
       const status = block.querySelector('[data-ac-status]');
-      if (status && withStatus) status.innerHTML = teamStatusHtml();
+      if (status && withStatus) {
+        const html = teamStatusHtml();
+        if (status.dataset.html !== html) {
+          status.dataset.html = html;
+          status.innerHTML = html;
+        }
+      }
       return;
     }
     block.dataset.signature = signature;
     block.innerHTML = pageReportHtml(report, withStatus);
+  }
+
+  function isPageReportPath() {
+    return /^\/(?:hunt(?:\/|$)|reports\/\d+|$)/.test(location.pathname);
   }
 
   function installPageReport() {
@@ -14353,6 +14375,11 @@
     }, true);
     let pending = null;
     new MutationObserver((mutations) => {
+      if (!isPageReportPath()) {
+        const block = document.getElementById(PAGE_REPORT_ID);
+        if (block) block.remove();
+        return;
+      }
       if (pending || mutations.every((mutation) => mutation.target.closest && mutation.target.closest(`#${PAGE_REPORT_ID}`))) return;
       pending = setTimeout(() => {
         pending = null;
@@ -14361,9 +14388,15 @@
     }).observe(document.body, { childList: true, subtree: true });
   }
 
+  // 遊戲的裝備詳細面板只在這幾頁（Items、Market、HeroDetail 才載入裝備元件）
+  function isEquipmentDetailPath() {
+    return /^\/(?:items|market|heroes)(?:\/|$)/.test(location.pathname);
+  }
+
   function installForgeDetailEnhancer() {
     let pending = null;
     new MutationObserver((mutations) => {
+      if (!isEquipmentDetailPath() || !readSettingsFromPanel().equipDetailEnabled) return;
       const ownOnly = mutations.every((mutation) => {
         const target = mutation.target.nodeType === 1 ? mutation.target : mutation.target.parentElement;
         return target && (target.closest(`[${FORGE_DETAIL_MARK}]`) || panel.contains(target) || target.hasAttribute(FORGE_DETAIL_MARK));
