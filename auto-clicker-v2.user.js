@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.15
+// @version      4.16
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1479,7 +1479,7 @@
       <fieldset class="group">
         <legend>提醒</legend>
         <div class="hint">沒開自動購買時，符合的卡都只跳提醒。同一張掛單只提醒一次（降價會再提醒）</div>
-        <label class="row"><input data-field="cardReleasedEnabled" type="checkbox" style="flex:none;width:auto"> 人口販子開放時也一起看（只提醒，不買）</label>
+        <label class="row"><input data-field="cardReleasedEnabled" type="checkbox" style="flex:none;width:auto"> 人口販子：你自己開人口販子頁時順便比對（只提醒，不買；不會主動去查）</label>
         <div class="row">提醒方式<select data-field="cardAlertStyle" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="toast">右下角小提示＋系統通知（不打斷）</option><option value="popup">照「提醒」頁設定（彈窗、聲音、紅框）</option></select></div>
         <div class="row"><b style="flex:1">提醒紀錄</b><button data-action="card-notified-reset" title="提醒過的掛單下一輪會再叫一次">讓提醒過的再叫</button><button data-action="card-alert-history-clear">清空</button></div>
         <div data-role="card-alert-history" class="hint" style="max-height:140px;overflow-y:auto;border:1px solid #44444c;border-radius:5px;padding:4px"></div>
@@ -3808,7 +3808,8 @@
     try {
       await visitOtherMarketTab();
       const trades = (await requestGameApi('/api/trades?type=heroes')).heroes || [];
-      const released = settings.cardReleasedEnabled ? releasedCardsFrom(await requestGameApi(RELEASED_MARKET_API).catch(() => null)) : null;
+      // 人口販子不主動查，只在遊戲自己讀到時比對（被動）
+      const released = null;
       await handleCardTrades(settings, trades, released);
       if (settings.cardWatchMode === 'active') {
         panel.querySelector('[data-role="card-buy-next"]').textContent = `下次主動查：${waitText(delay)}後${resting ? '（刷了一陣，休息一下）' : ''}`;
