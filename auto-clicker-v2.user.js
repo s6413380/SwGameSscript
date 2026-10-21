@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.10
+// @version      4.11
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -34,6 +34,48 @@
     // 改不了就算了
   }
   // 雲端快取、刮刮樂紀錄很大，放 localStorage 會把網站空間吃光；改放 IndexedDB（空間大很多），記憶體留一份給同步讀取
+  // 效能檢查：量腳本每段同步程式佔用主執行緒多久（佔著的時候遊戲畫面就卡住），在「紀錄」頁看
+  const perfProbe = { since: Date.now(), stats: new Map(), slow: [], depth: 0, ownTotal: 0, longTasks: { count: 0, total: 0, max: 0, recent: [] } };
+  const PERF_SLOW_MILLISECONDS = 50;
+  function notePerf(label, milliseconds) {
+    let stat = perfProbe.stats.get(label);
+    if (!stat) perfProbe.stats.set(label, (stat = { count: 0, total: 0, max: 0, slow: 0 }));
+    stat.count++;
+    stat.total += milliseconds;
+    if (milliseconds > stat.max) stat.max = milliseconds;
+    if (milliseconds >= PERF_SLOW_MILLISECONDS) {
+      stat.slow++;
+      perfProbe.slow.unshift({ at: Date.now(), label, milliseconds });
+      perfProbe.slow.length = Math.min(perfProbe.slow.length, 40);
+    }
+  }
+  // 非同步函式只量到第一個 await 為止，剛好就是卡住畫面的那段
+  function perfTimed(label, run) {
+    const start = performance.now();
+    perfProbe.depth++;
+    try {
+      return run();
+    } finally {
+      perfProbe.depth--;
+      const milliseconds = performance.now() - start;
+      if (!perfProbe.depth) perfProbe.ownTotal += milliseconds;
+      notePerf(label, milliseconds);
+    }
+  }
+  try {
+    new PerformanceObserver((list) => {
+      list.getEntries().forEach((entry) => {
+        const tasks = perfProbe.longTasks;
+        tasks.count++;
+        tasks.total += entry.duration;
+        tasks.max = Math.max(tasks.max, entry.duration);
+        tasks.recent.unshift({ at: Date.now(), milliseconds: entry.duration });
+        tasks.recent.length = Math.min(tasks.recent.length, 40);
+      });
+    }).observe({ type: 'longtask' });
+  } catch {
+    // 瀏覽器不支援長任務就只看腳本自己的數字
+  }
   const BIG_STORAGE_KEYS = new Set(['autoClickerV2CloudEquipments', 'autoClickerV2CloudScratch', 'autoClickerV2CloudDraws', 'autoClickerV2Scratch']);
   const bigStorage = {
     values: new Map(),
@@ -1451,6 +1493,10 @@
 
     <div data-tab="log">
       <pre data-role="log" style="margin:0;max-height:260px;overflow:auto;font:11px monospace;white-space:pre-wrap"></pre>
+      <div class="row" style="margin-top:8px"><b style="flex:1">效能檢查（找卡頓）</b>
+        <button data-action="perf-refresh">更新</button><button data-action="perf-copy">複製</button><button data-action="perf-reset">歸零</button></div>
+      <div class="hint">腳本每段程式佔用畫面多久；平常玩一兩分鐘、覺得卡的時候按「更新」，再按「複製」貼給開發者</div>
+      <pre data-role="perf-log" style="margin:0;max-height:260px;overflow:auto;font:11px monospace;white-space:pre-wrap"></pre>
       <div class="row" style="margin-top:8px"><b style="flex:1">網頁黑掉紀錄</b>
         <button data-action="crash-log-copy">複製</button><button data-action="crash-log-clear">清除</button></div>
       <label class="row"><input data-field="crashReloadEnabled" type="checkbox" style="flex:none;width:auto"> 遊戲畫面黑掉（整個不見）就自動重新整理，原本在跑的接著跑</label>
@@ -1829,7 +1875,11 @@
   const logElement = panel.querySelector('[data-role="log"]');
   const fieldElements = panel.querySelectorAll('[data-field]');
 
-  function readSettingsFromPanel() {
+  function readSettingsFromPanel(...args) {
+    return perfTimed('readSettingsFromPanel', () => readSettingsFromPanelUntimed(...args));
+  }
+
+  function readSettingsFromPanelUntimed() {
     const settings = {};
     fieldElements.forEach((input) => {
       const key = input.dataset.field;
@@ -2649,6 +2699,50 @@
       .join('\n\n');
   }
 
+  function perfReportText() {
+    const seconds = Math.max(1, (Date.now() - perfProbe.since) / 1000);
+    const round = (value) => Math.round(value * 10) / 10;
+    const time = (at) => new Date(at).toLocaleTimeString('zh-TW', { hour12: false });
+    const tasks = perfProbe.longTasks;
+    const rows = [...perfProbe.stats.entries()]
+      .sort((first, second) => second[1].total - first[1].total)
+      .slice(0, 30)
+      .map(([label, stat]) => `${round(stat.total)}ms 共 ${stat.count} 次 平均 ${round(stat.total / stat.count)} 最久 ${round(stat.max)}${stat.slow ? ` ≥50ms ${stat.slow} 次` : ''}｜${label}`);
+    let storage = '';
+    try {
+      const sizes = Object.keys(localStorage).map((key) => [key, (localStorage.getItem(key) || '').length]);
+      const total = sizes.reduce((sum, [, size]) => sum + size, 0);
+      storage = `localStorage 共 ${round(total / 1024)} KB（字元），最大：\n${sizes
+        .sort((first, second) => second[1] - first[1])
+        .slice(0, 10)
+        .map(([key, size]) => `  ${round(size / 1024)} KB ${key}`)
+        .join('\n')}`;
+    } catch {
+      storage = 'localStorage 讀不到';
+    }
+    return [
+      `v${SCRIPT_VERSION} ${location.pathname} 統計 ${Math.round(seconds)} 秒（${time(perfProbe.since)} 起）`,
+      `腳本自己佔用：${round(perfProbe.ownTotal)}ms（每秒 ${round(perfProbe.ownTotal / seconds)}ms）`,
+      `整頁長任務（≥50ms，含遊戲本身）：${tasks.count} 次，共 ${round(tasks.total)}ms，最久 ${round(tasks.max)}ms`,
+      '',
+      '花最多時間的（含裡面呼叫的）：',
+      ...rows,
+      '',
+      '最近的慢動作（腳本）：',
+      ...perfProbe.slow.slice(0, 20).map((entry) => `${time(entry.at)} ${round(entry.milliseconds)}ms ${entry.label}`),
+      '',
+      '最近的長任務（整頁）：',
+      ...tasks.recent.slice(0, 20).map((entry) => `${time(entry.at)} ${round(entry.milliseconds)}ms`),
+      '',
+      storage,
+    ].join('\n');
+  }
+
+  function renderPerfLog() {
+    const box = panel.querySelector('[data-role="perf-log"]');
+    if (box) box.textContent = perfReportText();
+  }
+
   function renderCrashLog() {
     const box = panel.querySelector('[data-role="crash-log"]');
     if (box) box.textContent = crashLogText() || '還沒有黑掉過';
@@ -2674,7 +2768,11 @@
   }
 
   // place：這份隊伍資料是在哪裡打完的（只有 /api/hunt 的回應才有意義，其他來源不傳）
-  function rememberHuntTeam(heroes, place = '') {
+  function rememberHuntTeam(...args) {
+    return perfTimed('rememberHuntTeam', () => rememberHuntTeamUntimed(...args));
+  }
+
+  function rememberHuntTeamUntimed(heroes, place = '') {
     dashboard.team = heroes;
     dashboard.teamAt = Date.now();
     if (readSettingsFromPanel().growthEnabled) growthTracker.noticeTeamLevels(heroes, fetchHeroDetail, place);
@@ -2836,7 +2934,11 @@
     }
   }
 
-  function dashboardReport(settings) {
+  function dashboardReport(...args) {
+    return perfTimed('dashboardReport', () => dashboardReportUntimed(...args));
+  }
+
+  function dashboardReportUntimed(settings) {
     return {
       accountId: dashboard.profile.id,
       version: SCRIPT_VERSION,
@@ -3483,7 +3585,11 @@
   const sellPrice = { trades: {}, loading: {} };
 
   // 遊戲自己開市場頁抓到的清單也收著，剛看過市場就不用再查
-  function noticeMarketGoods(kind, data) {
+  function noticeMarketGoods(...args) {
+    return perfTimed('noticeMarketGoods', () => noticeMarketGoodsUntimed(...args));
+  }
+
+  function noticeMarketGoodsUntimed(kind, data) {
     if (data && Array.isArray(data[kind])) sellPrice.trades[kind] = { at: Date.now(), list: data[kind] };
   }
 
@@ -3610,16 +3716,20 @@
   });
 
   // 遊戲的視窗是 React 動態掛上去的，有出現就補上比價
-  new MutationObserver(() => {
+  new MutationObserver(() => perfTimed('監看：販賣視窗', () => {
     if (tabShutDown) return;
     const parts = sellDialogParts();
     if (!parts || !parts.name) return;
     const box = parts.dialog.querySelector('[data-role="sell-price"]');
     if (!box || box.dataset.name !== parts.name) showSellPrices();
-  }).observe(document.documentElement, { subtree: true, childList: true });
+  })).observe(document.documentElement, { subtree: true, childList: true });
 
   // 被動模式：遊戲自己抓拍賣或人口販子清單時順便看，一個請求都不多發
-  function noticeGameMarket(url, data) {
+  function noticeGameMarket(...args) {
+    return perfTimed('noticeGameMarket', () => noticeGameMarketUntimed(...args));
+  }
+
+  function noticeGameMarketUntimed(url, data) {
     const settings = readSettingsFromPanel();
     if (tabShutDown || !settings.cardBuyEnabled || settings.cardWatchMode === 'active' || cardBuy.busy || !data) return;
     const isReleased = RELEASED_MARKET_PATTERN.test(url);
@@ -4774,7 +4884,11 @@
     }
   }
 
-  function renderHuntTeam(heroes) {
+  function renderHuntTeam(...args) {
+    return perfTimed('renderHuntTeam', () => renderHuntTeamUntimed(...args));
+  }
+
+  function renderHuntTeamUntimed(heroes) {
     renderEquipHeroes(heroes);
     const excluded = excludedHuntHeroIds(readSettingsFromPanel());
     panel.querySelector('[data-role="hunt-team"]').innerHTML = heroes.length
@@ -5396,7 +5510,11 @@
 
   // 同一個人同一種同程度的異常只提醒一次；好了之後再中才會再提醒
   const notifiedConditions = new Set();
-  function checkHeroConditions(heroes, settings) {
+  function checkHeroConditions(...args) {
+    return perfTimed('checkHeroConditions', () => checkHeroConditionsUntimed(...args));
+  }
+
+  function checkHeroConditionsUntimed(heroes, settings) {
     const alertLevel = Number(settings.statusAlertLevel) || 0;
     const pauseLevel = Number(settings.statusPauseLevel) || 0;
     const active = new Set();
@@ -5421,7 +5539,11 @@
     else if (pauseTexts.length || alertTexts.length) alertUser(`異常狀態：${[...pauseTexts, ...alertTexts].join('、')}`);
   }
 
-  function handleHuntResponse(data, requestBody, url) {
+  function handleHuntResponse(...args) {
+    return perfTimed('handleHuntResponse', () => handleHuntResponseUntimed(...args));
+  }
+
+  function handleHuntResponseUntimed(data, requestBody, url) {
     if (!data || typeof data !== 'object') return;
     if (data.huntInfo) state.huntInfo = data.huntInfo;
     const heroes = data.huntInfo && data.huntInfo.heroes;
@@ -6395,9 +6517,9 @@
   }
 
   // 遊戲自己換標題（切頁面）時再補上；監控每秒也檢查一次，萬一漏掉
-  new MutationObserver(() => {
+  new MutationObserver(() => perfTimed('監看：分頁標題', () => {
     if (dashboard.profile && titleNeedsMarks()) applyTitlePrefix();
-  }).observe(document.head, { subtree: true, childList: true, characterData: true });
+  })).observe(document.head, { subtree: true, childList: true, characterData: true });
 
   // 看血條的「目前值」是不是 0，不看百分比門檻；門檻設 0 或補血流程先動時也擋得住
   function pauseIfDeath(settings) {
@@ -7325,7 +7447,11 @@
   let combatFromApi = false;
 
   // 遊戲按原地掛機送的 POST /api/hunt，回應的 report.messages 就是整份戰報，每個 m 是一行
-  function recordBattleFromApi(report) {
+  function recordBattleFromApi(...args) {
+    return perfTimed('recordBattleFromApi', () => recordBattleFromApiUntimed(...args));
+  }
+
+  function recordBattleFromApiUntimed(report) {
     if (!report || !Array.isArray(report.messages)) return;
     combatFromApi = true;
     const signature = `api:${report.id}`;
@@ -7537,7 +7663,11 @@
   }
 
   // 每秒檢查一次，讓血條掉下來時不用等到下一次點擊才暫停
-  function updateMonitors() {
+  function updateMonitors(...args) {
+    return perfTimed('updateMonitors', () => updateMonitorsUntimed(...args));
+  }
+
+  function updateMonitorsUntimed() {
     const settings = readSettingsFromPanel();
     updateMiniStatus();
     // 執行中照實際模式顯示；停著的時候看目前停在哪一頁，按開始會用哪種模式就先顯示哪種
@@ -7662,7 +7792,11 @@
     return entry ? Number(entry[0]) : null;
   }
 
-  function learnPlace(data) {
+  function learnPlace(...args) {
+    return perfTimed('learnPlace', () => learnPlaceUntimed(...args));
+  }
+
+  function learnPlaceUntimed(data) {
     const info = data && (data.huntZone !== undefined ? data : data.huntInfo);
     if (!info || info.huntZone === undefined || info.huntZone === null) return;
     const zone = Number(info.huntZone);
@@ -8212,7 +8346,11 @@
     return true;
   }
 
-  function tick() {
+  function tick(...args) {
+    return perfTimed('tick', () => tickUntimed(...args));
+  }
+
+  function tickUntimed() {
     if (!state.running) return;
     // 每一步都重讀面板：要換裝的角色、可用道具這些清單常在按開始之後才勾，沿用開始時的設定會一直看不到
     const settings = readSettingsFromPanel();
@@ -9295,6 +9433,17 @@
         () => setStatus('已複製網頁黑掉紀錄'),
         () => setStatus('複製失敗，請直接選取文字複製')
       );
+    } else if (action === 'perf-refresh') {
+      renderPerfLog();
+    } else if (action === 'perf-copy') {
+      renderPerfLog();
+      navigator.clipboard.writeText(perfReportText()).then(
+        () => setStatus('已複製效能檢查'),
+        () => setStatus('複製失敗，請直接選取文字複製')
+      );
+    } else if (action === 'perf-reset') {
+      Object.assign(perfProbe, { since: Date.now(), stats: new Map(), slow: [], ownTotal: 0, longTasks: { count: 0, total: 0, max: 0, recent: [] } });
+      renderPerfLog();
     } else if (action === 'crash-log-clear') {
       writeJsonStorage(CRASH_LOG_KEY, []);
       renderCrashLog();
@@ -9429,6 +9578,16 @@
     }
   }
 
+  function perfApiLabel(method, url) {
+    let path = url;
+    try {
+      path = new URL(url, location.href).pathname;
+    } catch {
+      // 網址怪就用原字串
+    }
+    return `回應處理 ${method} ${path.replace(/\/\d+/g, '/{id}')}`;
+  }
+
   // 遊戲可能用 fetch、XHR 或 WebSocket 其中一種，三種都包起來；不在錄製時原樣放行
   function installApiRecorder() {
     const originalFetch = window.fetch;
@@ -9491,7 +9650,7 @@
       return originalFetch.apply(this, args).then(
         (response) => {
           const responseTextPromise = response.clone().text().catch(() => '[讀不到回應內容]');
-          Promise.all([requestBodyPromise, responseTextPromise]).then(([requestBody, responseText]) => {
+          Promise.all([requestBodyPromise, responseTextPromise]).then(([requestBody, responseText]) => perfTimed(perfApiLabel(method, url), () => {
             if (response.ok && !growthOnly) captureHeroId(url, requestBody);
             if (response.ok && manualMiningMatch) noteManualMining(Number(manualMiningMatch[1]), manualMiningMatch[2]);
             if (response.ok && growthHeroId && readSettingsFromPanel().growthEnabled) {
@@ -9604,7 +9763,7 @@
               jsonOutline(responseText) && `回應結構：${jsonOutline(responseText)}`,
               `回應 ${response.status}：${responseText}`,
             ]);
-          });
+          }));
           return response;
         },
         (error) => {
@@ -10474,7 +10633,7 @@
         pending = setTimeout(() => {
           pending = null;
           // 不再檢查網址：遊戲重繪屬性數值時會把成長值一起洗掉，必須隨時補回
-          render();
+          perfTimed('監看：成長值', render);
         }, 100);
       }).observe(document, { subtree: true, childList: true });
     }
@@ -11013,6 +11172,10 @@
   };
 
   function writeJsonStorage(key, value) {
+    perfTimed(`存 ${key}`, () => writeJsonStorageUntimed(key, value));
+  }
+
+  function writeJsonStorageUntimed(key, value) {
     if (BIG_STORAGE_KEYS.has(key)) {
       writeBigStorage(key, JSON.stringify(value));
       return;
@@ -11519,7 +11682,11 @@
     return value ? [value] : [];
   }
 
-  function matchPendingForges(equipments) {
+  function matchPendingForges(...args) {
+    return perfTimed('matchPendingForges', () => matchPendingForgesUntimed(...args));
+  }
+
+  function matchPendingForgesUntimed(equipments) {
     const pending = readJsonStorage(FORGE_PENDING_KEY, {});
     const saved = readJsonStorage(OWN_FORGE_MATERIALS_KEY, {});
     const matched = [];
@@ -11574,6 +11741,10 @@
   ];
 
   function readJsonStorage(key, fallback) {
+    return perfTimed(`讀 ${key}`, () => readJsonStorageUntimed(key, fallback));
+  }
+
+  function readJsonStorageUntimed(key, fallback) {
     try {
       const raw = BIG_STORAGE_KEYS.has(key) && bigStorage.values.has(key) ? bigStorage.values.get(key) : localStorage.getItem(key);
       return raw === null ? fallback : JSON.parse(raw);
@@ -11663,7 +11834,11 @@
   }
 
   // 強化加的數值（plus）是之後另外加的，跟材料無關，扣掉才是剛做好時的數值
-  function rememberForgedEquipments(equipments) {
+  function rememberForgedEquipments(...args) {
+    return perfTimed('rememberForgedEquipments', () => rememberForgedEquipmentsUntimed(...args));
+  }
+
+  function rememberForgedEquipmentsUntimed(equipments) {
     const saved = readJsonStorage(FORGED_EQUIPMENTS_KEY, {});
     let changed = false;
     equipments.forEach((equipment) => {
@@ -11709,7 +11884,11 @@
 
   // 三個來源：自己記的、鍛造工具腳本的 sgoBase.forgeMaterials（同格式：id → { materials: [[名稱, 數量]] }）、
   // sgoEquipToolsForgeLog（陣列，materials: [{ name, qty }]）；同一件以前面的為準
-  function readForgeMaterials() {
+  function readForgeMaterials(...args) {
+    return perfTimed('readForgeMaterials', () => readForgeMaterialsUntimed(...args));
+  }
+
+  function readForgeMaterialsUntimed() {
     const byEquipment = new Map();
     [OWN_FORGE_MATERIALS_KEY, 'sgoBase.forgeMaterials'].forEach((key) => {
       const saved = readJsonStorage(key, {});
@@ -11742,7 +11921,11 @@
   }
 
   // 同一件裝備自己有紀錄就用自己的
-  function forgedRecords() {
+  function forgedRecords(...args) {
+    return perfTimed('forgedRecords', () => forgedRecordsUntimed(...args));
+  }
+
+  function forgedRecordsUntimed() {
     const records = new Map(Object.entries(readJsonStorage(CLOUD_EQUIPMENTS_KEY, {})));
     const own = readJsonStorage(FORGED_EQUIPMENTS_KEY, {});
     const ownForges = readJsonStorage(OWN_FORGE_MATERIALS_KEY, {});
@@ -11956,7 +12139,11 @@
     return work.map((row) => row.slice(size));
   }
 
-  function materialRegression(type, weights, forger = '') {
+  function materialRegression(...args) {
+    return perfTimed('materialRegression', () => materialRegressionUntimed(...args));
+  }
+
+  function materialRegressionUntimed(type, weights, forger = '') {
     if (!type) return null;
     const multipliers = qualityMultipliers();
     const samples = [];
@@ -13159,7 +13346,11 @@
   const RECYCLE_FIELDS = ['atk', 'def', 'int', 'lck', 'fullDur'];
   const recycleModels = { at: 0, byType: {} };
 
-  function recycleModel(type) {
+  function recycleModel(...args) {
+    return perfTimed('recycleModel', () => recycleModelUntimed(...args));
+  }
+
+  function recycleModelUntimed(type) {
     if (Date.now() - recycleModels.at > 60000) Object.assign(recycleModels, { at: Date.now(), byType: {} });
     if (type in recycleModels.byType) return recycleModels.byType[type];
     const items = [...forgedRecords().values()].filter((equipment) => equipment.type === type && Number(equipment.recyclePrice) > 0);
@@ -13184,7 +13375,11 @@
     return Math.max(0, RECYCLE_FIELDS.reduce((sum, field, index) => sum + model.beta[index + 1] * (stats[field] || 0), model.beta[0]));
   }
 
-  function forgeEstimate(type, recipe, name) {
+  function forgeEstimate(...args) {
+    return perfTimed('forgeEstimate', () => forgeEstimateUntimed(...args));
+  }
+
+  function forgeEstimateUntimed(type, recipe, name) {
     const parsed = typeof recipe === 'string' ? parseRecipeLoosely(recipe) : recipe;
     if (!type || !parsed.length) return null;
     const weights = loadNameWeights();
@@ -13287,7 +13482,11 @@
   const latestEquipments = new Map();
   const FORGE_DETAIL_MARK = 'data-auto-clicker-forge-info';
 
-  function rememberLatestEquipments(equipments) {
+  function rememberLatestEquipments(...args) {
+    return perfTimed('rememberLatestEquipments', () => rememberLatestEquipmentsUntimed(...args));
+  }
+
+  function rememberLatestEquipmentsUntimed(equipments) {
     equipments.forEach((equipment) => latestEquipments.set(equipment.id, equipment));
   }
 
@@ -13500,7 +13699,11 @@
     return text.length < 2000 && !/戰鬥過程|造成\s*\d/.test(text);
   }
 
-  function enhanceEquipmentDetails() {
+  function enhanceEquipmentDetails(...args) {
+    return perfTimed('enhanceEquipmentDetails', () => enhanceEquipmentDetailsUntimed(...args));
+  }
+
+  function enhanceEquipmentDetailsUntimed() {
     if (tabShutDown) return;
     // 舊版放錯地方的（戰報裡）先清掉
     document.querySelectorAll(`[${FORGE_DETAIL_MARK}]`).forEach((box) => {
@@ -13564,7 +13767,11 @@
   const DUR_HISTORY = 30;
   const durWarned = new Set();
 
-  function recordDurabilityChanges(changes) {
+  function recordDurabilityChanges(...args) {
+    return perfTimed('recordDurabilityChanges', () => recordDurabilityChangesUntimed(...args));
+  }
+
+  function recordDurabilityChangesUntimed(changes) {
     const track = readJsonStorage(DUR_TRACK_KEY, {});
     const updated = new Map((Array.isArray(changes.updated) ? changes.updated : []).map((equipment) => [String(equipment.id), equipment]));
     (changes.deletedIds || []).forEach((id) => delete track[id]);
@@ -13747,7 +13954,11 @@
     });
   }
 
-  function scanItemTables() {
+  function scanItemTables(...args) {
+    return perfTimed('scanItemTables', () => scanItemTablesUntimed(...args));
+  }
+
+  function scanItemTablesUntimed() {
     if (tabShutDown || !isItemsPage()) return;
     const settings = readSettingsFromPanel();
     document.querySelectorAll('table').forEach((table) => {
@@ -13775,7 +13986,7 @@
       if (pending || !isItemsPage()) return;
       pending = setTimeout(() => {
         pending = null;
-        scanItemTables();
+        perfTimed('監看：背包表格', scanItemTables);
       }, 150);
     }).observe(document.body, { childList: true, subtree: true });
     // 切裝備／道具／礦物分頁不一定動到整棵樹，點完補看一次
@@ -13853,7 +14064,11 @@
   const ACTION_COMPLETE_PATTERN = /\/api\/heroes\/\d+\/completeAction(?:[?#]|$)/;
   const reportLootSeen = new Set();
 
-  function recordLootLedger(source, report) {
+  function recordLootLedger(...args) {
+    return perfTimed('recordLootLedger', () => recordLootLedgerUntimed(...args));
+  }
+
+  function recordLootLedgerUntimed(source, report) {
     if (!report || !Array.isArray(report.messages)) return;
     // 同一份戰報（例如遊戲自己和腳本都看到同一個回應）只記一次
     const key = report.id ? `${source}:${report.id}` : '';
@@ -14050,7 +14265,11 @@
       ${section('log', '📜 戰報內容', `${messages.length} 行 <button type="button" data-ac-toggle-game style="margin-left:6px;padding:0 6px;border:1px solid #57534e;border-radius:4px;background:#292524;color:#d6d3d1">${pageReport.showGame ? '收起原本的' : '顯示原本的'}</button>`, `<div style="font:12px/1.6 monospace;max-height:420px;overflow:auto">${lines}</div>`)}`;
   }
 
-  function renderPageReport(force = false) {
+  function renderPageReport(...args) {
+    return perfTimed('renderPageReport', () => renderPageReportUntimed(...args));
+  }
+
+  function renderPageReportUntimed(force = false) {
     const settings = readSettingsFromPanel();
     let block = document.getElementById(PAGE_REPORT_ID);
     const restoreGame = () => document.querySelectorAll(`[${PAGE_HIDDEN_ATTR}]`).forEach((element) => element.removeAttribute(PAGE_HIDDEN_ATTR));
@@ -14137,7 +14356,7 @@
       if (pending || mutations.every((mutation) => mutation.target.closest && mutation.target.closest(`#${PAGE_REPORT_ID}`))) return;
       pending = setTimeout(() => {
         pending = null;
-        renderPageReport();
+        perfTimed('監看：戰報', () => renderPageReport());
       }, 300);
     }).observe(document.body, { childList: true, subtree: true });
   }
@@ -14152,7 +14371,7 @@
       if (ownOnly || pending) return;
       pending = setTimeout(() => {
         pending = null;
-        enhanceEquipmentDetails();
+        perfTimed('監看：裝備詳細', enhanceEquipmentDetails);
       }, 150);
     }).observe(document.body, { childList: true, subtree: true, characterData: true });
   }
@@ -14502,7 +14721,11 @@
     return base[goal];
   }
 
-  function recommendRecipes(type, goal, forger = '', weights = null) {
+  function recommendRecipes(...args) {
+    return perfTimed('recommendRecipes', () => recommendRecipesUntimed(...args));
+  }
+
+  function recommendRecipesUntimed(type, goal, forger = '', weights = null) {
     const multipliers = qualityMultipliers();
     const groups = new Map();
     forgedRecords().forEach((equipment) => {
@@ -15000,7 +15223,11 @@
   }
 
   // 照遊戲自己按「原地掛機」後的做法更新畫面：隊伍狀態直接換成回應裡的，不另外重抓，伺服器看到的請求跟手動一樣
-  function syncGameHuntView(data) {
+  function syncGameHuntView(...args) {
+    return perfTimed('syncGameHuntView', () => syncGameHuntViewUntimed(...args));
+  }
+
+  function syncGameHuntViewUntimed(data) {
     try {
       const client = findGameQueryClient();
       if (!client || !data) {
@@ -15233,7 +15460,11 @@
   }
 
   // 鍛造佇列每個角色的狀態、配方、材料夠不夠；遊戲面板和總覽頁共用
-  function forgeQueueRows(settings) {
+  function forgeQueueRows(...args) {
+    return perfTimed('forgeQueueRows', () => forgeQueueRowsUntimed(...args));
+  }
+
+  function forgeQueueRowsUntimed(settings) {
     const heroIds = forgeByApiHeroIds(settings);
     const heroById = new Map(forgeHeroes.map((hero) => [hero.id, hero]));
     const order = [...forgeHeroes.filter((hero) => heroIds.includes(hero.id)).map((hero) => hero.id), ...heroIds.filter((id) => !heroById.has(id))];
@@ -15271,7 +15502,11 @@
     });
   }
 
-  function renderForgePlanOverview() {
+  function renderForgePlanOverview(...args) {
+    return perfTimed('renderForgePlanOverview', () => renderForgePlanOverviewUntimed(...args));
+  }
+
+  function renderForgePlanOverviewUntimed() {
     const box = panel.querySelector('[data-role="forge-plan-overview"]');
     if (!box) return;
     const settings = readSettingsFromPanel();
@@ -15353,7 +15588,11 @@
   const RECIPE_OPTIONS_FRESH_MILLISECONDS = 60000;
   const recipeOptionsCache = { at: 0, value: {} };
 
-  function forgeRecipeOptions(settings) {
+  function forgeRecipeOptions(...args) {
+    return perfTimed('forgeRecipeOptions', () => forgeRecipeOptionsUntimed(...args));
+  }
+
+  function forgeRecipeOptionsUntimed(settings) {
     if (Date.now() - recipeOptionsCache.at < RECIPE_OPTIONS_FRESH_MILLISECONDS) return recipeOptionsCache.value;
     const weights = settings.recipeNameAdjust ? loadNameWeights() || { days: {} } : null;
     recipeOptionsCache.value = Object.fromEntries(
@@ -16133,7 +16372,11 @@
   }
 
 
-  function noticeHeroList(reply) {
+  function noticeHeroList(...args) {
+    return perfTimed('noticeHeroList', () => noticeHeroListUntimed(...args));
+  }
+
+  function noticeHeroListUntimed(reply) {
     if (!reply || !Array.isArray(reply.heroes)) return;
     const data = loadMining();
     const previous = new Map(data.heroes.map((hero) => [hero.id, hero.statuses]));
@@ -16742,7 +16985,11 @@
     };
   }
 
-  function renderMiningHeroes() {
+  function renderMiningHeroes(...args) {
+    return perfTimed('renderMiningHeroes', () => renderMiningHeroesUntimed(...args));
+  }
+
+  function renderMiningHeroesUntimed() {
     const box = panel.querySelector('[data-role="mining-heroes"]');
     if (!box) return;
     // 正在選地點時不重畫：角色列表每次打怪後都會更新，重畫會把打開的下拉選單關掉
@@ -17002,7 +17249,11 @@
     if (activeTab === 'income') renderIncome();
   }
 
-  function recordIncome(data) {
+  function recordIncome(...args) {
+    return perfTimed('recordIncome', () => recordIncomeUntimed(...args));
+  }
+
+  function recordIncomeUntimed(data) {
     const { report } = data;
     if (!report || !Array.isArray(report.messages)) return;
     let exp = 0;
@@ -17118,7 +17369,11 @@
 
   const UNKNOWN_SPENT_LABEL = '不明支出（被搶等）';
 
-  function recordMoneyChange(money, url, method, known = {}, robbedMoney) {
+  function recordMoneyChange(...args) {
+    return perfTimed('recordMoneyChange', () => recordMoneyChangeUntimed(...args));
+  }
+
+  function recordMoneyChangeUntimed(money, url, method, known = {}, robbedMoney) {
     const last = readJsonStorage(LAST_MONEY_KEY, null);
     const robbedBefore = last && typeof last.robbed === 'number' ? last.robbed : null;
     writeJsonStorage(LAST_MONEY_KEY, { money, at: Date.now(), robbed: typeof robbedMoney === 'number' ? robbedMoney : robbedBefore });
@@ -17356,7 +17611,11 @@
       .map((match) => [match[1].trim(), messageNumber(match[2]) || 1]);
   }
 
-  function recordHuntStats(data, requestBody, settings, url = '') {
+  function recordHuntStats(...args) {
+    return perfTimed('recordHuntStats', () => recordHuntStatsUntimed(...args));
+  }
+
+  function recordHuntStatsUntimed(data, requestBody, settings, url = '') {
     const { report, huntInfo } = data;
     if (!report || !Array.isArray(report.messages) || !huntInfo) return;
     const battleStage = Number(report.stage) || Number(huntInfo.huntStage) || 0;
@@ -17444,7 +17703,11 @@
     return saved && saved.days ? saved : { days: {}, recent: [] };
   }
 
-  function recordActorLoot(data) {
+  function recordActorLoot(...args) {
+    return perfTimed('recordActorLoot', () => recordActorLootUntimed(...args));
+  }
+
+  function recordActorLootUntimed(data) {
     const report = data && data.report;
     if (!report || !Array.isArray(report.messages)) return;
     const found = parseActorLoot(report.messages);
