@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.12
+// @version      4.13
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -224,6 +224,7 @@
   // 區域表預設內容改過就加一：已經存過設定的人也補上新的預設區域（只補一次，刪掉了不會再冒出來）
   const AREA_PRESET_VERSION = 4;
   const LOOT_RARE_PAUSE_OFF_KEY = 'autoClickerV2LootRarePauseOff';
+  const RELAY_OFF_ONCE_KEY = 'autoClickerV2RelayOffOnce';
   const PLAYER_IGNORE_DEFAULT = '大草原1-3、黑暗山洞1-3';
   const PLAYER_IGNORE_DEFAULT_KEY = 'autoClickerV2PlayerIgnoreDefault';
   const SLEEP_MERGED_KEY = 'autoClickerV2SleepMergedIntoOff';
@@ -783,6 +784,12 @@
       saveSettings(merged);
     }
     writeJsonStorage(LOOT_RARE_PAUSE_OFF_KEY, true);
+    // v4.13：使用者要求先停掉中繼站（每 5 秒回報很耗資源）
+    if (saved && !readJsonStorage(RELAY_OFF_ONCE_KEY, false)) {
+      merged.relayEnabled = false;
+      saveSettings(merged);
+    }
+    writeJsonStorage(RELAY_OFF_ONCE_KEY, true);
     // v2.82～2.84 預設不理會的關卡是空的；還是空的就補上新預設一次，之後自己清空就照自己的
     if (saved && !readJsonStorage(PLAYER_IGNORE_DEFAULT_KEY, false) && !merged.playerIgnoreStages) {
       merged.playerIgnoreStages = PLAYER_IGNORE_DEFAULT;
@@ -4137,6 +4144,9 @@
         return queueHeroFromDashboard(Number(command.heroId), Number(command.fromId) || 0);
       case 'forge-plan':
         return setForgePlanFromDashboard(command);
+      case 'recipe-options':
+        forgeRecipeOptions(readSettingsFromPanel());
+        return '推薦配方算好了';
       case 'forge-purpose':
         return setForgePurpose(Number(command.heroId), command.purpose);
       case 'forge-unqueue':
@@ -15606,7 +15616,7 @@
       note: forgeRunner.running ? forgeRunner.nameWaiting : forgeRunner.stoppedReason || '',
       rows: forgeQueueRows(settings),
       plans: Object.fromEntries(forgeByApiHeroIds(settings).map((heroId) => [heroId, forgeApiPlan(settings, heroId)])),
-      recipeOptions: forgeRecipeOptions(settings),
+      recipeOptions: recipeOptionsCache.at ? recipeOptionsCache.value : {},
       favorites: recipeFavorites(settings),
       mines: mineStock.map((mine) => [mine.name, mine.have]),
       candidates: forgeHeroes
@@ -15616,9 +15626,9 @@
     };
   }
 
-  // 總覽頁編配方用：每種裝備前 5 個推薦配方（照這種裝備看重的第一個屬性排）；算一次要掃全部鍛造紀錄，1 分鐘重算一次
+  // 總覽頁編配方用：每種裝備前 5 個推薦配方（照這種裝備看重的第一個屬性排）；算一次要掃全部鍛造紀錄，
+  // 很花時間，只在總覽頁打開配方編輯器（指令 recipe-options）時算
   const NAME_STAT_GOALS = { 攻: 'atk', 防: 'def', 智: 'int', 幸: 'lck', 重: 'wgt', 耐: 'fullDur' };
-  const RECIPE_OPTIONS_FRESH_MILLISECONDS = 60000;
   const recipeOptionsCache = { at: 0, value: {} };
 
   function forgeRecipeOptions(...args) {
@@ -15626,7 +15636,6 @@
   }
 
   function forgeRecipeOptionsUntimed(settings) {
-    if (Date.now() - recipeOptionsCache.at < RECIPE_OPTIONS_FRESH_MILLISECONDS) return recipeOptionsCache.value;
     const weights = settings.recipeNameAdjust ? loadNameWeights() || { days: {} } : null;
     recipeOptionsCache.value = Object.fromEntries(
       Object.values(FORGE_TYPE_NAMES).map((type) => {

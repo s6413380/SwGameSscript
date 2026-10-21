@@ -462,7 +462,8 @@
     forgeTargets = [...byAccount.values()];
     document.getElementById('forge-board').style.display = forgeTargets.length ? '' : 'none';
     const body = document.getElementById('forge-board-body');
-    // 正在編配方或打字時先不重畫，不然會被洗掉
+    // 正在編配方或打字時先不重畫，不然會被洗掉；推薦配方晚到的話只補「挑配方」的選項
+    if (forgeEditing) refreshEditorPicks();
     if (forgeEditing || body.contains(document.activeElement)) return;
     body.innerHTML = forgeTargets.map(forgeAccountHtml).join('');
   }
@@ -584,13 +585,16 @@
       forgeBoardSent('用途已送出，分頁 5 秒內換名稱');
       return;
     }
+    // 推薦配方很花時間，分頁平常不算，打開編輯器才叫它算
     if (edit) {
       forgeEditing = { target, heroId: Number(edit) };
+      sendCommand(target, { type: 'recipe-options' });
       renderForgeBoardNow();
       return;
     }
     if (command === 'add') {
       forgeEditing = { target, heroId: 'new' };
+      sendCommand(target, { type: 'recipe-options' });
       renderForgeBoardNow();
       return;
     }
@@ -610,6 +614,19 @@
     event.target.blur();
     forgeBoardSent('已送出，分頁 5 秒內處理');
   });
+
+  function refreshEditorPicks() {
+    const editor = document.querySelector('#forge-board-body [data-editor]');
+    const account = forgeTargets.find((item) => item.id === forgeEditing.target);
+    if (!editor || !account) return;
+    const pick = editor.querySelector('[data-edit="pick"]');
+    if (!pick || pick.value || document.activeElement === pick) return;
+    const html = `<option value="">（自己填）</option>${forgeRecipeOptionsHtml(account.data.forgeBoard, editor.querySelector('[data-edit="type"]').value)}`;
+    if (pick.dataset.html !== html) {
+      pick.dataset.html = html;
+      pick.innerHTML = html;
+    }
+  }
 
   // 開編輯器時不等下一次輪詢，馬上畫出來
   function renderForgeBoardNow() {
