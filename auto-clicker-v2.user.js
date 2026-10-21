@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.14
+// @version      4.15
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1458,7 +1458,7 @@
 
     <div data-tab="cardBuy">
       <div class="row"><label style="flex:1"><input data-field="cardBuyEnabled" type="checkbox" style="width:auto"> <b>看拍賣場英雄</b></label><select data-field="cardWatchMode" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="passive">被動（不多發請求）</option><option value="active">主動查（搶卡用）</option></select></div>
-      <div class="hint">被動：你在遊戲開拍賣場的英雄頁、切回這個視窗，或停在人口販子頁時，遊戲抓到清單就順便比對，伺服器看到的跟一般玩家一樣。主動：自己去查，要搶卡時才開</div>
+      <div class="hint">被動：你在遊戲開拍賣場的英雄頁、切回這個視窗，或停在人口販子頁時，遊戲抓到清單就順便比對，伺服器看到的跟一般玩家一樣。主動：自己去查，要搶卡時才開；每次照真人刷新的樣子，先切到裝備／道具／礦物其中一頁，隔 0.6～2.5 秒再切回英雄</div>
       <div class="hint">操作：<span data-role="card-buy-log"></span></div>
       <fieldset class="group">
         <legend>主動查（選「主動查」時才用）</legend>
@@ -3763,6 +3763,22 @@
   }
 
   // 主動模式（搶卡用）：自己去抓清單。force＝按「立即查」，不管模式、時段、間隔
+  // 遊戲拍賣頁的英雄清單不會自己更新，真人要刷新只能先切到別的分頁再切回「英雄」。
+  // 實際錄到的順序：點「裝備」＝讀 profile＋裝備清單，約 1 秒後點「英雄」＝讀英雄清單；主動查照這個樣子走
+  const MARKET_AWAY_TABS = [
+    ['equipments', 6],
+    ['items', 2.5],
+    ['mines', 1.5],
+  ];
+
+  async function visitOtherMarketTab() {
+    const totalWeight = MARKET_AWAY_TABS.reduce((sum, [, weight]) => sum + weight, 0);
+    let roll = Math.random() * totalWeight;
+    const [type] = MARKET_AWAY_TABS.find(([, weight]) => (roll -= weight) < 0) || MARKET_AWAY_TABS[0];
+    await Promise.all([requestGameApi(PROFILE_API), requestGameApi(`/api/trades?type=${type}`)]);
+    await wait(randomGap(600, 2500));
+  }
+
   async function checkCardMarket(settings, { force = false } = {}) {
     if (tabShutDown || !settings.cardBuyEnabled || cardBuy.busy) return;
     if (!force) {
@@ -3790,6 +3806,7 @@
     if (state.captchaWaiting || forgeRunner.captchaWaiting) return;
     cardBuy.busy = true;
     try {
+      await visitOtherMarketTab();
       const trades = (await requestGameApi('/api/trades?type=heroes')).heroes || [];
       const released = settings.cardReleasedEnabled ? releasedCardsFrom(await requestGameApi(RELEASED_MARKET_API).catch(() => null)) : null;
       await handleCardTrades(settings, trades, released);
