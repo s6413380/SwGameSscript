@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.17
+// @version      4.18
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -503,6 +503,8 @@
     scratchMarketNames: '密技',
     // 腳本沒在掛機、你自己在遊戲裡打怪時，每打一下看血量、體力，低於「補血」「補體力」頁的門檻就用 API 吃藥
     manualSupplyEnabled: true,
+    // 腳本沒在掛機時（自己按打怪、或組隊時隊友按），也照 API 換裝的設定換耐久低的裝備
+    manualEquipEnabled: true,
     // 0＝不買：花的是真錢，一定要自己設上限
     cardBuyBudget: 0,
     cardBuyMaxCount: 1,
@@ -1083,8 +1085,9 @@
       .map(
         (group) => `<div data-tab="${group.id}">${
           group.id === 'health'
-            ? `<label class="row"><input data-field="manualSupplyEnabled" type="checkbox" style="flex:none;width:auto"> <b>我手動打怪時也自動吃藥</b></label>
-              <div class="hint">腳本沒在掛機、你自己在遊戲裡按打怪時，每打完一下看隊伍的血量、體力，低於這頁和「補體力」頁的門檻就直接用 API 吃藥（不用勾「用 API 補給」、不會去點畫面）</div>`
+            ? `<label class="row"><input data-field="manualSupplyEnabled" type="checkbox" style="flex:none;width:auto"> <b>我手動打怪、或組隊隊友打怪時也自動吃藥</b></label>
+              <label class="row"><input data-field="manualEquipEnabled" type="checkbox" style="flex:none;width:auto"> <b>同上，也自動換裝</b>（照「換裝」頁 API 換裝勾的角色和設定，要先勾「用 API 自動換裝」）</label>
+              <div class="hint">腳本沒在掛機時：你自己按打怪，或組隊時隊友按打怪（遊戲會即時推播戰報過來），每打完一場看隊伍的血量、體力，低於這頁和「補體力」頁的門檻就直接用 API 吃藥（不用勾「用 API 補給」、不會去點畫面）；耐久低的裝備照換裝設定換掉。不會額外去查，只用遊戲自己收到的資料</div>`
             : ''
         }${supplyGroupHtml(group)}</div>`
       )
@@ -5523,8 +5526,37 @@
           wait(90000),
         ]);
       }
+      if (!scriptHunting()) await manualEquipAfterHunt(settings, scriptHunting);
     } finally {
       manualSupply.busy = false;
+    }
+  }
+
+  // 沒掛機時的換裝：裝備清單平常靠遊戲的推播（equipmentChanges）和遊戲自己讀背包更新，太久沒讀才自己讀一次。
+  // 推播是在腳本載入前就連上的話接不到（要等遊戲重連），這時 2 分鐘讀一次
+  const MANUAL_EQUIP_FRESH_MILLISECONDS = 10 * 60000;
+  const MANUAL_EQUIP_UNTAPPED_FRESH_MILLISECONDS = 2 * 60000;
+
+  async function manualEquipAfterHunt(settings, scriptHunting) {
+    if (!settings.manualEquipEnabled || !settings.equipApiEnabled || !equipHeroIds(settings).length) return;
+    const fresh = huntEventsTap.active ? MANUAL_EQUIP_FRESH_MILLISECONDS : MANUAL_EQUIP_UNTAPPED_FRESH_MILLISECONDS;
+    if (!state.equipments.length || Date.now() - state.equipmentsAt > fresh) {
+      await refreshEquipments().catch(() => {});
+    }
+    if (scriptHunting()) return;
+    const options = { isCancelled: scriptHunting, manual: true };
+    const runUntilDone = (start) => Promise.race([new Promise((resolve) => start(resolve).catch(resolve)), wait(90000)]);
+    const worn = findWornEquipmentNeedingSwap(settings);
+    if (worn) {
+      // 人看到耐久低了才去換，晚幾秒
+      await wait(randomGap(1500, 4000));
+      if (!scriptHunting()) await runUntilDone((resolve) => swapEquipmentByApi(settings, worn, { ...options, onDone: resolve }));
+      return;
+    }
+    const missing = findMissingEquipment(settings);
+    if (missing) {
+      await wait(randomGap(1500, 4000));
+      if (!scriptHunting()) await runUntilDone((resolve) => fillEquipmentByApi(settings, missing, { ...options, onDone: resolve }));
     }
   }
 
@@ -5583,6 +5615,95 @@
     else if (pauseTexts.length || alertTexts.length) alertUser(`異常狀態：${[...pauseTexts, ...alertTexts].join('、')}`);
   }
 
+  const handledReportIds = new Set();
+
+  function firstTimeReport(report) {
+    const id = report && report.id;
+    if (!id) return true;
+    if (handledReportIds.has(id)) return false;
+    handledReportIds.add(id);
+    if (handledReportIds.size > 200) handledReportIds.delete(handledReportIds.values().next().value);
+    return true;
+  }
+
+  function applyEquipmentChanges(changes) {
+    if (!changes) return;
+    recordDurabilityChanges(changes);
+    if (!state.equipments.length) return;
+    const deleted = new Set(changes.deletedIds || []);
+    const updated = new Map((Array.isArray(changes.updated) ? changes.updated : []).map((equipment) => [equipment.id, equipment]));
+    state.equipments = state.equipments
+      .filter((equipment) => !deleted.has(equipment.id))
+      .map((equipment) => (updated.has(equipment.id) ? { ...equipment, ...updated.get(equipment.id) } : equipment));
+  }
+
+  // 遊戲自己讀 /api/huntInfo（組隊時隊友打完一場，遊戲收到推播就會重讀）：拿來更新隊伍血量
+  function noticeGameHuntInfo(huntInfo) {
+    if (!huntInfo || !Array.isArray(huntInfo.heroes) || state.forgeMode) return;
+    state.huntInfo = huntInfo;
+    state.heroStats = new Map(huntInfo.heroes.map((hero) => [hero.id, hero]));
+    state.huntTeamIds = huntInfo.heroes.map((hero) => hero.id);
+    state.heroStatsAt = Date.now();
+    renderHuntTeam(huntInfo.heroes);
+  }
+
+  // 組隊推播 /api/hunt/events（text/event-stream）：遊戲讀原本那份，這裡讀複製的那份，只拿裝備變動。
+  // 連線後先補送錯過的舊戰報，收到 caught-up 之後才是新的；舊的不套（耐久會被蓋回舊值），改成之後重讀背包
+  const HUNT_EVENTS_PATTERN = /\/api\/hunt\/events(?:[?#]|$)/;
+  const huntEventsTap = { active: false };
+
+  async function tapHuntEvents(response) {
+    if (!response.ok || !response.body) return;
+    let reader;
+    try {
+      reader = response.clone().body.getReader();
+    } catch {
+      return;
+    }
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let caughtUp = false;
+    huntEventsTap.active = true;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer = (buffer + decoder.decode(value, { stream: true })).replaceAll('\r\n', '\n');
+        let end = buffer.indexOf('\n\n');
+        while (end !== -1) {
+          const lines = buffer.slice(0, end).split('\n');
+          buffer = buffer.slice(end + 2);
+          end = buffer.indexOf('\n\n');
+          const eventName = (lines.find((line) => line.startsWith('event:')) || '').slice(6).trim();
+          if (eventName === 'caught-up') {
+            caughtUp = true;
+            state.equipmentsAt = 0;
+            continue;
+          }
+          if (!caughtUp || eventName !== 'hunt-report') continue;
+          const dataText = lines
+            .filter((line) => line.startsWith('data:'))
+            .map((line) => (line.startsWith('data: ') ? line.slice(6) : line.slice(5)))
+            .join('\n');
+          const detail = (parseJsonText(dataText) || {}).reportDetail;
+          if (detail && firstTimeReport(detail.report)) {
+            applyEquipmentChanges(detail.equipmentChanges);
+            if (state.equipments.length) state.equipmentsAt = Date.now();
+          }
+        }
+      }
+    } catch {
+      // 連線斷了遊戲會自己重連，重連時又會經過這裡
+    } finally {
+      huntEventsTap.active = false;
+      try {
+        reader.releaseLock();
+      } catch {
+        // 已經釋放
+      }
+    }
+  }
+
   function handleHuntResponse(...args) {
     return perfTimed('handleHuntResponse', () => handleHuntResponseUntimed(...args));
   }
@@ -5598,15 +5719,7 @@
       renderHuntTeam(heroes);
     }
     if (Array.isArray(heroes)) rememberHuntTeam(heroes, huntPlace(data.huntInfo));
-    const changes = data.equipmentChanges;
-    if (changes) recordDurabilityChanges(changes);
-    if (changes && state.equipments.length) {
-      const deleted = new Set(changes.deletedIds || []);
-      const updated = new Map((Array.isArray(changes.updated) ? changes.updated : []).map((equipment) => [equipment.id, equipment]));
-      state.equipments = state.equipments
-        .filter((equipment) => !deleted.has(equipment.id))
-        .map((equipment) => (updated.has(equipment.id) ? { ...equipment, ...updated.get(equipment.id) } : equipment));
-    }
+    if (firstTimeReport(data.report)) applyEquipmentChanges(data.equipmentChanges);
     const settings = readSettingsFromPanel();
     if (Array.isArray(heroes) && !state.forgeMode) checkHeroConditions(heroes, settings);
     if (settings.combatEnabled) recordBattleFromApi(data.report);
@@ -5765,8 +5878,10 @@
     return extra || (Array.isArray(equipments) ? `清單 ${equipments.length} 件但這件狀態沒變` : '沒有裝備清單');
   }
 
-  async function swapEquipmentByApi(settings, worn) {
+  async function swapEquipmentByApi(settings, worn, { onDone = null, isCancelled = null, manual = false } = {}) {
     const runId = state.runId;
+    const cancelled = isCancelled || (() => runId !== state.runId);
+    const finish = onDone || (() => continueAfterItem(settings));
     const heroId = worn.equipped;
     const hero = state.heroStats.get(heroId);
     const who = `[換裝] ${hero ? hero.name : heroId} 的${worn.type}「${worn.name}」(耐久 ${worn.dur}/${worn.fullDur})`;
@@ -5776,17 +5891,17 @@
       logItemUse(`${who} ✗ 沒有可替換的閒置裝備`);
       const reason = `${hero ? hero.name : heroId} 的${worn.type}耐久 ${worn.dur}，沒有可替換的閒置裝備`;
       // 改去設定的關卡（通常是比較好打、不太耗耐久的地方），自動移動會接手走過去
-      if (settings.equipEmptyMoveEnabled && settings.equipEmptyArea) {
+      if (!manual && settings.equipEmptyMoveEnabled && settings.equipEmptyArea) {
         if (!isEscapeTarget(settings, 'equipEmpty')) escapeTo(settings, 'equipEmpty', reason);
         continueAfterItem(readSettingsFromPanel());
         return;
       }
-      if (settings.equipApiPauseWhenEmpty) {
+      if (!manual && settings.equipApiPauseWhenEmpty) {
         pauseWithAlert(`${reason}，已暫停`);
         return;
       }
       setStatus(`${who}：沒有可替換的閒置裝備，本輪不再換`);
-      continueAfterItem(settings);
+      finish();
       return;
     }
     const fail = (message) => {
@@ -5794,31 +5909,31 @@
       state.equipmentsAt = 0;
       setStatus(`${who}：${message}，本輪不再換`);
       logItemUse(`${who} ✗ ${message}`);
-      continueAfterItem(settings);
+      finish();
     };
     // 伺服器可能回 200 但其實沒換（例如回一段錯誤訊息），所以要用回應裡的裝備清單確認真的換了
     try {
       // 照手動流程：按角色的「裝備」時遊戲會先讀 /api/heroes，接著才脫下、再穿上
       await requestGameApi(HEROES_API);
       await wait(randomGap(2000, 4000));
-      if (runId !== state.runId) return;
+      if (cancelled()) return;
       const result = await requestGameApi(`${EQUIPMENTS_API}/${worn.id}/unequip`, { method: 'POST' });
       const after = equipmentInResult(result, worn.id);
       if (!after || after.equipped !== null) {
-        if (runId !== state.runId) return;
+        if (cancelled()) return;
         fail(`脫下沒有生效（伺服器回應：${describeEquipResult(result)}）`);
         return;
       }
       state.equipments = result.equipments;
     } catch (error) {
-      if (runId !== state.runId) return;
+      if (cancelled()) return;
       fail(`脫下失敗（${error.message}）`);
       return;
     }
     await wait(randomGap(6000, 12000));
-    if (runId !== state.runId) return;
+    if (cancelled()) return;
     const problem = await putOnEquipmentByApi(heroId, replacement);
-    if (runId !== state.runId) return;
+    if (cancelled()) return;
     if (problem) {
       fail(`已脫下但${problem}，請手動檢查`);
       return;
@@ -5826,7 +5941,7 @@
     const message = `${who} → 換上「${replacement.name}」(耐久 ${replacement.dur}/${replacement.fullDur})`;
     setStatus(message);
     logItemUse(message);
-    continueAfterItem(settings);
+    finish();
   }
 
   // 成功回傳空字串，失敗回傳原因；用回應的裝備清單確認真的穿上了
@@ -5848,27 +5963,29 @@
   }
 
   // 補空只穿不脫；穿完件數沒變多代表遊戲把同部位舊的換下來了（這個部位穿不了更多），之後不再補
-  async function fillEquipmentByApi(settings, { heroId, part, worn, replacement }) {
+  async function fillEquipmentByApi(settings, { heroId, part, worn, replacement }, { onDone = null, isCancelled = null } = {}) {
     const runId = state.runId;
+    const cancelled = isCancelled || (() => runId !== state.runId);
+    const finish = onDone || (() => continueAfterItem(settings));
     const hero = state.heroStats.get(heroId);
     const who = `[補裝] ${hero ? hero.name : heroId} 的${part.name}`;
     state.equipApiSkipped.add(fillKey(heroId, part));
     if (!replacement) {
       setStatus(`${who}：空著但沒有可穿的閒置裝備，本輪不再補`);
       logItemUse(`${who} ✗ 空著但沒有可穿的閒置裝備`);
-      continueAfterItem(settings);
+      finish();
       return;
     }
     await requestGameApi(HEROES_API).catch(() => {});
     await wait(randomGap(4000, 8000));
-    if (runId !== state.runId) return;
+    if (cancelled()) return;
     const problem = await putOnEquipmentByApi(heroId, replacement);
-    if (runId !== state.runId) return;
+    if (cancelled()) return;
     if (problem) {
       state.equipmentsAt = 0;
       setStatus(`${who}：${problem}，本輪不再補`);
       logItemUse(`${who} ✗ ${problem}`);
-      continueAfterItem(settings);
+      finish();
       return;
     }
     const now = state.equipments.filter((equipment) => equipment.equipped === heroId && part.types.includes(equipment.type)).length;
@@ -5878,7 +5995,7 @@
     if (now > worn) state.equipApiSkipped.delete(fillKey(heroId, part));
     setStatus(message);
     logItemUse(message);
-    continueAfterItem(settings);
+    finish();
   }
 
   async function useItem(settings, { group, index }, options) {
@@ -9682,6 +9799,12 @@
       const needsResponse = growthOnly
         ? isHunt || growthHeroId || isHeroList || isForgeData || isPlace
         : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData || itemUseMatch || isPlace || isMoney || isCardMarket || manualMiningMatch || isScratchCard || marketGoodsMatch || reportDetailMatch;
+      if (!growthOnly && method === 'GET' && HUNT_EVENTS_PATTERN.test(url)) {
+        return originalFetch.apply(this, args).then((response) => {
+          tapHuntEvents(response);
+          return response;
+        });
+      }
       if (!needsResponse || STATIC_ASSET_PATTERN.test(url) || isOtherSite) {
         return originalFetch.apply(this, args);
       }
@@ -9792,6 +9915,10 @@
             if (response.ok && isEquipmentList) {
               try {
                 const equipments = JSON.parse(responseText).equipments || [];
+                if (!fromScript && method === 'GET') {
+                  state.equipments = equipments;
+                  state.equipmentsAt = Date.now();
+                }
                 matchPendingForges(equipments);
                 rememberForgedEquipments(equipments);
                 rememberLatestEquipments(equipments);
@@ -9806,6 +9933,10 @@
                 // 回應格式不對就照舊讀畫面
               }
               if (!fromScript && method === 'POST') manualSupplyAfterHunt().catch(() => {});
+            }
+            if (response.ok && !fromScript && method === 'GET' && HUNT_INFO_PATTERN.test(url) && !(state.running && !state.forgeMode)) {
+              noticeGameHuntInfo(parseJsonText(responseText));
+              manualSupplyAfterHunt().catch(() => {});
             }
             recordApi([
               `fetch ${method} ${url}`,
