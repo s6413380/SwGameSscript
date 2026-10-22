@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.18
+// @version      4.19
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -2845,7 +2845,9 @@
     }
     if (Date.now() - Math.max(dashboard.teamAt, dashboard.teamTriedAt) > DASHBOARD_TEAM_FRESH_MILLISECONDS) {
       dashboard.teamTriedAt = Date.now();
-      rememberHuntTeam((await requestGameApi(HUNT_INFO_API, { background: true })).heroes || []);
+      const huntInfo = await requestGameApi(HUNT_INFO_API, { background: true });
+      partyPoll.teammate = Boolean(huntInfo.teammate);
+      rememberHuntTeam(huntInfo.heroes || []);
     }
   }
 
@@ -5644,7 +5646,39 @@
     state.heroStats = new Map(huntInfo.heroes.map((hero) => [hero.id, hero]));
     state.huntTeamIds = huntInfo.heroes.map((hero) => hero.id);
     state.heroStatsAt = Date.now();
+    partyPoll.teammate = Boolean(huntInfo.teammate);
+    writeJsonStorage(PARTY_HUNT_INFO_SEEN_KEY, Date.now());
     renderHuntTeam(huntInfo.heroes);
+  }
+
+  // 遊戲只在「狩獵」頁開著時才連組隊推播；切到別頁就收不到隊友打完的通知，遊戲也不會重讀血量，
+  // 這時自己每 30～60 秒讀一次。同帳號多個分頁共用「最近一次讀到的時間」，免得兩個分頁一起吃藥
+  const PARTY_HUNT_INFO_SEEN_KEY = 'autoClickerV2PartyHuntInfoAt';
+  const partyPoll = { teammate: undefined, inFlight: false, gap: 0 };
+
+  function pollPartyHuntInfo(settings) {
+    if (!settings.manualSupplyEnabled || tabShutDown || state.running || partyPoll.inFlight || tabRole() === 'forge') return;
+    if (partyPoll.teammate === false || huntEventsTap.active) return;
+    if (!partyPoll.gap) partyPoll.gap = randomGap(30000, 60000);
+    if (Date.now() - readJsonStorage(PARTY_HUNT_INFO_SEEN_KEY, 0) < partyPoll.gap) return;
+    partyPoll.gap = 0;
+    partyPoll.inFlight = true;
+    writeJsonStorage(PARTY_HUNT_INFO_SEEN_KEY, Date.now());
+    requestGameApi(HUNT_INFO_API, { background: true })
+      .then((huntInfo) => {
+        if (state.running) return;
+        noticeGameHuntInfo(huntInfo);
+        return manualSupplyAfterHunt();
+      })
+      .catch(() => {})
+      .finally(() => {
+        partyPoll.inFlight = false;
+      });
+  }
+
+  function partyMonitorText(settings) {
+    if (!settings.manualSupplyEnabled || !partyPoll.teammate || state.running) return '';
+    return huntEventsTap.active ? '組隊：推播連線中，隊友打完就檢查要不要補' : '組隊：沒開狩獵頁收不到推播，每 30～60 秒自己讀一次血量';
   }
 
   // 組隊推播 /api/hunt/events（text/event-stream）：遊戲讀原本那份，這裡讀複製的那份，只拿裝備變動。
@@ -7854,6 +7888,8 @@
     );
     if (durabilities.some((value) => value !== '-')) lines.push(`耐久：${durabilities.join(' ')}`);
     if (settings.equipApiEnabled) lines.push(equipMonitorText(settings));
+    const partyLine = partyMonitorText(settings);
+    if (partyLine) lines.push(partyLine);
     if (forgeRunner.running) lines.push(`API 鍛造：執行中（已開 ${forgeRunner.started} 爐${forgeRunner.failures ? `，重試中 ${forgeRunner.failures}/${FORGE_RETRY_LIMIT}` : ''}${forgeRunner.captchaWaiting ? '，等驗證' : ''}${forgeRunner.nameWaiting ? `，暫停開爐等好名稱：${forgeRunner.nameWaiting}` : ''}）`);
     else if (forgeRunner.stoppedReason) lines.push(`API 鍛造已停：${forgeRunner.stoppedReason}`);
     if (miningRunner.running) lines.push(`挖礦：執行中（已收 ${miningRunner.collected} 次${miningRunner.failures ? `，重試中 ${miningRunner.failures}/${FORGE_RETRY_LIMIT}` : ''}）`);
@@ -7883,6 +7919,7 @@
     sampleMoney(settings);
     checkCloudTransfers(settings);
     checkCardMarket(settings);
+    pollPartyHuntInfo(settings);
     keepRunLock();
     keepMiningLock();
     watchMining(settings);
