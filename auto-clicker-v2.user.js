@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.16
+// @version      4.17
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -281,6 +281,8 @@
     // 擊殺英雄數（zoneUsers 的 stats.kill）到這個數就算危險，0＝不看；紅名洗白後還是看得出殺過多少
     playerEscapeKills: 0,
     playerBlacklist: '',
+    // 白名單的玩家紅名、殺很多、在黑名單都不算危險
+    playerWhitelist: '',
     playerEscapeArea: '',
     playerEscapeNumber: 1,
     // 躲開危險玩家後，幾分鐘沒再遇到就走回原本掛機的關卡
@@ -1222,6 +1224,8 @@
         <label class="row"><input data-field="playerEscapeRed" type="checkbox" style="flex:none;width:auto"> 紅名玩家算危險</label>
         <div class="row">擊殺英雄 ≥ ${numberInput('playerEscapeKills', 'min="0" style="flex:none;width:70px"')} 的玩家也算危險<span class="hint" style="margin:0">0＝不看</span></div>
         <div class="row">黑名單<input data-field="playerBlacklist" placeholder="玩家暱稱或 ID，逗號分隔"></div>
+        <div class="row">白名單<input data-field="playerWhitelist" placeholder="不用躲的玩家暱稱或 ID，逗號分隔"></div>
+        <div class="hint">白名單優先：名單上的玩家就算紅名、擊殺數超過、也在黑名單，都不會躲</div>
         <div class="row">不理會的關卡<input data-field="playerIgnoreStages" placeholder="例：大草原1-3、黑暗山洞1-3"></div>
         <div class="row"><label style="flex:none"><input data-field="playerReturnEnabled" type="checkbox" style="width:auto"> 躲開後</label> ${numberInput('playerReturnMinutes', 'min="1"')} 分鐘沒再遇到危險玩家，就走回原本掛機的關卡</div>
         <div class="hint">不理會的關卡寫法：「大草原1-3」＝大草原第 1～3 關；「1-2」＝每個區域的第 1、2 關；「老鼠洞」＝整個老鼠洞；多個用逗號或頓號分開</div>
@@ -6081,19 +6085,26 @@
   const RED_NAME_COLOR = 2;
   const ZONE_USERS_FRESH_MILLISECONDS = 15000;
 
-  function dangerousPlayers(settings) {
-    const blacklist = String(settings.playerBlacklist || '')
+  function playerNameList(text) {
+    return String(text || '')
       .split(/[,，、]/)
       .map((entry) => entry.trim())
       .filter(Boolean);
+  }
+
+  function inPlayerList(list, user) {
+    return list.includes(String(user.id)) || list.includes(String(user.nickname || '').trim());
+  }
+
+  function dangerousPlayers(settings) {
+    const blacklist = playerNameList(settings.playerBlacklist);
+    const whitelist = playerNameList(settings.playerWhitelist);
     const ownId = dashboard.profile && dashboard.profile.id;
     return (state.zoneUsers || []).filter(
       (user) =>
         user.id !== ownId &&
-        ((settings.playerEscapeRed && user.nameColor === RED_NAME_COLOR) ||
-          isKillerPlayer(settings, user) ||
-          blacklist.includes(String(user.id)) ||
-          blacklist.includes(String(user.nickname || '').trim()))
+        !inPlayerList(whitelist, user) &&
+        ((settings.playerEscapeRed && user.nameColor === RED_NAME_COLOR) || isKillerPlayer(settings, user) || inPlayerList(blacklist, user))
     );
   }
 
