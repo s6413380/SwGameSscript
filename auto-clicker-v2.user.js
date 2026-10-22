@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.21
+// @version      4.22
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -440,6 +440,9 @@
     // 有異常就送去休息這麼久，休息完看好了沒，沒好再休息
     miningConditionRestCure: true,
     miningConditionRestMinutes: 60,
+    // 有異常先吃對應的道具（異常名稱=道具名稱），吃三次還沒好才照上面去休息
+    miningCureEnabled: true,
+    miningCureItems: '中毒=解毒劑、燒傷=蘆薈、燃燒=蘆薈',
     miningIntervalHours: 6,
     miningIntervalJitterPercent: 15,
     miningPotionEnabled: true,
@@ -1349,6 +1352,9 @@
       <div class="hint">沒有道具時，體力不到三成或 HP 不到一半會先休息再挖</div>
       <label class="row"><input data-field="miningConditionRest" type="checkbox" style="flex:none;width:auto"> 有異常狀態（中毒…）就不出發、正在挖的提早收，並跳出提醒</label>
       <div class="hint">異常狀態下挖礦可能會死。有異常的角色留在城裡不動，好了才再出發</div>
+      <label class="row"><input data-field="miningCureEnabled" type="checkbox" style="flex:none;width:auto"> 有異常先吃藥，吃三次沒好才去休息</label>
+      <div class="row">吃什麼<input data-field="miningCureItems" placeholder="中毒=解毒劑、燒傷=蘆薈" style="flex:1;min-width:0"></div>
+      <div class="hint">異常名稱=道具名稱，用「、」分隔；名稱有包含就算（「蘆薈」也會用到「蘆薈汁」）</div>
       <label class="row"><input data-field="miningConditionRestCure" type="checkbox" style="flex:none;width:auto"> 有異常就去休息 ${numberInput('miningConditionRestMinutes', 'min="10"')} 分鐘，休息完看好了沒，沒好繼續休息</label>
       <input data-field="miningIgnoreConditions" type="hidden">
       <div style="font-size:12px">不理會這些異常（勾了照常挖）：<span data-role="mining-ignore"></span></div>
@@ -16844,7 +16850,9 @@
       const key = `${hero.id}:${condition.name}:${condition.level}`;
       if (miningNotified.has(key)) return;
       miningNotified.add(key);
-      alertUser(`挖礦：${hero.name} ${condition.name}${condition.level}，${hero.actionState === 4 ? '提早收礦，' : ''}${settings.miningConditionRestCure ? '先去休息，好了才再挖礦' : '好了之前不出發挖礦'}`);
+      const cureItem = settings.miningCureEnabled ? miningCureItemName(miningCureRules(settings), condition) : '';
+      const plan = cureItem ? `先吃${cureItem}，${MINING_CURE_MAX_USES} 次沒好${settings.miningConditionRestCure ? '再去休息' : '就先不出發'}` : settings.miningConditionRestCure ? '先去休息，好了才再挖礦' : '好了之前不出發挖礦';
+      alertUser(`挖礦：${hero.name} ${condition.name}${condition.level}，${hero.actionState === 4 ? '提早收礦，' : ''}${plan}`);
     });
   }
 
@@ -16897,6 +16905,61 @@
           .map((name) => `<label style="display:inline-block;margin-right:8px;white-space:nowrap"><input type="checkbox" data-mining-ignore="${escapeHtml(name)}" ${ignored.includes(name) ? 'checked' : ''} style="width:auto;flex:none"> ${escapeHtml(name)}</label>`)
           .join('')
       : '<span style="color:#a0a0aa">還沒看過異常（自己角色中過的、雲端同步下來別人遇過的，都會列在這裡）</span>';
+  }
+
+  // 挖礦前先吃藥解異常（中毒吃解毒劑、燒傷吃蘆薈）；吃了沒好就換下一瓶，最多三次，還沒好才照原本的去休息
+  const MINING_CURE_MAX_USES = 3;
+
+  function miningCureRules(settings) {
+    return String(settings.miningCureItems || '')
+      .split(/[、,，\n]+/)
+      .map((entry) => entry.split(/[=＝]/).map((part) => part.trim()))
+      .filter(([condition, item]) => condition && item);
+  }
+
+  function miningCureItemName(rules, condition) {
+    const rule = rules.find(([name]) => condition.name.includes(name) || name.includes(condition.name));
+    return rule ? rule[1] : '';
+  }
+
+  async function cureMiningConditions(settings, hero) {
+    const rules = miningCureRules(settings);
+    const result = { hero, used: [], missing: [] };
+    if (!settings.miningCureEnabled || !rules.length) return result;
+    let items = null;
+    for (let count = 0; count < MINING_CURE_MAX_USES; count++) {
+      const wanted = miningConditions(settings, result.hero).map((condition) => miningCureItemName(rules, condition)).filter(Boolean);
+      if (!wanted.length) break;
+      items = items || (await requestGameApi(ITEMS_API)).items || [];
+      const item = wanted.map((name) => items.find((candidate) => candidate.available > 0 && String(candidate.name).includes(name))).find(Boolean);
+      if (!item) {
+        result.missing = [...new Set(wanted)];
+        break;
+      }
+      await wait(itemRequestGap());
+      const reply = await requestGameApi(`${ITEMS_API}/${item.id}/use`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quantity: 1, heroId: hero.id }),
+      });
+      syncGameItemUse(reply);
+      item.available--;
+      result.used.push(item.name);
+      let statuses = reply.heroStatuses;
+      if (statuses === undefined) {
+        try {
+          statuses = (await requestGameApi(`${HEROES_API}/${hero.id}/statuses`)).statuses || [];
+        } catch {
+          statuses = result.hero.statuses;
+        }
+      }
+      result.hero = { ...result.hero, ...(reply.hero || {}), statuses };
+    }
+    if (result.used.length || result.missing.length) {
+      const left = miningConditions(settings, result.hero).map((condition) => condition.name);
+      logItemUse(`［挖礦］${hero.name} ${result.used.length ? `用了 ${result.used.join('、')}，` : ''}${result.missing.length ? `沒有${result.missing.join('、')}，` : ''}${left.length ? `還有${left.join('、')}` : '異常解除'}`);
+    }
+    return result;
   }
 
   const MINING_POTION_MAX_USES = 10;
@@ -16960,6 +17023,10 @@
     }
     if (hero.actionState || hero.perished || hero.hp <= 0 || !inTownHero(hero) || inHuntTeam(hero) || forgeByApiHeroIds(settings).includes(hero.id)) return done;
     hero = await openGameHeroPage(hero, opened);
+    const cure = await cureMiningConditions(settings, hero);
+    hero = cure.hero;
+    if (cure.used.length) done.push(`${hero.name} 吃了 ${cure.used.join('、')}`);
+    if (cure.missing.length) done.push(`${hero.name} 沒有${cure.missing.join('、')}`);
     notifyMiningConditions(settings, hero);
     const conditions = settings.miningConditionRest ? miningConditions(settings, hero) : [];
     if (conditions.length && settings.miningConditionRestCure) {
