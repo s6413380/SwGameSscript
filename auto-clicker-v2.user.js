@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.19
+// @version      4.20
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -13877,8 +13877,7 @@
     if (!button) return;
     event.preventDefault();
     event.stopPropagation();
-    const locked = toggleEquipmentLock(Number(button.dataset.equipLock));
-    showToast(locked ? '已鎖定：這件不能販賣、不能鍊金' : '已解鎖');
+    toggleEquipmentLock(Number(button.dataset.equipLock));
     enhanceEquipmentDetails();
     scanItemTables();
   }, true);
@@ -13888,8 +13887,7 @@
     if (!button) return;
     event.preventDefault();
     event.stopPropagation();
-    const blocked = toggleNoAutoEquip(Number(button.dataset.equipNoAuto));
-    showToast(blocked ? '已保留這件' : '已取消保留');
+    toggleNoAutoEquip(Number(button.dataset.equipNoAuto));
     state.equipApiSkipped.clear();
     enhanceEquipmentDetails();
     scanItemTables();
