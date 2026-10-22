@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.20
+// @version      4.21
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -13868,7 +13868,6 @@
     const skipped = body.equipmentIds.length - kept.length;
     if (!skipped) return null;
     if (!kept.length) return { response: lockedResponse(`勾的 ${skipped} 件都已鎖定，沒有鍊金`) };
-    showToast(`鍊金：略過 ${skipped} 件鎖定的裝備，其他 ${kept.length} 件照常鍊金`);
     return { args: [args[0], { ...init, body: JSON.stringify({ ...body, equipmentIds: kept }) }, ...args.slice(2)] };
   }
 
