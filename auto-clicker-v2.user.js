@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.28
+// @version      4.29
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -8442,6 +8442,13 @@
       state.timerId = planTick(() => tick(settings), randomGap(10000, 20000));
       return;
     }
+    if (/CD|冷卻/.test(String(error && error.message)) && state.huntInfo && state.huntInfo.teammate && (state.apiPartyCooldownErrors = (state.apiPartyCooldownErrors || 0) + 1) < 20) {
+      state.huntInfo = null;
+      partyWait.data = null;
+      setStatus('組隊：隊友剛打過，冷卻中，重讀後再打');
+      state.timerId = planTick(() => tick(settings), randomGap(2000, 5000));
+      return;
+    }
     state.apiHuntFailures = (state.apiHuntFailures || 0) + 1;
     if (state.apiHuntFailures >= 3) {
       pauseWithAlert(`API 打怪連續失敗：${error.message}`);
@@ -8526,6 +8533,13 @@
     }
     const waiting = teammateHeroesNotReady(settings, data.heroes);
     if (!waiting.length) {
+      const teammateCooldown = (Date.parse(data.huntAvailableAt) || 0) - Date.now();
+      if (teammateCooldown > 0) {
+        setStatus(`隊友冷卻中，${Math.ceil(teammateCooldown / 1000)} 秒後再打`);
+        state.timerId = planTick(() => tick(settings), teammateCooldown + randomGap(500, 2000));
+        partyWait.data = null;
+        return true;
+      }
       if (partyWait.since) setStatus('隊友補好了，繼續打');
       partyWait.since = 0;
       partyWait.data = null;
@@ -8582,6 +8596,7 @@
       if (runId !== state.runId) return;
       state.apiHuntFailures = 0;
       state.apiHeroStateErrors = 0;
+      state.apiPartyCooldownErrors = 0;
       syncGameHuntView(data);
       clearItemSkips();
       if (!type) {
