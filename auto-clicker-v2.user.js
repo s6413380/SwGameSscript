@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.24
+// @version      4.25
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -131,6 +131,7 @@
     ['growth', '成長'],
     ['draw', '抽卡'],
     ['scratch', '刮刮樂'],
+    ['sales', '售出'],
     ['loot', '掉落'],
     ['pick', '勾選'],
     ['alert', '提醒'],
@@ -145,7 +146,7 @@
   const TAB_GROUPS = [
     ['hunt', '打怪', ['main', 'health', 'resource', 'move', 'equip', 'train', 'pause']],
     ['forging', '鍛造', ['forge', 'recipe', 'material', 'mining']],
-    ['stats', '統計', ['income', 'combat', 'huntStats', 'loot', 'growth', 'draw', 'scratch']],
+    ['stats', '統計', ['income', 'combat', 'huntStats', 'loot', 'growth', 'draw', 'scratch', 'sales']],
     ['other', '其他', ['pick', 'transfer', 'cardBuy', 'alert', 'cloud', 'log', 'api', 'backup']],
   ];
   const TAB_STORAGE_KEY = 'autoClickerV2Tab';
@@ -510,6 +511,8 @@
     scratchItemValues: '英雄券=35000, 寵物券=5000',
     // 名稱有這些字的道具照拍賣場目前最低單價算（、分隔；留空＝都不用市價）
     scratchMarketNames: '密技',
+    // 記下自己在拍賣場賣掉的裝備、道具、礦石寶石（有掛單時 10～20 分鐘看一次自己的掛單）
+    marketSalesEnabled: true,
     // 腳本沒在掛機、你自己在遊戲裡打怪時，每打一下看血量、體力，低於「補血」「補體力」頁的門檻就用 API 吃藥
     manualSupplyEnabled: true,
     // 腳本沒在掛機時（自己按打怪、或組隊時隊友按），也照 API 換裝的設定換耐久低的裝備
@@ -1485,6 +1488,13 @@
       <div data-role="scratch-stats"></div>
     </div>
 
+    <div data-tab="sales">
+      <label class="row"><input data-field="marketSalesEnabled" type="checkbox" style="flex:none;width:auto"> 記下自己在拍賣場賣掉的東西</label>
+      <div class="hint">遊戲沒有成交紀錄，這裡靠比對「自己的掛單」：上次還在、這次不見、又不是你自己下架的，就算賣掉。有掛單時每 10～20 分鐘看一次自己的掛單，你在遊戲開「我的掛單」也會順便比對；賣出時間是發現的時間，實際會更早一點。轉移用的掛單不算</div>
+      <div class="row"><select data-role="sales-kind" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="equipments">裝備</option><option value="mines">礦石、寶石</option><option value="items">道具</option></select><button data-action="sales-clear">清除紀錄</button></div>
+      <div data-role="sales-stats" style="font-size:12px"></div>
+    </div>
+
     <div data-tab="cardBuy">
       <div class="row"><label style="flex:1"><input data-field="cardBuyEnabled" type="checkbox" style="width:auto"> <b>看拍賣場英雄</b></label><select data-field="cardWatchMode" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="passive">被動（不多發請求）</option><option value="active">主動查（搶卡用）</option></select></div>
       <div class="hint">被動：你在遊戲開拍賣場的英雄頁、切回這個視窗，或停在人口販子頁時，遊戲抓到清單就順便比對，伺服器看到的跟一般玩家一樣。主動：自己去查，要搶卡時才開；每次照真人刷新的樣子，先切到裝備／道具／礦物其中一頁，隔 0.6～2.5 秒再切回英雄</div>
@@ -1868,6 +1878,7 @@
     if (tabId === 'loot') renderLootLedger();
     if (tabId === 'equip') renderDurabilityForecast();
     if (tabId === 'scratch') renderScratchStats();
+    if (tabId === 'sales') renderSalesStats();
     if (tabId === 'forge') {
       renderForgePlanOverview();
       renderNameWeightTable();
@@ -8021,6 +8032,7 @@
     checkCloudTransfers(settings);
     checkCardMarket(settings);
     pollPartyHuntInfo(settings);
+    checkOwnTrades(settings);
     keepRunLock();
     keepMiningLock();
     watchMining(settings);
@@ -9481,6 +9493,11 @@
         writeJsonStorage(SCRATCH_LOG_KEY, []);
         renderScratchStats();
       }
+    } else if (action === 'sales-clear') {
+      if (window.confirm('要清除這個帳號的售出紀錄嗎？掛單中的會留著繼續追')) {
+        saveSales({ ...loadSales(), sold: [] });
+        renderSalesStats();
+      }
     } else if (action === 'draw-clear') {
       if (window.confirm('要清除這個帳號的抽卡紀錄嗎？清掉就找不回來')) {
         writeJsonStorage(DRAW_LOG_KEY, []);
@@ -9939,11 +9956,13 @@
       const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
       const isPlace = PLACE_API_PATTERN.test(url) && (method !== 'GET' || HUNT_INFO_PATTERN.test(url));
       const isMoney = !growthOnly && PLACE_API_PATTERN.test(url) && (method !== 'GET' || MONEY_API_PATTERN.test(url));
+      const ownTradesMatch = !growthOnly && method === 'GET' ? url.match(OWN_TRADES_PATTERN) : null;
+      const isSaleAction = !growthOnly && method === 'POST' && (GOODS_SELL_PATTERN.test(url) || TRADE_CANCEL_PATTERN.test(url) || EQUIPMENT_CANCEL_PATTERN.test(url));
       // 玩家自己在遊戲畫面收礦、派去挖礦、休息
       const manualMiningMatch = !growthOnly && !fromScript && method === 'POST' ? url.match(MINING_ACTION_PATTERN) : null;
       const needsResponse = growthOnly
         ? isHunt || growthHeroId || isHeroList || isForgeData || isPlace
-        : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData || itemUseMatch || isPlace || isMoney || isCardMarket || manualMiningMatch || isScratchCard || marketGoodsMatch || reportDetailMatch;
+        : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData || itemUseMatch || isPlace || isMoney || isCardMarket || manualMiningMatch || isScratchCard || marketGoodsMatch || reportDetailMatch || ownTradesMatch || isSaleAction;
       if (!growthOnly && method === 'GET' && HUNT_EVENTS_PATTERN.test(url)) {
         return originalFetch.apply(this, args).then((response) => {
           tapHuntEvents(response);
@@ -10030,6 +10049,8 @@
             // 角色列表不管是遊戲自己讀（每 16 秒、抽到新卡、買賣角色後）還是腳本讀的，挖礦頁都跟著換，新卡馬上看得到
             if (response.ok && method === 'GET' && isHeroList) noticeHeroList(parseJsonText(responseText));
             if (response.ok && marketGoodsMatch && method === 'GET') noticeMarketGoods(marketGoodsMatch[1], parseJsonText(responseText));
+            if (response.ok && ownTradesMatch) noticeOwnTrades(ownTradesMatch[1], parseJsonText(responseText));
+            if (response.ok && isSaleAction && readSettingsFromPanel().marketSalesEnabled) noteSaleAction(url);
             if (response.ok && reportDetailMatch && method === 'GET') noticeReportDetail(Number(reportDetailMatch[1]), parseJsonText(responseText));
             if (response.ok && method === 'POST' && PVP_ATTACK_PATTERN.test(url)) {
               const data = parseJsonText(responseText);
@@ -11721,6 +11742,224 @@
 
   function scratchRateHtml(rate) {
     return `<span style="color:${rate >= 1 ? '#4ade80' : '#f87171'}">${(rate * 100).toFixed(0)}%</span>`;
+  }
+
+  // 自己賣掉的裝備、道具、礦石寶石：遊戲沒有成交紀錄，只能比對自己的掛單——
+  // 上次還在、這次不見、又不是自己下架的就是賣掉了；數量變少是賣掉一部分
+  const MARKET_SALES_KEY = 'autoClickerV2MarketSales';
+  const SALE_KINDS = { equipments: '裝備', mines: '礦石、寶石', items: '道具' };
+  const OWN_TRADES_PATTERN = /\/api\/trades\?type=(equipments|items|mines)[^#]*own=true/;
+  const TRADE_CANCEL_PATTERN = /\/api\/trades\/(\d+)\/cancel/;
+  const EQUIPMENT_CANCEL_PATTERN = /\/api\/equipments\/(\d+)\/cancelTrade/;
+  const GOODS_SELL_PATTERN = /\/api\/(equipments|items)\/(\d+)\/sell(?:[?#]|$)/;
+  const SALE_STAT_FIELDS = [['atk', '攻'], ['def', '防'], ['int', '智'], ['lck', '幸'], ['wgt', '重']];
+  const SALES_KEEP = 2000;
+  const OWN_TRADES_CHECK_MIN_MILLISECONDS = 10 * 60000;
+  const OWN_TRADES_CHECK_MAX_MILLISECONDS = 20 * 60000;
+  const ownTradesCheck = { inFlight: false, gap: 0, lookedAt: 0 };
+
+  function loadSales() {
+    return { listings: {}, sold: [], cancels: [], sells: [], checkedAt: {}, soonAt: {}, ...(readJsonStorage(MARKET_SALES_KEY, null) || {}) };
+  }
+
+  function saveSales(store) {
+    writeJsonStorage(MARKET_SALES_KEY, store);
+  }
+
+  function saleSnapshot(kind, trade) {
+    const source = trade.equipment && typeof trade.equipment === 'object' ? { ...trade.equipment, ...trade } : trade;
+    const snapshot = { kind, id: String(trade.id), name: source.name || '?', price: Number(source.price) || 0, quantity: Number(source.quantity) || 1, message: source.message || '' };
+    if (kind === 'equipments') {
+      snapshot.type = source.type || '';
+      snapshot.quality = source.quality || '';
+      [...SALE_STAT_FIELDS.map(([field]) => field), 'dur', 'fullDur'].forEach((field) => {
+        if (source[field] !== undefined && source[field] !== null) snapshot[field] = Number(source[field]);
+      });
+    }
+    return snapshot;
+  }
+
+  // 自己掛單、下架：掛單送出後幾秒去看一次自己的掛單，把新的掛單記下來；下架的記著，之後不見了才不會算成賣掉
+  function noteSaleAction(url) {
+    const store = loadSales();
+    const now = Date.now();
+    const sell = url.match(GOODS_SELL_PATTERN);
+    const tradeCancel = url.match(TRADE_CANCEL_PATTERN);
+    const equipmentCancel = url.match(EQUIPMENT_CANCEL_PATTERN);
+    if (sell) {
+      const [, kind, id] = sell;
+      const equipment = kind === 'equipments' ? latestEquipments.get(Number(id)) : null;
+      store.sells.push({ kind, id: Number(id), name: equipment ? equipment.name : '', at: now });
+      const soon = now + randomGap(4000, 8000);
+      (kind === 'items' ? ['items', 'mines'] : [kind]).forEach((saleKind) => (store.soonAt[saleKind] = soon));
+    }
+    if (tradeCancel) store.cancels.push({ tradeId: tradeCancel[1], at: now });
+    if (equipmentCancel) store.cancels.push({ equipmentId: Number(equipmentCancel[1]), at: now });
+    saveSales(store);
+  }
+
+  function takeCancel(store, listing) {
+    const since = (listing.seenAt || 0) - 60000;
+    let index = store.cancels.findIndex((cancel) => cancel.at >= since && (cancel.tradeId === listing.id || (cancel.equipmentId && cancel.equipmentId === listing.sourceId)));
+    // 從裝備頁下架只知道裝備 id；對不上掛單的，就當成這件
+    if (index < 0 && listing.kind === 'equipments') {
+      const linked = new Set(Object.values(store.listings).map((item) => item.sourceId).filter(Boolean));
+      index = store.cancels.findIndex((cancel) => cancel.at >= since && cancel.equipmentId && !linked.has(cancel.equipmentId));
+    }
+    if (index < 0) return false;
+    store.cancels.splice(index, 1);
+    return true;
+  }
+
+  function noticeOwnTrades(kind, data) {
+    const trades = data && Array.isArray(data[kind]) ? data[kind] : null;
+    if (!trades || !readSettingsFromPanel().marketSalesEnabled) return;
+    const store = loadSales();
+    const now = Date.now();
+    const current = new Map(trades.filter((trade) => !TRANSFER_TOKEN_PATTERN.test(String(trade.message || ''))).map((trade) => [String(trade.id), saleSnapshot(kind, trade)]));
+    const addSold = (listing, quantity) =>
+      store.sold.push({ ...listing, quantity, price: Math.round((listing.price / listing.quantity) * quantity), soldAt: now });
+    Object.values(store.listings)
+      .filter((listing) => listing.kind === kind)
+      .forEach((listing) => {
+        const after = current.get(listing.id);
+        if (after) {
+          if (after.quantity < listing.quantity) addSold(listing, listing.quantity - after.quantity);
+          return;
+        }
+        delete store.listings[listing.id];
+        if (!takeCancel(store, listing)) addSold(listing, listing.quantity);
+      });
+    current.forEach((snapshot, id) => {
+      const before = store.listings[id];
+      if (before) {
+        snapshot.listedAt = before.listedAt;
+        snapshot.sourceId = before.sourceId;
+      } else {
+        const sell = store.sells.find((item) => !item.used && (item.kind === kind || (item.kind === 'items' && kind === 'mines')) && (!item.name || item.name === snapshot.name));
+        if (sell) {
+          sell.used = true;
+          snapshot.sourceId = sell.id;
+        }
+        snapshot.listedAt = sell ? sell.at : now;
+      }
+      snapshot.seenAt = now;
+      store.listings[id] = snapshot;
+    });
+    if (store.sold.length > SALES_KEEP) store.sold = store.sold.slice(-SALES_KEEP);
+    store.cancels = store.cancels.filter((cancel) => now - cancel.at < 86400000);
+    store.sells = store.sells.filter((sell) => !sell.used && now - sell.at < 3600000);
+    store.checkedAt[kind] = now;
+    delete store.soonAt[kind];
+    saveSales(store);
+    if (activeTab === 'sales') renderSalesStats();
+  }
+
+  // 有掛單才看，第一次用時三種各看一次把現有的掛單記下來；多個分頁共用時間，不會一起看
+  function checkOwnTrades(settings) {
+    const now = Date.now();
+    if (!settings.marketSalesEnabled || tabShutDown || ownTradesCheck.inFlight || now - ownTradesCheck.lookedAt < 5000) return;
+    ownTradesCheck.lookedAt = now;
+    const store = loadSales();
+    if (!ownTradesCheck.gap) ownTradesCheck.gap = randomGap(OWN_TRADES_CHECK_MIN_MILLISECONDS, OWN_TRADES_CHECK_MAX_MILLISECONDS);
+    const listed = (kind) => Object.values(store.listings).some((listing) => listing.kind === kind);
+    const kind = Object.keys(SALE_KINDS).find(
+      (saleKind) => (store.soonAt[saleKind] && store.soonAt[saleKind] <= now) || !store.checkedAt[saleKind] || (listed(saleKind) && now - store.checkedAt[saleKind] > ownTradesCheck.gap)
+    );
+    if (!kind) return;
+    ownTradesCheck.gap = 0;
+    ownTradesCheck.inFlight = true;
+    store.checkedAt[kind] = now;
+    delete store.soonAt[kind];
+    saveSales(store);
+    requestGameApi(`/api/trades?type=${kind}&own=true`, { background: true })
+      .catch(() => {})
+      .finally(() => {
+        ownTradesCheck.inFlight = false;
+      });
+  }
+
+  function saleMoney(value) {
+    return `$${Math.round(value).toLocaleString()}`;
+  }
+
+  function saleAge(milliseconds) {
+    const hours = milliseconds / 3600000;
+    if (hours < 1) return `${Math.max(1, Math.round(milliseconds / 60000))} 分`;
+    if (hours < 48) return `${hours.toFixed(1)} 小時`;
+    return `${(hours / 24).toFixed(1)} 天`;
+  }
+
+  function saleTime(at) {
+    return new Date(at).toLocaleString('zh-TW', { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+
+  function saleStatsText(sale) {
+    const stats = SALE_STAT_FIELDS.filter(([field]) => sale[field]).map(([field, label]) => `${label}${sale[field]}`);
+    if (sale.fullDur) stats.push(`耐${sale.dur ?? '?'}/${sale.fullDur}`);
+    return stats.join(' ');
+  }
+
+  function median(values) {
+    const sorted = [...values].sort((first, second) => first - second);
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+  }
+
+  function renderSalesStats() {
+    const box = panel.querySelector('[data-role="sales-stats"]');
+    if (!box) return;
+    const kind = panel.querySelector('[data-role="sales-kind"]').value || 'equipments';
+    const store = loadSales();
+    const now = Date.now();
+    const sold = store.sold.filter((sale) => sale.kind === kind).sort((first, second) => second.soldAt - first.soldAt);
+    const listings = Object.values(store.listings).filter((listing) => listing.kind === kind);
+    const equipment = kind === 'equipments';
+    const label = (sale) => escapeHtml(equipment ? `${sale.quality ? `${sale.quality}・` : ''}${sale.name}${sale.type ? `（${sale.type}）` : ''}` : sale.name);
+    const unit = (sale) => sale.price / sale.quantity;
+    const total = sold.reduce((sum, sale) => sum + sale.price, 0);
+    const checked = store.checkedAt[kind] ? `，上次看掛單 ${saleTime(store.checkedAt[kind])}` : '';
+    let html = `<div style="margin:4px 0">賣掉 <b>${sold.length}</b> 筆${equipment ? '' : `（${sold.reduce((sum, sale) => sum + sale.quantity, 0).toLocaleString()} 個）`}，共 <b style="color:#fcd34d">${saleMoney(total)}</b>；掛單中 ${listings.length} 筆${checked}</div>`;
+
+    // 價格參考：裝備照種類＋品質分組，道具和礦石照名稱看單價
+    const groups = new Map();
+    sold.forEach((sale) => {
+      const key = equipment ? `${sale.type || '?'}｜${sale.quality || '?'}` : sale.name;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(sale);
+    });
+    if (groups.size) {
+      const rows = [...groups.entries()]
+        .sort((first, second) => second[1].length - first[1].length)
+        .map(([key, list]) => {
+          const prices = list.map(unit);
+          const name = equipment ? key.replace('｜', ' ') : key;
+          const count = equipment ? list.length : list.reduce((sum, sale) => sum + sale.quantity, 0);
+          return `<tr><td style="text-align:left">${escapeHtml(name)}</td><td>${count.toLocaleString()}</td><td>${unitPriceText(Math.min(...prices))}</td><td>${unitPriceText(median(prices))}</td><td>${unitPriceText(Math.max(...prices))}</td></tr>`;
+        })
+        .join('');
+      html += `<div class="subhead">${equipment ? '價格參考（種類＋品質）' : '單價參考'}</div>
+        <table class="combat" style="width:100%"><tr><th style="text-align:left">${equipment ? '種類 品質' : '名稱'}</th><th>${equipment ? '件' : '個'}</th><th>最低</th><th>中位</th><th>最高</th></tr>${rows}</table>`;
+    }
+
+    if (listings.length) {
+      const rows = listings
+        .sort((first, second) => first.listedAt - second.listedAt)
+        .map((listing) => `<tr><td style="text-align:left">${label(listing)}${equipment ? `<div style="color:#a0a0aa">${saleStatsText(listing)}</div>` : ''}</td><td>${equipment ? '' : `${listing.quantity.toLocaleString()} 個<br>`}${saleMoney(listing.price)}${equipment ? '' : `<div style="color:#a0a0aa">單價 ${unitPriceText(unit(listing))}</div>`}</td><td>${saleAge(now - listing.listedAt)}</td></tr>`)
+        .join('');
+      html += `<div class="subhead">掛單中</div><table class="combat" style="width:100%"><tr><th style="text-align:left">名稱</th><th>價格</th><th>掛了</th></tr>${rows}</table>`;
+    }
+
+    if (sold.length) {
+      const rows = sold
+        .slice(0, 50)
+        .map((sale) => `<tr><td style="text-align:left">${saleTime(sale.soldAt)}</td><td style="text-align:left">${label(sale)}${equipment ? `<div style="color:#a0a0aa">${saleStatsText(sale)}</div>` : `<div style="color:#a0a0aa">${sale.quantity.toLocaleString()} 個，單價 ${unitPriceText(unit(sale))}</div>`}</td><td>${saleMoney(sale.price)}</td><td>≤${saleAge(sale.soldAt - sale.listedAt)}</td></tr>`)
+        .join('');
+      html += `<div class="subhead">最近賣掉（最多 50 筆）</div><table class="combat" style="width:100%"><tr><th style="text-align:left">發現</th><th style="text-align:left">名稱</th><th>價格</th><th>掛多久</th></tr>${rows}</table>`;
+    } else {
+      html += '<div class="hint">還沒有賣掉的紀錄：在遊戲拍賣場掛單後，賣掉了這裡就會記下來</div>';
+    }
+    box.innerHTML = html;
   }
 
   function renderScratchStats() {
@@ -18632,6 +18871,7 @@
   panel.querySelector('[data-role="loot-period"]').addEventListener('change', renderLootLedger);
   panel.querySelector('[data-role="recipe-show-all"]').addEventListener('change', renderRecipePicker);
   panel.querySelector('[data-role="scratch-card"]').addEventListener('change', renderScratchStats);
+  panel.querySelector('[data-role="sales-kind"]').addEventListener('change', renderSalesStats);
   panel.querySelector('[data-role="scratch-scope"]').addEventListener('change', renderScratchStats);
   panel.querySelector('[data-role="draw-scope"]').addEventListener('change', renderDrawStats);
   panel.querySelector('[data-role="material-summary"]').addEventListener('input', (event) => {
