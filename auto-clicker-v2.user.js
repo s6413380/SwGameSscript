@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.22
+// @version      4.23
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -294,6 +294,10 @@
     deathPauseEnabled: true,
     // 異常狀態（中毒、燒傷…）：0＝不處理、1＝輕度以上、2＝中度以上、3＝重度
     statusAlertLevel: 2,
+    // 自動打怪中了異常（到這個程度）先吃對應的道具，吃三次還沒好才照上面提醒／暫停
+    huntCureEnabled: true,
+    huntCureLevel: 3,
+    huntCureItems: '中毒=解毒劑',
     // 執行中不在狩獵頁／鍛造頁就自動切過去
     autoNavigateEnabled: true,
     // 打怪改直接打 API：不用停在狩獵頁，同一個分頁可以同時 API 鍛造
@@ -1218,6 +1222,9 @@
       <div class="row">　🔔 只提醒、繼續打：<select data-field="statusAlertLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">不處理</option><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select></div>
       <div class="row">　⏸ 暫停：<select data-field="statusPauseLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">不處理</option><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select></div>
       <div class="hint">例：提醒選「輕度以上」、暫停選「重度」＝輕度、中度只響提醒，重度才停下來</div>
+      <div class="row"><label style="flex:none;display:flex;align-items:center;gap:4px"><input data-field="huntCureEnabled" type="checkbox" style="flex:none;width:auto"> 自動打怪時</label><select data-field="huntCureLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select>先吃藥</div>
+      <div class="row">吃什麼<input data-field="huntCureItems" placeholder="中毒=解毒劑、燒傷=蘆薈" style="flex:1;min-width:0"></div>
+      <div class="hint">異常名稱=道具名稱，「、」分隔。吃三次還沒好、或沒有藥，才照上面的提醒／暫停</div>
       <div class="row">撿到稀有道具提醒<input data-field="lootRareNames" placeholder="名稱包含這些字就提醒，逗號分隔"></div>
       <label class="row"><input data-field="lootRarePause" type="checkbox" style="flex:none;width:auto"> 撿到稀有道具時暫停掛機（沒勾就只在右下角小提示）</label>
       <fieldset class="group">
@@ -5608,7 +5615,7 @@
       heroConditions(hero).forEach((condition) => {
         const key = `${hero.id}:${condition.name}:${condition.severity}`;
         active.add(key);
-        if (notifiedConditions.has(key)) return;
+        if (notifiedConditions.has(key) || huntCurePending(settings, hero, condition)) return;
         const text = `${hero.name} ${condition.level}${condition.name}`;
         if (pauseLevel && condition.severity >= pauseLevel) pauseTexts.push(text);
         else if (alertLevel && condition.severity >= alertLevel) alertTexts.push(text);
@@ -5621,6 +5628,80 @@
     });
     if (pauseTexts.length && state.running && !state.forgeMode) pauseWithAlert(`異常狀態：${[...pauseTexts, ...alertTexts].join('、')}`);
     else if (pauseTexts.length || alertTexts.length) alertUser(`異常狀態：${[...pauseTexts, ...alertTexts].join('、')}`);
+  }
+
+  // 自動打怪吃藥解異常：每人每種異常最多吃三次，異常消失就重算
+  const HUNT_CURE_MAX_USES = 3;
+  const huntCureTries = new Map();
+
+  function huntCureKey(hero, condition) {
+    return `${hero.id}:${condition.name}`;
+  }
+
+  function huntCureItem(settings, condition) {
+    if (!settings.huntCureEnabled || condition.severity < (Number(settings.huntCureLevel) || 3)) return '';
+    return cureItemName(cureRules(settings.huntCureItems), condition);
+  }
+
+  function huntCurePending(settings, hero, condition) {
+    return state.running && !state.forgeMode && Boolean(huntCureItem(settings, condition)) && (huntCureTries.get(huntCureKey(hero, condition)) || 0) < HUNT_CURE_MAX_USES;
+  }
+
+  function findHeroNeedingCure(settings) {
+    const present = new Set();
+    let found = null;
+    state.heroStats.forEach((hero) => {
+      if (hero.perished || hero.hp <= 0) return;
+      heroConditions(hero).forEach((condition) => {
+        present.add(huntCureKey(hero, condition));
+        if (!found && huntCurePending(settings, hero, condition)) found = { hero, condition, itemName: huntCureItem(settings, condition) };
+      });
+    });
+    [...huntCureTries.keys()].filter((key) => !present.has(key)).forEach((key) => huntCureTries.delete(key));
+    return found;
+  }
+
+  async function cureHuntHero(settings, { hero, condition, itemName }) {
+    const runId = state.runId;
+    const key = huntCureKey(hero, condition);
+    const tries = (huntCureTries.get(key) || 0) + 1;
+    huntCureTries.set(key, tries);
+    const who = `［解異常］${hero.name} ${condition.level}${condition.name}`;
+    try {
+      const items = (await requestGameApi(ITEMS_API)).items || [];
+      if (runId !== state.runId) return;
+      const item = items.find((candidate) => candidate.available > 0 && String(candidate.name).includes(itemName));
+      if (!item) {
+        huntCureTries.set(key, HUNT_CURE_MAX_USES);
+        setStatus(`${who}：沒有${itemName}`);
+        logItemUse(`${who} ✗ 沒有${itemName}`);
+      } else {
+        await wait(itemRequestGap());
+        if (runId !== state.runId) return;
+        const reply = await requestGameApi(`${ITEMS_API}/${item.id}/use`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ quantity: 1, heroId: hero.id }),
+        });
+        syncGameItemUse(reply);
+        let statuses = reply.heroStatuses;
+        if (statuses === undefined) statuses = (await requestGameApi(`${HEROES_API}/${hero.id}/statuses`).catch(() => ({}))).statuses || hero.statuses;
+        if (runId !== state.runId) return;
+        const updated = { ...(state.heroStats.get(hero.id) || hero), ...(reply.hero || {}), statuses };
+        state.heroStats.set(hero.id, updated);
+        state.heroStatsAt = Date.now();
+        const cured = !heroConditions(updated).some((item) => item.name === condition.name);
+        const message = `${who} → 用了 ${item.name}（第 ${tries}/${HUNT_CURE_MAX_USES} 次）${cured ? '，好了' : '，還沒好'}`;
+        setStatus(message);
+        logItemUse(message);
+      }
+    } catch (error) {
+      if (runId !== state.runId) return;
+      logItemUse(`${who} ✗ 吃藥失敗（${error.message}）`);
+    }
+    // 吃滿三次或沒藥：照「異常狀態」的提醒／暫停設定處理
+    checkHeroConditions([...state.heroStats.values()], settings);
+    if (runId === state.runId) continueAfterItem(settings);
   }
 
   const handledReportIds = new Set();
@@ -8654,6 +8735,13 @@
     if (supplyTarget) {
       if (waitToReact(settings, 'supply', '補給')) return;
       useItem(settings, supplyTarget);
+      return;
+    }
+
+    const cureTarget = state.needRest ? null : findHeroNeedingCure(settings);
+    if (cureTarget) {
+      if (waitToReact(settings, 'supply', '吃藥解異常')) return;
+      cureHuntHero(settings, cureTarget);
       return;
     }
 
@@ -16850,7 +16938,7 @@
       const key = `${hero.id}:${condition.name}:${condition.level}`;
       if (miningNotified.has(key)) return;
       miningNotified.add(key);
-      const cureItem = settings.miningCureEnabled ? miningCureItemName(miningCureRules(settings), condition) : '';
+      const cureItem = settings.miningCureEnabled ? cureItemName(miningCureRules(settings), condition) : '';
       const plan = cureItem ? `先吃${cureItem}，${MINING_CURE_MAX_USES} 次沒好${settings.miningConditionRestCure ? '再去休息' : '就先不出發'}` : settings.miningConditionRestCure ? '先去休息，好了才再挖礦' : '好了之前不出發挖礦';
       alertUser(`挖礦：${hero.name} ${condition.name}${condition.level}，${hero.actionState === 4 ? '提早收礦，' : ''}${plan}`);
     });
@@ -16910,14 +16998,18 @@
   // 挖礦前先吃藥解異常（中毒吃解毒劑、燒傷吃蘆薈）；吃了沒好就換下一瓶，最多三次，還沒好才照原本的去休息
   const MINING_CURE_MAX_USES = 3;
 
-  function miningCureRules(settings) {
-    return String(settings.miningCureItems || '')
+  function cureRules(text) {
+    return String(text || '')
       .split(/[、,，\n]+/)
       .map((entry) => entry.split(/[=＝]/).map((part) => part.trim()))
       .filter(([condition, item]) => condition && item);
   }
 
-  function miningCureItemName(rules, condition) {
+  function miningCureRules(settings) {
+    return cureRules(settings.miningCureItems);
+  }
+
+  function cureItemName(rules, condition) {
     const rule = rules.find(([name]) => condition.name.includes(name) || name.includes(condition.name));
     return rule ? rule[1] : '';
   }
@@ -16928,7 +17020,7 @@
     if (!settings.miningCureEnabled || !rules.length) return result;
     let items = null;
     for (let count = 0; count < MINING_CURE_MAX_USES; count++) {
-      const wanted = miningConditions(settings, result.hero).map((condition) => miningCureItemName(rules, condition)).filter(Boolean);
+      const wanted = miningConditions(settings, result.hero).map((condition) => cureItemName(rules, condition)).filter(Boolean);
       if (!wanted.length) break;
       items = items || (await requestGameApi(ITEMS_API)).items || [];
       const item = wanted.map((name) => items.find((candidate) => candidate.available > 0 && String(candidate.name).includes(name))).find(Boolean);
