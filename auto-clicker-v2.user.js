@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.29
+// @version      4.30
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -5579,10 +5579,10 @@
   async function manualSupplyAfterHunt() {
     const settings = readSettingsFromPanel();
     if (!settings.manualSupplyEnabled || tabShutDown || manualSupply.busy) return;
-    if (state.running && !state.forgeMode) return;
+    if (scriptHuntingActive()) return;
     manualSupply.busy = true;
     state.itemUsedSlots.clear();
-    const scriptHunting = () => state.running && !state.forgeMode;
+    const scriptHunting = scriptHuntingActive;
     try {
       for (let round = 0; round < MANUAL_SUPPLY_MAX_ROUNDS; round++) {
         const target = manualSupplyTarget(settings);
@@ -5803,7 +5803,7 @@
   const partyPoll = { teammate: undefined, inFlight: false, gap: 0 };
 
   function pollPartyHuntInfo(settings) {
-    if (!settings.manualSupplyEnabled || tabShutDown || state.running || partyPoll.inFlight || tabRole() === 'forge') return;
+    if (!settings.manualSupplyEnabled || tabShutDown || scriptHuntingActive() || partyPoll.inFlight || tabRole() === 'forge') return;
     if (partyPoll.teammate === false || huntEventsTap.active) return;
     if (!partyPoll.gap) partyPoll.gap = randomGap(30000, 60000);
     if (Date.now() - readJsonStorage(PARTY_HUNT_INFO_SEEN_KEY, 0) < partyPoll.gap) return;
@@ -5812,7 +5812,7 @@
     writeJsonStorage(PARTY_HUNT_INFO_SEEN_KEY, Date.now());
     requestGameApi(HUNT_INFO_API, { background: true })
       .then((huntInfo) => {
-        if (state.running) return;
+        if (scriptHuntingActive()) return;
         noticeGameHuntInfo(huntInfo);
         return manualSupplyAfterHunt();
       })
@@ -5823,7 +5823,7 @@
   }
 
   function partyMonitorText(settings) {
-    if (!settings.manualSupplyEnabled || !partyPoll.teammate || state.running) return '';
+    if (!settings.manualSupplyEnabled || !partyPoll.teammate || scriptHuntingActive()) return '';
     return huntEventsTap.active ? '組隊：推播連線中，隊友打完就檢查要不要補' : '組隊：沒開狩獵頁收不到推播，每 30～60 秒自己讀一次血量';
   }
 
@@ -7015,7 +7015,13 @@
   const FINISH_MOVE_DEFAULT_TEXT = '完成移動';
 
   // 低調模式：休息時間是這個分頁自己的，掛機和 API 鍛造一起休息
-  const lowProfile = { sessionEnd: 0, breakUntil: 0, sleepUntil: 0, reaction: null, checkin: null, nextCheckinAt: 0 };
+  const lowProfile = { sessionEnd: 0, breakUntil: 0, sleepUntil: 0, reaction: null, checkin: null, nextCheckinAt: 0, awayUntil: 0 };
+
+  // 低調模式離開中（休息、休閒、睡覺）腳本整段不動；組隊時隊友照打，自己的角色還是會掉血，
+  // 這段時間當成沒在掛機，讓「沒掛機時自己吃藥」接手
+  function scriptHuntingActive() {
+    return state.running && !state.forgeMode && Date.now() >= lowProfile.awayUntil;
+  }
 
   // 同一個字串永遠得到同一串亂數：帳號個性、每天的睡覺時間重新整理後才不會變
   function seededRandom(text) {
@@ -7335,7 +7341,11 @@
   function lowProfileDelay(settings, delay) {
     if (!settings.lowProfileEnabled) return delay;
     const breakLeft = lowProfileBreakLeft(settings);
-    if (breakLeft) return Math.max(delay, breakLeft + randomGap(1000, 5000));
+    if (breakLeft) {
+      const away = Math.max(delay, breakLeft + randomGap(1000, 5000));
+      lowProfile.awayUntil = Date.now() + away;
+      return away;
+    }
     const personality = accountPersonality();
     const extra =
       Math.random() < personality.distractChance ? randomGap(30000, 120000) : randomSkewedSeconds(1, 8) * 1000 * personality.speed;
@@ -8820,6 +8830,7 @@
 
   function tickUntimed() {
     if (!state.running) return;
+    lowProfile.awayUntil = 0;
     // 每一步都重讀面板：要換裝的角色、可用道具這些清單常在按開始之後才勾，沿用開始時的設定會一直看不到
     const settings = readSettingsFromPanel();
     if (shouldPause(settings)) return;
@@ -10257,7 +10268,7 @@
               }
               if (!fromScript && method === 'POST') manualSupplyAfterHunt().catch(() => {});
             }
-            if (response.ok && !fromScript && method === 'GET' && HUNT_INFO_PATTERN.test(url) && !(state.running && !state.forgeMode)) {
+            if (response.ok && !fromScript && method === 'GET' && HUNT_INFO_PATTERN.test(url) && !scriptHuntingActive()) {
               noticeGameHuntInfo(parseJsonText(responseText));
               manualSupplyAfterHunt().catch(() => {});
             }
