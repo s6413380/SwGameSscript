@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.26
+// @version      4.27
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -332,6 +332,11 @@
     // 主帳號照常打；其他帳號（小號）打怪頻率只有主帳號的幾 %
     mainAccountName: '',
     sideHuntPercent: 50,
+    // 組隊同地點時，隊友的角色血（體力）沒補到這個 % 就先不打；等太久提醒（對方腳本可能卡住）
+    partyWaitEnabled: true,
+    partyWaitHpPercent: 100,
+    partyWaitSpPercent: 0,
+    partyWaitAlertMinutes: 5,
     // 三個帳號同步＝當成同一個人：共用設定經中繼站同步，低調模式的玩／休息／睡覺時間表也一樣
     syncAccountsEnabled: true,
     // 全體暫時暫停幾分鐘後自動開始
@@ -1069,6 +1074,10 @@
       <div class="row"><b>主帳號</b> <input data-field="mainAccountName" placeholder="留空＝沒有" style="width:110px;flex:none"> <button data-action="main-account-me" style="flex:none">設成這個帳號</button></div>
       <div class="row">小號打怪頻率是主帳號的 ${numberInput('sideHuntPercent', 'min="10" max="100" step="5"')} %</div>
       <div class="hint">填帳號名稱。主帳號照常打；其他帳號每次打怪後多等一段（每次長短不一），50% 約兩輪打一次，讓出來的時間給主帳號。只影響 API 打怪，鍛造照常。三個帳號自動同步</div>
+      <label class="row"><input data-field="partyWaitEnabled" type="checkbox" style="flex:none;width:auto"> <b>組隊時等隊友補好</b>再打</label>
+      <div class="row">隊友每隻角色血 ≥ ${numberInput('partyWaitHpPercent', 'min="1" max="100" step="5"')} %、體力 ≥ ${numberInput('partyWaitSpPercent', 'min="0" max="100" step="5"')} %</div>
+      <div class="row">等超過 ${numberInput('partyWaitAlertMinutes', 'min="1"')} 分鐘就提醒</div>
+      <div class="hint">只在跟隊友同地點組隊時作用：每次打怪前看一次隊友的角色，沒補到就每 5～10 秒再看，補好才打。體力填 0＝不看體力。死掉的角色也算沒補好</div>
       <label class="row"><input data-field="syncAccountsEnabled" type="checkbox" style="flex:none;width:auto"> <b>三個帳號同步</b>（當成同一個人）</label>
       <div class="hint">要開中繼站。低調模式、多開輪流、轉移模式的設定在任一個帳號改了，其他帳號約 10 秒內跟著改；低調模式的玩／休息／睡覺時間表三個帳號一樣，一起停下來休息（手速、分心還是各帳號自己的）</div>
       <div class="hint" data-role="sync-accounts-status"></div>
@@ -8433,6 +8442,82 @@
   // 重複按開始時上一次打怪可能還在路上；不跟著 runId 重設，才擋得住緊接著再打一次
   let apiHuntInFlight = false;
 
+  // 組隊時隊友那邊的腳本卡住（沒喝水），我這邊還一直按打怪，隊友的角色會被拖死；
+  // 打怪前讀 /api/teammate（遊戲狩獵頁本來就一直在讀），隊友的角色沒補到門檻就先等
+  const TEAMMATE_API = '/api/teammate';
+  const TEAMMATE_FRESH_MILLISECONDS = 3000;
+  const partyWait = { data: null, checkedAt: 0, inFlight: false, since: 0, alerted: false };
+
+  function inPartyNow() {
+    if (state.huntInfo) return Boolean(state.huntInfo.teammate);
+    return partyPoll.teammate !== false;
+  }
+
+  function teammateHeroesNotReady(settings, heroes) {
+    const hpPercent = Math.min(100, Math.max(1, Number(settings.partyWaitHpPercent) || 100));
+    const spPercent = Math.min(100, Math.max(0, Number(settings.partyWaitSpPercent) || 0));
+    return heroes.filter((hero) => {
+      const hp = Number(hero.hp) || 0;
+      const fullHp = Number(hero.fullHp) || 0;
+      if (hp <= 0 || hp < (fullHp * hpPercent) / 100) return true;
+      return spPercent > 0 && Number(hero.sp) < (Number(hero.fullSp) * spPercent) / 100;
+    });
+  }
+
+  function waitForTeammateReady(settings) {
+    if (!settings.partyWaitEnabled || !inPartyNow()) {
+      partyWait.since = 0;
+      return false;
+    }
+    const runId = state.runId;
+    if (!partyWait.data || Date.now() - partyWait.checkedAt > TEAMMATE_FRESH_MILLISECONDS) {
+      if (partyWait.inFlight) return true;
+      partyWait.inFlight = true;
+      requestGameApi(TEAMMATE_API)
+        .then((data) => {
+          partyWait.data = data || {};
+          partyWait.checkedAt = Date.now();
+          if (!('heroes' in partyWait.data)) partyPoll.teammate = false;
+        })
+        .catch((error) => {
+          // 讀不到就不擋，免得自己這邊也卡住
+          partyWait.data = { error: error.message };
+          partyWait.checkedAt = Date.now();
+        })
+        .finally(() => {
+          partyWait.inFlight = false;
+          if (runId === state.runId) state.timerId = planTick(() => tick(settings), randomGap(300, 800));
+        });
+      return true;
+    }
+    const data = partyWait.data;
+    if (data.error || !data.huntTogether || !Array.isArray(data.heroes)) {
+      partyWait.since = 0;
+      return false;
+    }
+    const waiting = teammateHeroesNotReady(settings, data.heroes);
+    if (!waiting.length) {
+      if (partyWait.since) setStatus('隊友補好了，繼續打');
+      partyWait.since = 0;
+      partyWait.data = null;
+      return false;
+    }
+    if (!partyWait.since) {
+      partyWait.since = Date.now();
+      partyWait.alerted = false;
+    }
+    const who = (data.teammate && data.teammate.nickname) || '隊友';
+    const detail = waiting.map((hero) => `${hero.name} ${Number(hero.hp) <= 0 ? '倒下' : `血 ${hero.hp}/${hero.fullHp}`}`).join('、');
+    const minutes = (Date.now() - partyWait.since) / 60000;
+    setStatus(`等${who}補好再打：${detail}（等了 ${Math.floor(minutes)} 分）`);
+    if (!partyWait.alerted && minutes >= Math.max(1, Number(settings.partyWaitAlertMinutes) || 5)) {
+      partyWait.alerted = true;
+      alertUser(`${who}的角色 ${Math.floor(minutes)} 分鐘還沒補好（${detail}），對方腳本可能卡住了；這邊會繼續等，補好就自己接著打`);
+    }
+    state.timerId = planTick(() => tick(settings), randomGap(5000, 10000));
+    return true;
+  }
+
   // 冷卻還沒過、或上一次還沒回來就打，伺服器一定回「仍在CD中」：先等。回傳 true＝已排好下一步
   function waitForHuntCooldown(settings, move) {
     if (move && !move.type) return false;
@@ -8835,6 +8920,8 @@
           state.timerId = planTick(() => tick(settings), randomGap(10000, 20000));
         } else if (waitForBusyHuntTeam(settings)) {
           return;
+        } else if ((!move || move.type) && waitForTeammateReady(settings)) {
+          return;
         } else if (!waitForHuntCooldown(settings, move)) {
           if (move) performApiMove(settings, move);
           else huntByApi(settings, '');
@@ -8848,6 +8935,7 @@
         return;
       }
       if (pauseIfResourceLow(settings)) return;
+      if (waitForTeammateReady(settings)) return;
       if (clickBySelector(settings.selectorA)) {
         clearItemSkips();
         state.clickCountA++;
