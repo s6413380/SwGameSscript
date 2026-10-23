@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.27
+// @version      4.28
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -337,6 +337,8 @@
     partyWaitHpPercent: 100,
     partyWaitSpPercent: 0,
     partyWaitAlertMinutes: 5,
+    // 打怪中自動暫停（死人、血低、異常、稀有掉落…）就順便解除組隊，隊友那邊不會被拖著打或一直等
+    partyLeaveOnPause: true,
     // 三個帳號同步＝當成同一個人：共用設定經中繼站同步，低調模式的玩／休息／睡覺時間表也一樣
     syncAccountsEnabled: true,
     // 全體暫時暫停幾分鐘後自動開始
@@ -1077,6 +1079,8 @@
       <label class="row"><input data-field="partyWaitEnabled" type="checkbox" style="flex:none;width:auto"> <b>組隊時等隊友補好</b>再打</label>
       <div class="row">隊友每隻角色血 ≥ ${numberInput('partyWaitHpPercent', 'min="1" max="100" step="5"')} %、體力 ≥ ${numberInput('partyWaitSpPercent', 'min="0" max="100" step="5"')} %</div>
       <div class="row">等超過 ${numberInput('partyWaitAlertMinutes', 'min="1"')} 分鐘就提醒</div>
+      <label class="row"><input data-field="partyLeaveOnPause" type="checkbox" style="flex:none;width:auto"> 打怪中自動暫停時順便<b>離開隊伍</b></label>
+      <div class="hint">把隊友暱稱清空（跟遊戲裡設成空白一樣）。活人驗證、同帳號另一個分頁在打的暫停不離隊；自己按停止也不會。要再組隊得重新設定隊友</div>
       <div class="hint">只在跟隊友同地點組隊時作用：每次打怪前看一次隊友的角色，沒補到就每 5～10 秒再看，補好才打。體力填 0＝不看體力。死掉的角色也算沒補好</div>
       <label class="row"><input data-field="syncAccountsEnabled" type="checkbox" style="flex:none;width:auto"> <b>三個帳號同步</b>（當成同一個人）</label>
       <div class="hint">要開中繼站。低調模式、多開輪流、轉移模式的設定在任一個帳號改了，其他帳號約 10 秒內跟著改；低調模式的玩／休息／睡覺時間表三個帳號一樣，一起停下來休息（手速、分心還是各帳號自己的）</div>
@@ -6562,7 +6566,7 @@
     holdForgeForCaptcha();
     const resumeMode = state.forgeMode;
     const afterVerify = settings.verifyAutoResume ? '，完成後會自動繼續' : '後按開始';
-    pauseWithAlert(`偵測到「${settings.verifyKeyword}」，請手動完成驗證${afterVerify}`);
+    pauseWithAlert(`偵測到「${settings.verifyKeyword}」，請手動完成驗證${afterVerify}`, { keepParty: true });
     // pauseWithAlert 裡的 stop 會清掉，所以要在之後才記
     state.verifyResumeMode = resumeMode;
     state.verifyGoneSince = 0;
@@ -6635,7 +6639,7 @@
     holdForgeForCaptcha();
     const resumeMode = state.forgeMode;
     const afterVerify = settings.verifyAutoResume ? '，完成後會自動繼續' : '後按開始';
-    pauseWithAlert(`伺服器要求活人驗證，請完成驗證${afterVerify}`);
+    pauseWithAlert(`伺服器要求活人驗證，請完成驗證${afterVerify}`, { keepParty: true });
     // pauseWithAlert 裡的 stop 會清掉，所以要在之後才記
     state.verifyResumeMode = resumeMode;
     state.verifyGoneSince = 0;
@@ -6711,10 +6715,35 @@
   }
 
   // 自動暫停都需要人回來處理，人可能不在這個分頁，所以依「提醒」頁的勾選用多種方式提醒
-  function pauseWithAlert(message) {
+  function pauseWithAlert(message, { keepParty = false } = {}) {
+    const wasHunting = state.running && !state.forgeMode;
     dashboard.alert = message;
     stop(message);
     alertUser(message, { paused: true });
+    if (wasHunting && !keepParty) leavePartyOnPause();
+  }
+
+  // 設成空值＝解除組隊（遊戲「設定隊友」視窗的說明）；POST /api/teammate {teammate} 回 {profile, teammate}
+  async function leavePartyOnPause() {
+    if (!readSettingsFromPanel().partyLeaveOnPause) return;
+    if (state.huntInfo ? !state.huntInfo.teammate : partyPoll.teammate !== true) return;
+    const who = state.huntInfo && state.huntInfo.teammate;
+    try {
+      await requestGameApi(TEAMMATE_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ teammate: '' }),
+      });
+      if (state.huntInfo) state.huntInfo = { ...state.huntInfo, teammate: null };
+      partyPoll.teammate = false;
+      partyWait.data = null;
+      refreshGameView([['profile'], ['teammate'], ['heroes']]);
+      logItemUse(`［組隊］暫停了，已離開隊伍${who ? `（原本隊友 ${who}）` : ''}`);
+      showToast(`暫停了，已離開隊伍${who ? `（原本隊友 ${who}）` : ''}`);
+    } catch (error) {
+      logItemUse(`［組隊］暫停了，但離開隊伍失敗（${error.message}）`);
+      showToast(`離開隊伍失敗（${error.message}），請到遊戲裡把隊友暱稱清空`);
+    }
   }
 
   let audioContext = null;
@@ -9359,7 +9388,7 @@
     }
     if (!state.running) return;
     if (otherTabRunning(state.forgeMode)) {
-      pauseWithAlert(`同一個帳號的另一個分頁也在${state.forgeMode ? '鍛造' : '打怪'}，這個分頁先停下`);
+      pauseWithAlert(`同一個帳號的另一個分頁也在${state.forgeMode ? '鍛造' : '打怪'}，這個分頁先停下`, { keepParty: true });
       return;
     }
     writeJsonStorage(runLockKey(state.forgeMode), { tab: tabKey, at: Date.now() });
