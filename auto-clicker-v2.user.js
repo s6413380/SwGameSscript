@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.30
+// @version      4.31
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -6721,6 +6721,9 @@
     stop(message);
     alertUser(message, { paused: true });
     if (wasHunting && !keepParty) leavePartyOnPause();
+    // 「沒掛機時自己吃藥」原本只在打完一場（自己按或隊友按）後才檢查；暫停當下就先補一次，
+    // 例如體力低於暫停門檻停下來，不用等下一場才喝
+    if (wasHunting && !keepParty) manualSupplyAfterHunt().catch(() => {});
   }
 
   // 設成空值＝解除組隊（遊戲「設定隊友」視窗的說明）；POST /api/teammate {teammate} 回 {profile, teammate}
