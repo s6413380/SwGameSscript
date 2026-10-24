@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.31
+// @version      4.32
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -339,6 +339,9 @@
     partyWaitAlertMinutes: 5,
     // 打怪中自動暫停（死人、血低、異常、稀有掉落…）就順便解除組隊，隊友那邊不會被拖著打或一直等
     partyLeaveOnPause: true,
+    // 雲端組隊：等待組隊時，雲端有人邀請自己就自動把對方設成隊友（只收名單裡的人；空白＝誰都收）
+    partyInviteWait: false,
+    partyInviteFrom: '',
     // 三個帳號同步＝當成同一個人：共用設定經中繼站同步，低調模式的玩／休息／睡覺時間表也一樣
     syncAccountsEnabled: true,
     // 全體暫時暫停幾分鐘後自動開始
@@ -1081,6 +1084,11 @@
       <div class="row">等超過 ${numberInput('partyWaitAlertMinutes', 'min="1"')} 分鐘就提醒</div>
       <label class="row"><input data-field="partyLeaveOnPause" type="checkbox" style="flex:none;width:auto"> 打怪中自動暫停時順便<b>離開隊伍</b></label>
       <div class="hint">把隊友暱稱清空（跟遊戲裡設成空白一樣）。活人驗證、同帳號另一個分頁在打的暫停不離隊；自己按停止也不會。要再組隊得重新設定隊友</div>
+      <div class="row"><b>雲端組隊</b> 邀請<input data-role="party-invite-to" placeholder="對方暱稱" style="flex:1;min-width:0"><button data-action="party-invite" style="flex:none">邀請</button></div>
+      <label class="row"><input data-field="partyInviteWait" type="checkbox" style="flex:none;width:auto"> <b>等待組隊</b>：有人邀請就自動設成隊友</label>
+      <div class="row">只收<input data-field="partyInviteFrom" placeholder="暱稱或 id，用、分開；空白＝誰都收" style="flex:1;min-width:0">的邀請</div>
+      <div class="hint">雙方都要在「其他 → 雲端」填同一個試算表網址。邀請＝把自己的隊友設成對方，再透過雲端通知對方的腳本；對方勾了等待組隊，20～40 秒內會自動把你設成隊友（人不在電腦前也可以），15 分鐘內沒接受就作廢</div>
+      <div class="hint" data-role="party-invite-status"></div>
       <div class="hint">只在跟隊友同地點組隊時作用：每次打怪前看一次隊友的角色，沒補到就每 5～10 秒再看，補好才打。體力填 0＝不看體力。死掉的角色也算沒補好</div>
       <label class="row"><input data-field="syncAccountsEnabled" type="checkbox" style="flex:none;width:auto"> <b>三個帳號同步</b>（當成同一個人）</label>
       <div class="hint">要開中繼站。低調模式、多開輪流、轉移模式的設定在任一個帳號改了，其他帳號約 10 秒內跟著改；低調模式的玩／休息／睡覺時間表三個帳號一樣，一起停下來休息（手速、分心還是各帳號自己的）</div>
@@ -6726,6 +6734,145 @@
     if (wasHunting && !keepParty) manualSupplyAfterHunt().catch(() => {});
   }
 
+  // 雲端組隊邀請：借用雲端試算表的轉帳分頁傳話（不用重新部署 Apps Script）。
+  // 欄位：key, 邀請 id, 邀請人暱稱, 對象暱稱, 邀請人 id, 備註, -, 事件, 時間
+  const PARTY_INVITE_EVENT = 'partyInvite';
+  const PARTY_ACCEPT_EVENT = 'partyAccepted';
+  const PARTY_DECLINE_EVENT = 'partyDeclined';
+  const PARTY_INVITE_EXPIRE_MILLISECONDS = 15 * 60000;
+  const PARTY_INVITE_HANDLED_KEY = 'autoClickerV2PartyInviteHandled';
+  // 同帳號開好幾個分頁時共用「上次看雲端的時間」，只有一個分頁在看
+  const PARTY_INVITE_CHECKED_KEY = 'autoClickerV2PartyInviteCheckedAt';
+  const partyInvite = { row: -100, busy: false, gap: 0, waitingFor: '' };
+
+  function setPartyInviteStatus(message) {
+    const element = panel.querySelector('[data-role="party-invite-status"]');
+    if (element) element.textContent = message;
+  }
+
+  async function myProfile() {
+    if (dashboard.profile && dashboard.profile.nickname) return dashboard.profile;
+    const profile = await requestGameApi(PROFILE_API, { background: true });
+    rememberProfile(profile);
+    return dashboard.profile;
+  }
+
+  async function postPartyEvent(settings, inviteId, from, to, fromId, note, eventName) {
+    const result = await cloudRequest(cloudUrlOf(settings), {
+      method: 'POST',
+      body: JSON.stringify({
+        contributor: settings.cloudName || '未署名',
+        transfers: [[`${inviteId}:${eventName}`, inviteId, from, to, fromId, note, '', eventName, Date.now()]],
+      }),
+    });
+    if (!result.added || result.added.transfers === undefined) throw new Error('雲端試算表是舊版，沒有轉帳分頁（要更新 Apps Script 並重新部署）');
+  }
+
+  async function setTeammate(nickname) {
+    await requestGameApi(TEAMMATE_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ teammate: nickname }),
+    });
+    if (state.huntInfo) state.huntInfo = { ...state.huntInfo, teammate: nickname || null };
+    partyPoll.teammate = nickname ? undefined : false;
+    partyWait.data = null;
+    refreshGameView([['profile'], ['teammate'], ['heroes']]);
+  }
+
+  async function sendPartyInvite(settings) {
+    const target = panel.querySelector('[data-role="party-invite-to"]').value.trim();
+    if (!target) throw new Error('先填對方暱稱');
+    cloudUrlOf(settings);
+    const me = await myProfile();
+    if (target === me.nickname || target === String(me.id)) throw new Error('不能邀請自己');
+    setPartyInviteStatus(`邀請 ${target} 中…`);
+    await setTeammate(target);
+    const inviteId = `party-${me.id}-${Date.now()}`;
+    await postPartyEvent(settings, inviteId, me.nickname, target, me.id, '', PARTY_INVITE_EVENT);
+    partyInvite.waitingFor = inviteId;
+    setPartyInviteStatus(`已把隊友設成 ${target}，也通知了對方的腳本，等對方接受（最多 15 分鐘）`);
+    const answer = await waitPartyAnswer(settings, inviteId);
+    if (partyInvite.waitingFor !== inviteId) return;
+    partyInvite.waitingFor = '';
+    if (!answer) setPartyInviteStatus(`${target} 15 分鐘內沒有接受（對方可能沒開腳本、沒勾等待組隊，或雲端網址不同）`);
+    else if (answer.event === PARTY_ACCEPT_EVENT) {
+      setPartyInviteStatus(`${target} 已接受，組隊完成`);
+      showToast(`${target} 已接受組隊`);
+    } else setPartyInviteStatus(`${target} 沒有接受：${answer.note || '不明原因'}`);
+  }
+
+  async function waitPartyAnswer(settings, inviteId) {
+    const deadline = Date.now() + PARTY_INVITE_EXPIRE_MILLISECONDS;
+    while (Date.now() < deadline && partyInvite.waitingFor === inviteId) {
+      await wait(randomGap(15000, 25000));
+      try {
+        const page = await cloudRequest(`${cloudUrlOf(settings)}?only=transfers&after_transfers=-100`);
+        const row = ((page.transfers && page.transfers.rows) || []).find(
+          ([, id, , , , , , eventName]) => String(id) === inviteId && [PARTY_ACCEPT_EVENT, PARTY_DECLINE_EVENT].includes(String(eventName))
+        );
+        if (row) return { event: String(row[7]), note: String(row[5] || '') };
+      } catch {
+        // 雲端偶爾連不上，繼續等
+      }
+    }
+    return null;
+  }
+
+  async function checkPartyInvites(settings) {
+    if (tabShutDown || !settings.partyInviteWait || partyInvite.busy || tabRole() === 'forge') return;
+    if (!partyInvite.gap) partyInvite.gap = randomGap(20000, 40000);
+    if (Date.now() - readJsonStorage(PARTY_INVITE_CHECKED_KEY, 0) < partyInvite.gap) return;
+    partyInvite.gap = 0;
+    writeJsonStorage(PARTY_INVITE_CHECKED_KEY, Date.now());
+    partyInvite.busy = true;
+    try {
+      const page = await cloudRequest(`${cloudUrlOf(settings)}?only=transfers&after_transfers=${partyInvite.row}`);
+      if (!page.transfers) return;
+      partyInvite.row = page.transfers.next;
+      const me = await myProfile();
+      const handled = new Set(readJsonStorage(PARTY_INVITE_HANDLED_KEY, []));
+      const invites = page.transfers.rows.filter(
+        ([, id, , to, , , , eventName, at]) =>
+          String(eventName) === PARTY_INVITE_EVENT &&
+          [me.nickname, String(me.id)].includes(String(to).trim()) &&
+          !handled.has(String(id)) &&
+          Date.now() - Number(at) < PARTY_INVITE_EXPIRE_MILLISECONDS
+      );
+      if (!invites.length) {
+        setPartyInviteStatus(`等待組隊中（${new Date().toLocaleTimeString('zh-TW', { hour12: false })} 看過雲端，沒有邀請）`);
+        return;
+      }
+      invites.forEach(([, id]) => handled.add(String(id)));
+      writeJsonStorage(PARTY_INVITE_HANDLED_KEY, [...handled].slice(-100));
+      // 同時好幾個邀請只接最新的
+      const [, inviteId, from, , fromId] = invites[invites.length - 1];
+      const inviter = { id: String(fromId), nickname: String(from).trim() };
+      const allowed = playerNameList(settings.partyInviteFrom);
+      if (allowed.length && !inPlayerList(allowed, inviter)) {
+        logItemUse(`［組隊］${inviter.nickname} 邀請組隊，不在「只收」名單，不接受`);
+        await postPartyEvent(settings, inviteId, me.nickname, inviter.nickname, me.id, '不在對方的接受名單', PARTY_DECLINE_EVENT).catch(() => {});
+        return;
+      }
+      try {
+        await setTeammate(inviter.nickname);
+      } catch (error) {
+        logItemUse(`［組隊］${inviter.nickname} 邀請組隊，設定隊友失敗（${error.message}）`);
+        await postPartyEvent(settings, inviteId, me.nickname, inviter.nickname, me.id, `設定隊友失敗：${error.message}`, PARTY_DECLINE_EVENT).catch(() => {});
+        return;
+      }
+      await postPartyEvent(settings, inviteId, me.nickname, inviter.nickname, me.id, '', PARTY_ACCEPT_EVENT).catch(() => {});
+      const message = `收到 ${inviter.nickname} 的組隊邀請，已設成隊友`;
+      setPartyInviteStatus(message);
+      logItemUse(`［組隊］${message}`);
+      showToast(message);
+    } catch (error) {
+      setPartyInviteStatus(`等待組隊：看雲端失敗（${error.message}），稍後再試`);
+    } finally {
+      partyInvite.busy = false;
+    }
+  }
+
   // 設成空值＝解除組隊（遊戲「設定隊友」視窗的說明）；POST /api/teammate {teammate} 回 {profile, teammate}
   async function leavePartyOnPause() {
     if (!readSettingsFromPanel().partyLeaveOnPause) return;
@@ -8104,6 +8251,7 @@
     checkCloudTransfers(settings);
     checkCardMarket(settings);
     pollPartyHuntInfo(settings);
+    checkPartyInvites(settings);
     checkOwnTrades(settings);
     keepRunLock();
     keepMiningLock();
@@ -9711,6 +9859,8 @@
       start();
     } else if (action === 'low-mode') {
       setLowMode(event.target.dataset.lowMode);
+    } else if (action === 'party-invite') {
+      sendPartyInvite(readSettingsFromPanel()).catch((error) => setPartyInviteStatus(`邀請失敗：${error.message}`));
     } else if (action === 'main-account-me') {
       setMainAccountToMe();
     } else if (action === 'global-run' || action === 'global-temp' || action === 'global-stop') {
