@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.34
+// @version      4.35
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -15199,7 +15199,9 @@
         const hp = percent(hero.hp, hero.fullHp);
         const sp = percent(hero.sp, hero.fullSp);
         const color = (value) => (value === null ? '#a8a29e' : value < 30 ? '#f87171' : value < 60 ? '#fbbf24' : '#86efac');
-        return `<span style="margin-right:10px">${escapeHtml(hero.name)} <span style="color:${color(hp)}">HP ${hp ?? '?'}%</span> <span style="color:${color(sp)}">體 ${sp ?? '?'}%</span></span>`;
+        const exp = percent(hero.exp, hero.fullExp);
+        const level = hero.lv ? ` <span style="color:#93c5fd">Lv${hero.lv}${exp === null ? '' : ` ${exp}%`}</span>` : '';
+        return `<span style="margin-right:10px">${escapeHtml(hero.name)}${level} <span style="color:${color(hp)}">HP ${hp ?? '?'}%</span> <span style="color:${color(sp)}">體 ${sp ?? '?'}%</span></span>`;
       })
       .join('');
     const limit = Number(readSettingsFromPanel().durWarnBattles) || 0;
@@ -15244,12 +15246,13 @@
             <td style="${cell};position:relative"><span style="position:absolute;left:0;top:2px;bottom:2px;width:${Math.round((member.damage / top) * 100)}%;background:rgba(248,113,113,.25);border-radius:2px"></span><span style="position:relative">${formatAmount(member.damage)}</span></td>
             <td style="${cell}">${percentText(member.damage, totals.damage)}</td>
             <td style="${cell}">${member.hits} 中</td><td style="${cell}">爆 ${percentText(member.crits, member.hits)}</td>
-            <td style="${cell}">${extra}</td><td style="${cell}">${member.controls ? `控 ${member.controls}` : ''}</td><td style="${cell}">${member.kills ? `殺 ${member.kills}` : ''}</td></tr>
+            <td style="${cell}">${extra}</td><td style="${cell}">${member.controls ? `控 ${member.controls}` : ''}</td><td style="${cell}">${member.kills ? `殺 ${member.kills}` : ''}</td>
+            <td style="${cell};color:#fca5a5" title="承受傷害（被打、保護隊友、中毒燒傷）">${member.damageTaken ? `承 ${formatAmount(member.damageTaken)}` : ''}</td></tr>
           <tbody data-ac-skills="${escapeHtml(name)}" style="display:${pageReport.openMembers.has(name) ? 'table-row-group' : 'none'}">${skills}</tbody>`;
       })
       .join('');
     return `<table style="width:100%;border-collapse:collapse;font:12px/1.6 monospace"><tbody>${rows}</tbody></table>
-      <div style="color:#a8a29e">全隊 傷害 ${formatAmount(totals.damage)}・爆擊 ${percentText(totals.crits, totals.hits)}${totals.healthHealing ? `・回血 ${formatAmount(totals.healthHealing)}` : ''}${totals.controls ? `・控制 ${totals.controls}` : ''}・擊殺 ${totals.kills}</div>`;
+      <div style="color:#a8a29e">全隊 傷害 ${formatAmount(totals.damage)}・爆擊 ${percentText(totals.crits, totals.hits)}${totals.healthHealing ? `・回血 ${formatAmount(totals.healthHealing)}` : ''}${totals.controls ? `・控制 ${totals.controls}` : ''}・擊殺 ${totals.kills}${totals.damageTaken ? `・承受傷害 ${formatAmount(totals.damageTaken)}` : ''}</div>`;
   }
 
   function pageReportHtml(report, withStatus) {
@@ -15268,6 +15271,11 @@
     const moneyText = Object.entries(money)
       .map(([label, amount]) => `${label} $${amount.toLocaleString()}`)
       .join('・');
+    const expText = messages
+      .map((message) => HUNT_EXP_PATTERN.exec(String(message.m).trim()))
+      .filter(Boolean)
+      .map((match) => `${/每位/.test(match[1]) ? '每人' : match[1]} +${messageNumber(match[2]).toLocaleString()}`)
+      .join('・');
     const lines = messages
       .map((message) => {
         const color = REPORT_COLORS[message.s] || REPORT_COLORS.default;
@@ -15281,7 +15289,7 @@
         <summary style="cursor:pointer;padding:4px 8px;font-weight:bold">${title}<span style="float:right;font-weight:normal;color:#a8a29e">${extra}</span></summary>
         <div style="padding:4px 8px 6px">${body}</div></details>`;
     const battle = pageBattleHtml(report);
-    return `${section('loot', '🎁 本場掉落・狀態', [place, time].filter(Boolean).join('・'), `<div>${lootHtml}</div>${moneyText ? `<div style="color:#fcd34d">${escapeHtml(moneyText)}</div>` : ''}${withStatus ? `<div data-ac-status>${teamStatusHtml()}</div>` : ''}`)}
+    return `${section('loot', '🎁 本場掉落・狀態', [place, time].filter(Boolean).join('・'), `<div>${lootHtml}</div>${expText ? `<div style="color:#93c5fd">經驗 ${escapeHtml(expText)}</div>` : ''}${moneyText ? `<div style="color:#fcd34d">${escapeHtml(moneyText)}</div>` : ''}${withStatus ? `<div data-ac-status>${teamStatusHtml()}</div>` : ''}`)}
       ${battle ? section('battle', '⚔️ 傷害・技能', '點角色看各招式', battle) : ''}
       ${section('log', '📜 戰報內容', `${messages.length} 行 <button type="button" data-ac-toggle-game style="margin-left:6px;padding:0 6px;border:1px solid #57534e;border-radius:4px;background:#292524;color:#d6d3d1">${pageReport.showGame ? '收起原本的' : '顯示原本的'}</button>`, `<div style="font:12px/1.6 monospace;max-height:420px;overflow:auto">${lines}</div>`)}`;
   }
@@ -18679,12 +18687,12 @@
       ...Object.entries(selected.moneyMarket).map(([label, amount]) => moneyRow(label, amount, '#a0a0aa', '（不計）')),
     ].join('');
     panel.querySelector('[data-role="income"]').innerHTML = `
-      <div class="subhead">近 24 小時經驗（每小時）</div>
-      <div style="display:flex;gap:1px;height:50px;align-items:flex-end">${bars}</div>
       <table class="combat"><tr><th>期間</th><th>場</th><th>經驗</th><th>經驗/時</th><th>撿到</th><th>吃掉</th><th>收入</th><th>支出</th><th>純收益</th></tr>${rows}</table>
       <div class="hint">經驗＝整隊加總。收入／支出照來源分：狩獵只算戰報寫明的錢（租金、盜取），回收、鍛造、買東西照動作算；拍賣的錢不算（含不明入帳，多半是拍賣售出）。純收益＝收入－支出</div>
       <div class="subhead">錢的來源（${INCOME_PERIODS[periodIndex][0]}）</div>
       ${moneyRows ? `<table class="combat"><tr><th>來源</th><th>金額</th></tr>${moneyRows}</table>` : '<div class="hint">這段期間沒有錢的進出（改版後才開始記）</div>'}
+      <div class="subhead">近 24 小時經驗（每小時）</div>
+      <div style="display:flex;gap:1px;height:50px;align-items:flex-end">${bars}</div>
       <div class="subhead">撿到的道具（${INCOME_PERIODS[periodIndex][0]}）</div>
       ${items ? `<table class="combat"><tr><th>道具</th><th>數量</th></tr>${items}</table>` : '<div class="hint">這段期間沒有撿到道具</div>'}
       <div class="subhead">吃掉的補品（${INCOME_PERIODS[periodIndex][0]}）</div>
