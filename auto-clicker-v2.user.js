@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.33
+// @version      4.34
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -7571,7 +7571,7 @@
   const COMBAT_STORAGE_KEY = 'autoClickerV2CombatStats';
   // 統計格式或判斷方式改過就換版本，舊資料對不上（例如治療沒分生命、體力），直接重新統計
   const COMBAT_STATS_VERSION = 4;
-  const MEMBER_FIELDS = ['damage', 'hits', 'crits', 'healthHealing', 'staminaHealing', 'controls', 'kills'];
+  const MEMBER_FIELDS = ['damage', 'hits', 'crits', 'healthHealing', 'staminaHealing', 'controls', 'kills', 'damageTaken'];
   const SKILL_FIELDS = ['casts', 'damage', 'hits', 'crits'];
   const BASIC_ATTACK = '普通攻擊';
   const ANOMALY_LIMIT = 10;
@@ -7618,7 +7618,7 @@
   }
 
   function addStats(total, addition, fields) {
-    fields.forEach((field) => (total[field] += addition[field]));
+    fields.forEach((field) => (total[field] = (total[field] || 0) + (addition[field] || 0)));
   }
 
   // 技能名稱取出手那一行去掉名字後的第一段，例如「灑了一大桶熱油」；有「使出」就取後面的招式名
@@ -7838,12 +7838,27 @@
     const partyOutput = () =>
       Object.values(members).reduce((sum, memberStats) => sum + memberStats.damage + memberStats.healthHealing + memberStats.staminaHealing, 0);
     for (const [index, line] of lines.entries()) {
+      // API 戰報有標哪一方受傷，標了敵方就不算
+      const taken = (!sides || damaged[index] === 'a') && line.match(ANY_DAMAGE_PATTERN);
+      const receiver = taken && damageReceiver(line, party);
+      if (receiver) members[receiver].damageTaken += toNumber(taken[1]);
       const outputBefore = partyOutput();
       handleLine(line, index);
       // 我方受傷的行一定不是我方的輸出
       if (partyOutput() === outputBefore && damaged[index] !== 'a' && hasUncreditedPartyOutput(line, party)) flagged.add(index);
     }
     return { members, flagged };
+  }
+
+  // 挨打的人：「王剛上前保護受到」「王剛因中毒受到」先認，再認「攻擊／擊中王剛」
+  function damageReceiver(line, party) {
+    const members = [...party].filter((member) => line.includes(member));
+    const receiverBy = (pattern) => members.find((member) => new RegExp(pattern(escapeRegExp(member))).test(line));
+    return (
+      receiverBy((name) => `${name}(?:上前保護)?受到|${name}上前承受|${name}因`) ||
+      receiverBy((name) => `(?:攻擊|朝|擊中|襲擊|對)${name}`) ||
+      null
+    );
   }
 
   function escapeRegExp(text) {
@@ -8073,10 +8088,11 @@
       .sort(byDamage)
       .map(([name, memberStats]) => `<tr><td>${escapeHtml(name)}</td><td>${formatAmount(memberStats.damage)}</td>
         <td>${percentText(memberStats.crits, memberStats.hits)}</td><td>${formatAmount(memberStats.healthHealing)}</td>
-        <td>${formatAmount(memberStats.staminaHealing)}</td><td>${memberStats.controls}</td><td>${memberStats.kills}</td></tr>`)
+        <td>${formatAmount(memberStats.staminaHealing)}</td><td>${memberStats.controls}</td><td>${memberStats.kills}</td>
+        <td>${formatAmount(memberStats.damageTaken || 0)}</td></tr>`)
       .join('');
     return `<table class="combat"><tr><th>角色</th><th>傷害</th><th>爆擊</th><th title="恢復生命值">回血</th>
-      <th title="恢復體力">回體</th><th>控制</th><th>擊殺</th></tr>${rows}</table>`;
+      <th title="恢復體力">回體</th><th>控制</th><th>擊殺</th><th title="被敵人打、中毒燒傷等受到的傷害">承傷</th></tr>${rows}</table>`;
   }
 
   // 每個角色各招的傷害；key 用來在重畫後保留展開狀態
@@ -8170,7 +8186,8 @@
       <div style="margin-top:6px"><b>累計 ${battles} 場</b>（${new Date(combatStats.since).toLocaleString('zh-TW', { hour12: false })} 起，約 ${minutes} 分鐘）</div>
       ${combatTableHtml(combatStats.members)}${skillDetailsHtml(combatStats.members, 'total')}
       <div>平均每場：傷害 ${formatAmount(total.damage / battles)}、回血 ${formatAmount(total.healthHealing / battles)}、
-        回體 ${formatAmount(total.staminaHealing / battles)}、控制 ${(total.controls / battles).toFixed(1)}、擊殺 ${(total.kills / battles).toFixed(1)}</div>
+        回體 ${formatAmount(total.staminaHealing / battles)}、控制 ${(total.controls / battles).toFixed(1)}、擊殺 ${(total.kills / battles).toFixed(1)}、
+        承受傷害 ${formatAmount(total.damageTaken / battles)}</div>
       <div>每分鐘傷害 ${formatAmount(total.damage / minutes)}</div>`;
     openDetails.forEach((key) => container.querySelector(`[data-skill-details="${key}"]`)?.setAttribute('open', ''));
   }
@@ -18662,12 +18679,12 @@
       ...Object.entries(selected.moneyMarket).map(([label, amount]) => moneyRow(label, amount, '#a0a0aa', '（不計）')),
     ].join('');
     panel.querySelector('[data-role="income"]').innerHTML = `
+      <div class="subhead">近 24 小時經驗（每小時）</div>
+      <div style="display:flex;gap:1px;height:50px;align-items:flex-end">${bars}</div>
       <table class="combat"><tr><th>期間</th><th>場</th><th>經驗</th><th>經驗/時</th><th>撿到</th><th>吃掉</th><th>收入</th><th>支出</th><th>純收益</th></tr>${rows}</table>
       <div class="hint">經驗＝整隊加總。收入／支出照來源分：狩獵只算戰報寫明的錢（租金、盜取），回收、鍛造、買東西照動作算；拍賣的錢不算（含不明入帳，多半是拍賣售出）。純收益＝收入－支出</div>
       <div class="subhead">錢的來源（${INCOME_PERIODS[periodIndex][0]}）</div>
       ${moneyRows ? `<table class="combat"><tr><th>來源</th><th>金額</th></tr>${moneyRows}</table>` : '<div class="hint">這段期間沒有錢的進出（改版後才開始記）</div>'}
-      <div class="subhead">近 24 小時經驗（每小時）</div>
-      <div style="display:flex;gap:1px;height:50px;align-items:flex-end">${bars}</div>
       <div class="subhead">撿到的道具（${INCOME_PERIODS[periodIndex][0]}）</div>
       ${items ? `<table class="combat"><tr><th>道具</th><th>數量</th></tr>${items}</table>` : '<div class="hint">這段期間沒有撿到道具</div>'}
       <div class="subhead">吃掉的補品（${INCOME_PERIODS[periodIndex][0]}）</div>
