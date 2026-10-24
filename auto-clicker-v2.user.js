@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.36
+// @version      4.37
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -548,6 +548,7 @@
     defaultSettings[groupKey(id, 'MaxUses')] = 20;
     defaultSettings[groupKey(id, 'ItemNames')] = '';
     defaultSettings[groupKey(id, 'ApiEnabled')] = false;
+    defaultSettings[groupKey(id, 'Splurge')] = false;
     for (let index = 0; index < SLOT_COUNT; index++) {
       Object.keys(SLOT_PARTS).forEach((part) => (defaultSettings[slotKey(id, part, index)] = ''));
       if (id === 'forge') defaultSettings[forgeHeroKey(index)] = '';
@@ -972,7 +973,8 @@
         ${slotRowsHtml(group)}
         <div class="row">共用 X<input data-field="${groupKey(id, 'CloseSelector')}" placeholder="留空＝Esc＋點空白處關閉"><button data-pick="${groupKey(id, 'CloseSelector')}">選取</button></div>
       </div>
-      ${group.healField ? `<div data-supply-mode="api:${id}">${apiSupplyHtml(group)}</div>` : ''}
+      ${group.healField ? `<div data-supply-mode="api:${id}">${apiSupplyHtml(group)}
+        <label class="row"><input data-field="${groupKey(id, 'Splurge')}" type="checkbox" style="flex:none;width:auto"> 揮霍：每次都吃 10 個（剩不到 10 個才一個一個吃，補過頭也不管）</label></div>` : ''}
     </fieldset>`;
   }
 
@@ -5525,7 +5527,8 @@
       const item = pickHealingItem(items, group, names);
       if (!item) break;
       const needed = Math.ceil((targetValue - hero[group.heroField]) / item[group.healField]);
-      const quantity = needed >= 10 && item.available >= 10 ? 10 : 1;
+      // 揮霍模式：差一點也直接吃 10 個，少送幾次請求、補得快
+      const quantity = (needed >= 10 || settings[groupKey(group.id, 'Splurge')]) && item.available >= 10 ? 10 : 1;
       await wait(itemRequestGap());
       if (cancelled()) return;
       let result;
