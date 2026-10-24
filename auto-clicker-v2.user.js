@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.35
+// @version      4.36
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -132,7 +132,6 @@
     ['draw', '抽卡'],
     ['scratch', '刮刮樂'],
     ['sales', '售出'],
-    ['highLow', '比大小'],
     ['loot', '掉落'],
     ['pick', '勾選'],
     ['alert', '提醒'],
@@ -148,7 +147,7 @@
     ['hunt', '打怪', ['main', 'health', 'resource', 'move', 'equip', 'train', 'pause']],
     ['forging', '鍛造', ['forge', 'recipe', 'material', 'mining']],
     ['stats', '統計', ['income', 'combat', 'huntStats', 'loot', 'growth', 'draw', 'scratch', 'sales']],
-    ['other', '其他', ['pick', 'transfer', 'cardBuy', 'highLow', 'alert', 'cloud', 'log', 'api', 'backup']],
+    ['other', '其他', ['pick', 'transfer', 'cardBuy', 'alert', 'cloud', 'log', 'api', 'backup']],
   ];
   const TAB_STORAGE_KEY = 'autoClickerV2Tab';
   // 鍛造完成的回應在載入途中就可能進來，標記要賣的清單鍵放前面
@@ -524,14 +523,6 @@
     scratchMarketNames: '密技',
     // 記下自己在拍賣場賣掉的裝備、道具、礦石寶石（有掛單時 10～20 分鐘看一次自己的掛單）
     marketSalesEnabled: true,
-    // 賭場比大小倍投：輸了下一把加倍、贏了回到底注；連輸到上限或錢不夠就停
-    highLowBase: 100,
-    highLowGuess: 'big',
-    highLowMaxLosses: 8,
-    highLowStopProfit: 0,
-    highLowKeepMoney: 0,
-    highLowMinSeconds: 2,
-    highLowMaxSeconds: 5,
     // 腳本沒在掛機、你自己在遊戲裡打怪時，每打一下看血量、體力，低於「補血」「補體力」頁的門檻就用 API 吃藥
     manualSupplyEnabled: true,
     // 腳本沒在掛機時（自己按打怪、或組隊時隊友按），也照 API 換裝的設定換耐久低的裝備
@@ -1525,17 +1516,6 @@
       <div data-role="sales-stats" style="font-size:12px"></div>
     </div>
 
-    <div data-tab="highLow">
-      <div class="hint">賭場「猜大小」倍投：從底注開始，輸了下一把加倍，贏了回到底注。倍投不會讓勝率變高，只是把很多次小贏換成偶爾一次大輸，所以一定要設連輸上限</div>
-      <div class="row">底注 <input data-field="highLowBase" type="number" min="1" style="flex:none;width:70px"> 元，猜<select data-field="highLowGuess" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="big">大</option><option value="small">小</option><option value="random">隨機</option></select></div>
-      <label>連輸 ${numberInput('highLowMaxLosses', 'min="1" max="20"')} 把就停（<span data-role="highlow-risk"></span>）</label>
-      <div class="row">這次贏到 <input data-field="highLowStopProfit" type="number" min="0" style="flex:none;width:70px"> 元就停（0＝不停）</div>
-      <div class="row">身上至少留 <input data-field="highLowKeepMoney" type="number" min="0" style="flex:none;width:80px"> 元</div>
-      <label>每把間隔 ${numberInput('highLowMinSeconds', 'min="1"')}～${numberInput('highLowMaxSeconds', 'min="1"')} 秒</label>
-      <div class="row"><button data-action="highlow-start">開始</button><button data-action="highlow-stop">停止</button></div>
-      <div data-role="highlow-status" style="font-size:12px"></div>
-    </div>
-
     <div data-tab="cardBuy">
       <div class="row"><label style="flex:1"><input data-field="cardBuyEnabled" type="checkbox" style="width:auto"> <b>看拍賣場英雄</b></label><select data-field="cardWatchMode" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="passive">被動（不多發請求）</option><option value="active">主動查（搶卡用）</option></select></div>
       <div class="hint">被動：你在遊戲開拍賣場的英雄頁、切回這個視窗，或停在人口販子頁時，遊戲抓到清單就順便比對，伺服器看到的跟一般玩家一樣。主動：自己去查，要搶卡時才開；每次照真人刷新的樣子，先切到裝備／道具／礦物其中一頁，隔 0.6～2.5 秒再切回英雄</div>
@@ -1850,12 +1830,11 @@
     if (overflow > 0) panel.style.left = Math.max(0, rect.left - overflow - 8) + 'px';
   }
 
-  // 縮到最小只留標題列，標題列上顯示執行狀態，不用展開也知道有沒有在跑
+  // 縮到最小只留標題列，標題列上顯示執行狀態，不用展開也知道有沒有在跑（監看每秒更新）
   function setMinimized(minimized) {
     panelBody.style.display = minimized ? 'none' : '';
     panel.style.width = minimized ? 'auto' : panelWidth();
     panel.querySelector('[data-action="minimize"]').textContent = minimized ? '▢' : '–';
-    updateMiniStatus();
     try {
       localStorage.setItem(MINIMIZED_STORAGE_KEY, minimized ? '1' : '');
     } catch {
@@ -1863,9 +1842,41 @@
     }
   }
 
+  // 打怪、鍛造、挖礦各自開著沒：綠＝在跑，黃＝開著但正在等（休息、離開、驗證…），灰＝沒開
+  function runStateParts() {
+    const now = Date.now();
+    const hunting = state.running && !state.forgeMode;
+    let hunt = null;
+    if (hunting) {
+      if (globalPauseActive()) hunt = '全體暫停';
+      else if (state.captchaWaiting || state.verifyResumeMode !== null) hunt = '等驗證';
+      else if (now < lowProfile.sleepUntil) hunt = '睡覺中';
+      else if (now < lowProfile.awayUntil) hunt = '離開中';
+      else if (state.apiResting) hunt = '休息中';
+      else hunt = '';
+    }
+    const forging = forgeRunner.running || (state.running && state.forgeMode);
+    const forge = !forging ? null : forgeRunner.captchaWaiting ? '等驗證' : forgeRunner.nameWaiting ? '等好名稱' : '';
+    const mine = miningRunner.running ? '' : null;
+    return [
+      ['打怪', hunt],
+      ['鍛造', forge],
+      ['挖礦', mine],
+    ];
+  }
+
+  let lastRunStateHtml = '';
   function updateMiniStatus() {
-    const minimized = panelBody.style.display === 'none';
-    miniStatusElement.textContent = minimized ? (state.running ? '· 執行中' : '· 已停止') : '';
+    const html = runStateParts()
+      .map(([name, waiting]) => {
+        const color = waiting === null ? '#6b7280' : waiting ? '#fbbf24' : '#4ade80';
+        const title = waiting === null ? '沒開' : waiting || '執行中';
+        return `<span title="${name}：${title}" style="color:${color};margin-left:4px">${waiting === null ? '○' : '●'}${name}${waiting ? `(${waiting})` : ''}</span>`;
+      })
+      .join('');
+    if (html === lastRunStateHtml) return;
+    lastRunStateHtml = html;
+    miniStatusElement.innerHTML = html;
   }
 
   function showCharacter(characterIndex) {
@@ -1920,7 +1931,6 @@
     if (tabId === 'equip') renderDurabilityForecast();
     if (tabId === 'scratch') renderScratchStats();
     if (tabId === 'sales') renderSalesStats();
-    if (tabId === 'highLow') renderHighLow();
     if (tabId === 'forge') {
       renderForgePlanOverview();
       renderNameWeightTable();
@@ -6557,6 +6567,8 @@
   function isVerificationShown(settings) {
     if (!settings.verifyEnabled || !settings.verifyKeyword) return false;
     const keyword = settings.verifyKeyword;
+    const ownText = countOccurrences(panel.textContent, keyword) + countOccurrences(alertDialog.textContent, keyword);
+    if (countOccurrences(document.documentElement.textContent, keyword) <= ownText) return false;
     const ownCount = countOccurrences(panel.innerText, keyword) + countOccurrences(alertDialog.innerText, keyword);
     return countOccurrences(document.body.innerText, keyword) > ownCount;
   }
@@ -6565,7 +6577,7 @@
   let dismissedVerifyElements = new Set();
 
   function pauseIfVerification(settings) {
-    if (!isVerificationShown(settings)) return false;
+    if (isApiHunt(settings) || !isVerificationShown(settings)) return false;
     if (dismissedVerifyElements.size) {
       const elements = verificationTextElements(settings.verifyKeyword);
       if (elements.length && elements.every((element) => dismissedVerifyElements.has(element))) return false;
@@ -6701,6 +6713,8 @@
 
   function announceVerificationSolved(settings) {
     if (!tabChannel || !settings.verifyEnabled || !settings.verifyKeyword) return;
+    // 只有看畫面文字停下來的分頁（按鈕模式）需要這個通知；API 停下的會自己問 /api/captcha
+    if (!verificationSeen && state.verifyResumeMode === null && !(state.running && !isApiHunt(settings))) return;
     if (isVerificationStillShown(settings)) {
       const elements = verificationTextElements(settings.verifyKeyword);
       // 已略過的舊框不算，否則那個分頁之後回到前景、舊框關掉時會誤發通知
@@ -8021,6 +8035,7 @@
 
   function watchBattleLog(settings) {
     if (!settings.combatEnabled || combatFromApi) return;
+    if (!state.running || state.forgeMode || isApiHunt(settings)) return;
     const container = findBattleLogElement(settings);
     const battle = container ? readBattleLines(container) : null;
     const text = battle ? battle.lines.join('\n') : '';
@@ -8220,42 +8235,11 @@
   function updateMonitorsUntimed() {
     const settings = readSettingsFromPanel();
     updateMiniStatus();
-    // 執行中照實際模式顯示；停著的時候看目前停在哪一頁，按開始會用哪種模式就先顯示哪種
-    const forgeMode = state.running ? state.forgeMode : activeTab === 'forge';
-    const lines = SUPPLY_GROUPS.filter((group) => Boolean(group.forgeOnly) === forgeMode).map(
-      (group) => `${group.name}：${formatPercents(readGroupPercents(settings, group.id))}`
-    );
-    if (forgeMode && state.forgeStarted.length) lines.push(`鍛造：${forgeProgressText(settings)}`);
-    if (settings.expSelectors) lines.push(`經驗：${formatPercents(readExpPercents(settings))}`);
-    if (settings.stageEnabled && (settings.stageSelector || isApiHunt(settings))) {
-      const reached = (isApiHunt(settings) ? planApiMove(settings) : planMove(settings)) === null;
-      lines.push(`位置：${dashboardLocationText(settings) || '?'} → ${targetLabel(settings)}${reached ? '（已到達）' : ''}`);
-    }
-    const durabilities = Array.from({ length: CHARACTER_COUNT }, (_, characterIndex) =>
-      settings[equipKey(characterIndex, 'Enabled')] ? readNumber(settings[equipKey(characterIndex, 'Durability')]) ?? '?' : '-'
-    );
-    if (durabilities.some((value) => value !== '-')) lines.push(`耐久：${durabilities.join(' ')}`);
-    if (settings.equipApiEnabled) lines.push(equipMonitorText(settings));
-    const partyLine = partyMonitorText(settings);
-    if (partyLine) lines.push(partyLine);
-    if (forgeRunner.running) lines.push(`API 鍛造：執行中（已開 ${forgeRunner.started} 爐${forgeRunner.failures ? `，重試中 ${forgeRunner.failures}/${FORGE_RETRY_LIMIT}` : ''}${forgeRunner.captchaWaiting ? '，等驗證' : ''}${forgeRunner.nameWaiting ? `，暫停開爐等好名稱：${forgeRunner.nameWaiting}` : ''}）`);
-    else if (forgeRunner.stoppedReason) lines.push(`API 鍛造已停：${forgeRunner.stoppedReason}`);
-    if (miningRunner.running) lines.push(`挖礦：執行中（已收 ${miningRunner.collected} 次${miningRunner.failures ? `，重試中 ${miningRunner.failures}/${FORGE_RETRY_LIMIT}` : ''}）`);
-    else if (miningRunner.stoppedReason) lines.push(`挖礦已停：${miningRunner.stoppedReason}`);
     watchBattleLog(settings);
-    const combatLine = settings.combatEnabled ? combatQuickText() : '';
-    if (combatLine) lines.push(combatLine);
-    const dashboardLine = dashboardMonitorText(settings);
-    if (dashboardLine) lines.push(dashboardLine);
-    const turnLine = turnMonitorText(settings);
-    if (turnLine) lines.push(turnLine);
     if (dashboard.profile && titleNeedsMarks()) applyTitlePrefix();
-    const globalLine = globalMonitorText();
-    if (globalLine) lines.push(globalLine);
-    const queueLine = queueMonitorText(settings);
-    if (queueLine) lines.unshift(queueLine);
-    lines.unshift(lastActionText());
-    monitorElement.textContent = lines.join('\n');
+    const actionLine = lastActionText();
+    // 面板縮小或分頁在背景時看不到監看欄，不用每秒重算（讀血條、算路線都要碰畫面）
+    if (panelBody.style.display !== 'none' && !document.hidden) monitorElement.textContent = monitorLines(settings, actionLine).join('\n');
     reportToDashboard(settings);
     pollDashboardCommands(settings);
     checkForUpdate(settings);
@@ -8278,6 +8262,43 @@
     announceVerificationSolved(settings);
     if (state.running) shouldPause(settings);
     else resumeIfVerificationGone(settings);
+  }
+
+  function monitorLines(settings, actionLine) {
+    // 執行中照實際模式顯示；停著的時候看目前停在哪一頁，按開始會用哪種模式就先顯示哪種
+    const forgeMode = state.running ? state.forgeMode : activeTab === 'forge';
+    const lines = SUPPLY_GROUPS.filter((group) => Boolean(group.forgeOnly) === forgeMode).map(
+      (group) => `${group.name}：${formatPercents(readGroupPercents(settings, group.id))}`
+    );
+    if (forgeMode && state.forgeStarted.length) lines.push(`鍛造：${forgeProgressText(settings)}`);
+    if (settings.expSelectors) lines.push(`經驗：${formatPercents(readExpPercents(settings))}`);
+    if (settings.stageEnabled && (settings.stageSelector || isApiHunt(settings))) {
+      const reached = (isApiHunt(settings) ? planApiMove(settings) : planMove(settings)) === null;
+      lines.push(`位置：${dashboardLocationText(settings) || '?'} → ${targetLabel(settings)}${reached ? '（已到達）' : ''}`);
+    }
+    const durabilities = Array.from({ length: CHARACTER_COUNT }, (_, characterIndex) =>
+      settings[equipKey(characterIndex, 'Enabled')] ? readNumber(settings[equipKey(characterIndex, 'Durability')]) ?? '?' : '-'
+    );
+    if (durabilities.some((value) => value !== '-')) lines.push(`耐久：${durabilities.join(' ')}`);
+    if (settings.equipApiEnabled) lines.push(equipMonitorText(settings));
+    const partyLine = partyMonitorText(settings);
+    if (partyLine) lines.push(partyLine);
+    if (forgeRunner.running) lines.push(`API 鍛造：執行中（已開 ${forgeRunner.started} 爐${forgeRunner.failures ? `，重試中 ${forgeRunner.failures}/${FORGE_RETRY_LIMIT}` : ''}${forgeRunner.captchaWaiting ? '，等驗證' : ''}${forgeRunner.nameWaiting ? `，暫停開爐等好名稱：${forgeRunner.nameWaiting}` : ''}）`);
+    else if (forgeRunner.stoppedReason) lines.push(`API 鍛造已停：${forgeRunner.stoppedReason}`);
+    if (miningRunner.running) lines.push(`挖礦：執行中（已收 ${miningRunner.collected} 次${miningRunner.failures ? `，重試中 ${miningRunner.failures}/${FORGE_RETRY_LIMIT}` : ''}）`);
+    else if (miningRunner.stoppedReason) lines.push(`挖礦已停：${miningRunner.stoppedReason}`);
+    const combatLine = settings.combatEnabled ? combatQuickText() : '';
+    if (combatLine) lines.push(combatLine);
+    const dashboardLine = dashboardMonitorText(settings);
+    if (dashboardLine) lines.push(dashboardLine);
+    const turnLine = turnMonitorText(settings);
+    if (turnLine) lines.push(turnLine);
+    const globalLine = globalMonitorText();
+    if (globalLine) lines.push(globalLine);
+    const queueLine = queueMonitorText(settings);
+    if (queueLine) lines.unshift(queueLine);
+    lines.unshift(actionLine);
+    return lines;
   }
 
   // API 打怪：原地掛機／前進／後退都是 POST /api/hunt（前進後退加 ?type=），全隊休息 POST /api/heroes/restAll，
@@ -9825,10 +9846,6 @@
         writeJsonStorage(SCRATCH_LOG_KEY, []);
         renderScratchStats();
       }
-    } else if (action === 'highlow-start') {
-      startHighLow();
-    } else if (action === 'highlow-stop') {
-      stopHighLow('手動停止');
     } else if (action === 'sales-clear') {
       if (window.confirm('要清除這個帳號的售出紀錄嗎？掛單中的會留著繼續追')) {
         saveSales({ ...loadSales(), sold: [] });
@@ -10328,6 +10345,10 @@
           const responseTextPromise = response.clone().text().catch(() => '[讀不到回應內容]');
           Promise.all([requestBodyPromise, responseTextPromise]).then(([requestBody, responseText]) => perfTimed(perfApiLabel(method, url), () => {
             if (response.ok && !growthOnly) captureHeroId(url, requestBody);
+            // 按鈕打怪時請求是遊戲自己送的；被要求活人驗證就跟腳本自己送的一樣停下等驗證
+            if (!fromScript && isHunt && response.status === 403 && /CAPTCHA_REQUIRED/.test(responseText) && state.running && !state.forgeMode && !state.captchaWaiting) {
+              pauseForCaptcha(readSettingsFromPanel());
+            }
             if (response.ok && manualMiningMatch) noteManualMining(Number(manualMiningMatch[1]), manualMiningMatch[2]);
             if (response.ok && growthHeroId && readSettingsFromPanel().growthEnabled) {
               try {
@@ -12244,126 +12265,6 @@
     return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
   }
 
-  // 賭場比大小倍投：POST /api/casino/highLow {bet, guess:'big'|'small'} 回 {profile, bet, guess, diceResult, won, netChange, payout}
-  const HIGH_LOW_API = '/api/casino/highLow';
-  const highLow = { running: false, runId: 0, bet: 0, losses: 0, net: 0, rounds: 0, wins: 0, money: null, stopReason: '', log: [] };
-
-  function highLowSettings(settings) {
-    const base = Math.max(1, Math.floor(Number(settings.highLowBase) || 100));
-    const maxLosses = Math.min(20, Math.max(1, Math.floor(Number(settings.highLowMaxLosses) || 8)));
-    const minSeconds = Math.max(1, Number(settings.highLowMinSeconds) || 2);
-    return {
-      base,
-      maxLosses,
-      stopProfit: Math.max(0, Number(settings.highLowStopProfit) || 0),
-      keepMoney: Math.max(0, Number(settings.highLowKeepMoney) || 0),
-      minSeconds,
-      maxSeconds: Math.max(minSeconds, Number(settings.highLowMaxSeconds) || 5),
-    };
-  }
-
-  function highLowGuess(settings) {
-    if (settings.highLowGuess === 'small') return 'small';
-    if (settings.highLowGuess === 'random') return Math.random() < 0.5 ? 'big' : 'small';
-    return 'big';
-  }
-
-  function startHighLow() {
-    if (highLow.running) return;
-    const settings = readSettingsFromPanel();
-    Object.assign(highLow, { running: true, runId: highLow.runId + 1, bet: highLowSettings(settings).base, losses: 0, net: 0, rounds: 0, wins: 0, stopReason: '', log: [] });
-    renderHighLow();
-    runHighLow(highLow.runId);
-  }
-
-  function stopHighLow(reason) {
-    if (!highLow.running) return;
-    highLow.running = false;
-    highLow.runId++;
-    highLow.stopReason = reason;
-    renderHighLow();
-  }
-
-  async function runHighLow(runId) {
-    while (highLow.running && runId === highLow.runId) {
-      const settings = readSettingsFromPanel();
-      const limits = highLowSettings(settings);
-      if (highLow.money !== null && highLow.money - highLow.bet < limits.keepMoney) {
-        stopHighLow(`錢不夠下一把 $${highLow.bet.toLocaleString()}（身上 $${highLow.money.toLocaleString()}，要留 $${limits.keepMoney.toLocaleString()}）`);
-        alertUser(`比大小：${highLow.stopReason}`);
-        return;
-      }
-      const guess = highLowGuess(settings);
-      let result;
-      try {
-        result = await requestGameApi(HIGH_LOW_API, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ bet: highLow.bet, guess }),
-        });
-      } catch (error) {
-        if (runId !== highLow.runId) return;
-        stopHighLow(error.captchaRequired ? '伺服器要求活人驗證，驗證完再按開始' : `下注失敗（${error.message}）`);
-        alertUser(`比大小：${highLow.stopReason}`);
-        return;
-      }
-      if (runId !== highLow.runId) return;
-      if (result.profile) {
-        rememberProfile(result.profile);
-        highLow.money = Number(result.profile.money);
-      }
-      const bet = Number(result.bet) || highLow.bet;
-      const change = Number(result.netChange) || (result.won ? bet : -bet);
-      highLow.rounds++;
-      highLow.net += change;
-      highLow.log.unshift({ at: Date.now(), bet, guess, dice: result.diceResult, won: Boolean(result.won), change });
-      highLow.log.length = Math.min(highLow.log.length, 30);
-      if (result.won) {
-        highLow.wins++;
-        highLow.losses = 0;
-        highLow.bet = limits.base;
-        if (limits.stopProfit && highLow.net >= limits.stopProfit) {
-          stopHighLow(`這次贏了 $${highLow.net.toLocaleString()}，到目標了`);
-          showToast(`比大小：${highLow.stopReason}`);
-          return;
-        }
-      } else {
-        highLow.losses++;
-        if (highLow.losses >= limits.maxLosses) {
-          stopHighLow(`連輸 ${highLow.losses} 把，停下來（這次合計 ${highLowNetText(highLow.net)}）`);
-          alertUser(`比大小：${highLow.stopReason}`);
-          return;
-        }
-        highLow.bet = bet * 2;
-      }
-      renderHighLow();
-      await wait(randomGap(limits.minSeconds * 1000, limits.maxSeconds * 1000));
-    }
-  }
-
-  function highLowNetText(net) {
-    return `${net > 0 ? '+' : net < 0 ? '-' : ''}$${Math.abs(net).toLocaleString()}`;
-  }
-
-  function renderHighLow() {
-    if (activeTab !== 'highLow') return;
-    const settings = readSettingsFromPanel();
-    const limits = highLowSettings(settings);
-    const worst = limits.base * (2 ** limits.maxLosses - 1);
-    panel.querySelector('[data-role="highlow-risk"]').textContent = `最後一把下 $${(limits.base * 2 ** (limits.maxLosses - 1)).toLocaleString()}，連輸到底共輸 $${worst.toLocaleString()}`;
-    const lines = [];
-    lines.push(highLow.running ? `<b>進行中</b>：下一把 $${highLow.bet.toLocaleString()}，目前連輸 ${highLow.losses} 把` : `<b>停止</b>${highLow.stopReason ? `：${escapeHtml(highLow.stopReason)}` : ''}`);
-    if (highLow.rounds) {
-      const color = highLow.net > 0 ? '#7ad67a' : highLow.net < 0 ? '#ff7a7a' : '#ccc';
-      lines.push(`這次 ${highLow.rounds} 把，贏 ${highLow.wins} 把，合計 <span style="color:${color}">${highLowNetText(highLow.net)}</span>${highLow.money !== null ? `，身上 $${highLow.money.toLocaleString()}` : ''}`);
-    }
-    highLow.log.forEach((round) => {
-      const time = new Date(round.at).toLocaleTimeString('zh-TW', { hour12: false });
-      lines.push(`<span style="color:#999">${time}</span> 下 $${round.bet.toLocaleString()} 猜${round.guess === 'big' ? '大' : '小'}，骰 ${round.dice} → ${round.won ? '<span style="color:#7ad67a">贏</span>' : '<span style="color:#ff7a7a">輸</span>'} ${round.change > 0 ? '+' : ''}${round.change.toLocaleString()}`);
-    });
-    panel.querySelector('[data-role="highlow-status"]').innerHTML = lines.join('<br>');
-  }
-
   function renderSalesStats() {
     const box = panel.querySelector('[data-role="sales-stats"]');
     if (!box) return;
@@ -12944,9 +12845,29 @@
     return [...new Set(materials.map(([name]) => name))];
   }
 
+  function rawStorage(key) {
+    try {
+      return BIG_STORAGE_KEYS.has(key) && bigStorage.values.has(key) ? bigStorage.values.get(key) : localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  }
+
+  // 鍛造紀錄每次重新解析很花時間（雲端下載的紀錄可能上萬件）；存的內容沒變就沿用，generation 變了代表紀錄換了
+  const FORGED_RECORD_KEYS = [CLOUD_EQUIPMENTS_KEY, FORGED_EQUIPMENTS_KEY, OWN_FORGE_MATERIALS_KEY, 'sgoBase.forgeMaterials', 'sgoEquipToolsForgeLog'];
+  const forgedRecordsCache = { raws: [], records: null, generation: 0 };
+
   // 同一件裝備自己有紀錄就用自己的
   function forgedRecords(...args) {
-    return perfTimed('forgedRecords', () => forgedRecordsUntimed(...args));
+    return perfTimed('forgedRecords', () => forgedRecordsCached(...args));
+  }
+
+  function forgedRecordsCached() {
+    const raws = FORGED_RECORD_KEYS.map(rawStorage);
+    if (!forgedRecordsCache.records || raws.some((raw, index) => raw !== forgedRecordsCache.raws[index])) {
+      Object.assign(forgedRecordsCache, { raws, records: forgedRecordsUntimed(), generation: forgedRecordsCache.generation + 1 });
+    }
+    return new Map(forgedRecordsCache.records);
   }
 
   function forgedRecordsUntimed() {
@@ -13163,8 +13084,23 @@
     return work.map((row) => row.slice(size));
   }
 
+  // 回歸要掃全部紀錄再解矩陣；同樣的紀錄、名稱表、品質倍率算出來一樣，一分鐘內直接用
+  const regressionCache = { at: 0, generation: 0, quality: null, byKey: new Map() };
+
   function materialRegression(...args) {
-    return perfTimed('materialRegression', () => materialRegressionUntimed(...args));
+    return perfTimed('materialRegression', () => materialRegressionCached(...args));
+  }
+
+  function materialRegressionCached(type, weights, forger = '') {
+    forgedRecords();
+    const quality = rawStorage('sgoBase.quality');
+    if (Date.now() - regressionCache.at > 60000 || regressionCache.generation !== forgedRecordsCache.generation || regressionCache.quality !== quality) {
+      Object.assign(regressionCache, { at: Date.now(), generation: forgedRecordsCache.generation, quality, byKey: new Map() });
+    }
+    const weightsKey = weights ? `${weights.fetchedAt || 'empty'}:${Object.keys(weights.days || {}).length}` : 'none';
+    const key = `${type}|${forger}|${weightsKey}`;
+    if (!regressionCache.byKey.has(key)) regressionCache.byKey.set(key, materialRegressionUntimed(type, weights, forger));
+    return regressionCache.byKey.get(key);
   }
 
   function materialRegressionUntimed(type, weights, forger = '') {
@@ -14375,9 +14311,12 @@
   }
 
   function recycleModelUntimed(type) {
-    if (Date.now() - recycleModels.at > 60000) Object.assign(recycleModels, { at: Date.now(), byType: {} });
+    const records = forgedRecords();
+    if (Date.now() - recycleModels.at > 60000 || recycleModels.generation !== forgedRecordsCache.generation) {
+      Object.assign(recycleModels, { at: Date.now(), generation: forgedRecordsCache.generation, byType: {} });
+    }
     if (type in recycleModels.byType) return recycleModels.byType[type];
-    const items = [...forgedRecords().values()].filter((equipment) => equipment.type === type && Number(equipment.recyclePrice) > 0);
+    const items = [...records.values()].filter((equipment) => equipment.type === type && Number(equipment.recyclePrice) > 0);
     let model = null;
     if (items.length >= 8) {
       const rows = items.map((equipment) => [1, ...RECYCLE_FIELDS.map((field) => Number(equipment[field]) || 0)]);
@@ -15563,9 +15502,16 @@
     return { day: `${dayMatch[1]}-${pad2(dayMatch[2])}-${pad2(dayMatch[3])}`, names };
   }
 
+  const nameWeightsCache = { raw: undefined, value: null };
+
   function loadNameWeights() {
-    const saved = readJsonStorage(NAME_WEIGHTS_KEY, null);
-    return saved && saved.days ? saved : null;
+    const raw = rawStorage(NAME_WEIGHTS_KEY);
+    if (raw !== nameWeightsCache.raw) {
+      const saved = readJsonStorage(NAME_WEIGHTS_KEY, null);
+      nameWeightsCache.raw = raw;
+      nameWeightsCache.value = saved && saved.days ? saved : null;
+    }
+    return nameWeightsCache.value;
   }
 
   // 測名表一直有人更新，隔一段時間才重抓；同時只抓一次
@@ -18271,10 +18217,6 @@
 
   panel.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && event.target.dataset && event.target.dataset.forgeName) event.target.blur();
-  });
-
-  panel.addEventListener('input', (event) => {
-    if (event.target.dataset && /^highLow(?:Base|MaxLosses)$/.test(event.target.dataset.field || '')) renderHighLow();
   });
 
   panel.addEventListener('change', (event) => {
