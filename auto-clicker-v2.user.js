@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.32
+// @version      4.33
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -17954,7 +17954,10 @@
 
   function scheduleMiningRunner(delay) {
     const settings = readSettingsFromPanel();
-    delay = lowProfileDelay(settings, delay);
+    // 跟鍛造一樣：休閒離開中照收礦時間排（晚 1～8 分鐘回來收），改設定也幾秒內就動；不然要等整段休息結束才收
+    if (offHoursForging(settings)) delay += randomSkewedSeconds(1, 8) * 1000 * accountPersonality().speed;
+    else if (casualForgeAway(settings)) delay += delay < 20000 ? randomSkewedSeconds(1, 8) * 1000 * accountPersonality().speed : randomGap(60000, 480000);
+    else delay = lowProfileDelay(settings, delay);
     backgroundTimer.clearTimeout(miningRunner.timerId);
     const runId = miningRunner.runId;
     miningRunner.timerId = backgroundTimer.setTimeout(() => {
