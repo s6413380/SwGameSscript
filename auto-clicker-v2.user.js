@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.57
+// @version      4.58
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -17229,7 +17229,18 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
 
   // API 鍛造自己跑一條線，不佔用打怪的流程：同一個分頁可以一邊打怪一邊 API 鍛造。
   // 不用定時巡：有空的角色就開爐，否則睡到最早那爐的完成時間（遊戲有給 actionCompleteTime）再來收
-  const forgeRunner = { running: false, runId: 0, timerId: null, started: 0, captchaWaiting: false, captchaCheckedAt: 0, failures: 0, nameWaiting: '' };
+  const forgeRunner = { running: false, runId: 0, timerId: null, started: 0, captchaWaiting: false, captchaCheckedAt: 0, failures: 0, nameWaiting: '', stuck: new Map() };
+  // 某一爐一直收不了（伺服器回錯）：那個角色先跳過一陣子，其他爐照常收、照常開，不要整個鍛造停下來
+  const FORGE_STUCK_MILLISECONDS = 10 * 60000;
+
+  function forgeHeroStuck(heroId) {
+    return (forgeRunner.stuck.get(heroId) || 0) > Date.now();
+  }
+
+  function markForgeHeroStuck(hero, reason, actions) {
+    forgeRunner.stuck.set(hero.id, Date.now() + FORGE_STUCK_MILLISECONDS);
+    actions.push(`${hero.name} 收不了（${reason}），先跳過，10 分鐘後再試`);
+  }
   // 名稱是哪一天定的（自動換上或手動改名稱）；存起來，重開腳本、重整頁面後才知道今天的名稱定了沒
   const FORGE_NAME_DAY_KEY = 'autoClickerV2ForgeNameDay';
   // 分數只高一點點不換，免得樣本數變動時兩個名稱換來換去
@@ -17467,10 +17478,11 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   function nextForgeDelay(heroes, heroIds, canStartMore) {
     if (canStartMore) return randomGap(3000, 8000);
     const waitingForShop = heroes.some((hero) => heroIds.includes(hero.id) && canStartForge(hero));
+    // 時間早就過了還在：收不了的（跳過中）或不歸自動鍛造管的，拿它算會變成每幾秒就來看一次
     const times = heroes
-      .filter((hero) => hero.actionState === 5 && (waitingForShop || heroIds.includes(hero.id)))
+      .filter((hero) => hero.actionState === 5 && !forgeHeroStuck(hero.id) && (waitingForShop || heroIds.includes(hero.id)))
       .map((hero) => Date.parse(hero.actionCompleteTime))
-      .filter(Number.isFinite);
+      .filter((at) => Number.isFinite(at) && at > Date.now() - 60000);
     const next = times.length ? Math.min(...times) : Date.now() + 60000;
     return Math.min(Math.max(next - Date.now(), 0) + randomGap(3000, 12000), 15 * 60000);
   }
@@ -17533,19 +17545,26 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       forgeHeroes = heroes;
       forgeHeroesAt = Date.now();
       renderRecipeHeroes();
-      const hold = forgeCollectHold(settings, heroes, heroIds);
+      const hold = forgeCollectHold(settings, heroes, heroIds.filter((id) => !forgeHeroStuck(id)));
       const holdDelay = () => Math.max(0, hold.until - Date.now()) + randomGap(60000, 300000);
       const actions = [];
-      for (const hero of heroes.filter((candidate) => !hold && heroIds.includes(candidate.id) && candidate.actionState === 5 && candidate.canComplete)) {
+      for (const hero of heroes.filter((candidate) => !hold && heroIds.includes(candidate.id) && candidate.actionState === 5 && candidate.canComplete && !forgeHeroStuck(candidate.id))) {
         let completed;
         try {
           completed = await requestGameApi(`${HEROES_API}/${hero.id}/completeForge`, { method: 'POST' });
         } catch (error) {
-          // 讀完列表到送出之間被手動收走了：重讀一次角色，不算出錯
-          if (error.status !== 400) throw error;
-          heroes = (await requestGameApi(HEROES_API)).heroes || heroes;
-          if (cancelled()) return;
-          actions.push(`${hero.name} 已經被收走了`);
+          // 驗證、網路斷掉、請求太頻繁照舊交給外面處理（等驗證、整輪重試）；伺服器對這一爐回錯（含 5xx）就只跳過這一爐
+          if (error.captchaRequired || !error.status || error.status === 429) throw error;
+          if (error.status === 400) {
+            // 讀完列表到送出之間被手動收走了：重讀一次角色，不算出錯；重讀後還是一樣卡著才算收不了
+            heroes = (await requestGameApi(HEROES_API)).heroes || heroes;
+            if (cancelled()) return;
+            const again = heroes.find((candidate) => candidate.id === hero.id);
+            if (again && again.actionState === 5 && again.canComplete) markForgeHeroStuck(hero, error.message, actions);
+            else actions.push(`${hero.name} 已經被收走了`);
+            continue;
+          }
+          markForgeHeroStuck(hero, error.message, actions);
           continue;
         }
         heroes = completed.heroes || heroes;
