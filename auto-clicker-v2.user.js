@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.44
+// @version      4.45
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -370,6 +370,8 @@
     // 防誤觸：小視窗的這些按鈕要連按兩下才算數（遊戲頁不管）
     buttonLockEnabled: true,
     buttonLockNames: '回城、前行',
+    // 小視窗裡耐久低於這個數字的裝備標紅
+    miniLowDurability: 450,
     // 面板換成大耳狗風格（天空藍、雲朵、粉紅點綴），預設關
     cinnamonTheme: false,
     itemStepSeconds: 1,
@@ -1307,6 +1309,7 @@
       <label class="row"><input data-field="showAccountName" type="checkbox" style="flex:none;width:auto"> 面板標題、分頁標題和提醒顯示帳號名稱（例如「愛吉吉的小明」）</label>
       <label class="row"><input data-field="buttonLockEnabled" type="checkbox" style="flex:none;width:auto"> <b>小視窗防誤觸</b>：小視窗的這些按鈕要在 3 秒內連按兩下才會執行（遊戲頁的按鈕不受影響）</label>
       <div class="row">鎖定的按鈕<input data-field="buttonLockNames" placeholder="小視窗按鈕上的字，例：回城、前行、後退"></div>
+      <label>小視窗裡裝備耐久低於 ${numberInput('miniLowDurability', 'min="0" style="flex:none;width:60px"')} 標紅（0＝不標）</label>
       <label class="row"><input data-field="assistModeEnabled" type="checkbox" style="flex:none;width:auto"> <b>輔助模式</b>：只留手動打怪用的（補給、解異常、換裝、小視窗、統計），自動掛機、鍛造、挖礦、購卡的分頁和按鈕都收起來，而且會停掉、不能啟動</label>
       <label class="row"><input data-field="cinnamonTheme" type="checkbox" style="flex:none;width:auto"> 風格2</label>
       <fieldset class="group">
@@ -8961,11 +8964,6 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     return `<div class="bar"><div style="width:${percent}%;background:${color}"></div></div><div class="num"><span>${Number(value || 0).toLocaleString()} / ${Number(full || 0).toLocaleString()}</span><span>${Math.round(percent)}%</span></div>`;
   }
 
-  // 耐久門檻沿用遊戲物品頁的「低耐久高亮」設定（存在 localStorage），遊戲裡改了這裡跟著變
-  function miniLowDurability() {
-    const saved = Number(localStorage.getItem('items_equipmentLowDurThreshold'));
-    return Number.isInteger(saved) && saved >= 0 && localStorage.getItem('items_equipmentLowDurThreshold') !== null ? saved : 100;
-  }
 
   function miniHeroDetailHtml(hero, lowDurability) {
     const equipments = state.equipments
@@ -9005,7 +9003,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     const info = state.huntInfo;
     const heroes = info && Array.isArray(info.heroes) ? info.heroes : [];
     const now = Date.now();
-    const lowDurability = miniLowDurability();
+    const lowDurability = Math.max(0, Number(settings.miniLowDurability) || 0);
     refreshMiniEquipments();
     const cooldown = Math.max(0, Math.ceil((((info && Date.parse(info.huntAvailableAt)) || 0) - now) / 1000));
     const moving = heroes.some((hero) => hero.actionState === 1);
