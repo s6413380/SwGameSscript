@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.48
+// @version      4.49
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -304,6 +304,8 @@
     // 自動打怪中了異常（到這個程度）先吃對應的道具，吃到上限還沒好才照上面提醒／暫停；開始吃之後降到較輕的程度也繼續吃
     huntCureEnabled: true,
     huntCureLevel: 3,
+    // 燒傷（火）另外設：輕度就吃蘆薈，不用等到重度
+    huntCureBurnLevel: 1,
     huntCureItems: '中毒=解毒劑、重度燒傷=應急急救包、中度燒傷=應急急救包、輕度燒傷=蘆薈',
     huntCureMaxUses: 4,
     // 執行中不在狩獵頁／鍛造頁就自動切過去
@@ -1276,7 +1278,8 @@
       <div class="row">　🔔 只提醒、繼續打：<select data-field="statusAlertLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">不處理</option><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select></div>
       <div class="row">　⏸ 暫停：<select data-field="statusPauseLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">不處理</option><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select></div>
       <div class="hint">例：提醒選「輕度以上」、暫停選「重度」＝輕度、中度只響提醒，重度才停下來</div>
-      <div class="row"><label style="flex:none;display:flex;align-items:center;gap:4px"><input data-field="huntCureEnabled" type="checkbox" style="flex:none;width:auto"> 打怪時（含手動）</label><select data-field="huntCureLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select>先吃藥</div>
+      <div class="row"><label style="flex:none;display:flex;align-items:center;gap:4px"><input data-field="huntCureEnabled" type="checkbox" style="flex:none;width:auto"> 打怪時（含手動）先吃藥</label></div>
+      <div class="row">　中毒等：<select data-field="huntCureLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select>才吃　燒傷：<select data-field="huntCureBurnLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select>就吃</div>
       <div class="row">吃什麼<input data-field="huntCureItems" placeholder="中毒=解毒劑、輕度燒傷=蘆薈" style="flex:1;min-width:0"></div>
       <label>每種異常最多吃 ${numberInput('huntCureMaxUses', 'min="1" max="20"')} 次</label>
       <div class="hint">異常名稱=道具名稱，「、」分隔；名稱前加「重度／中度／輕度」就只在那個程度吃。開始吃之後降到較輕的程度也會繼續照表吃。吃到上限還沒好、或沒有藥，才照上面的提醒／暫停</div>
@@ -5771,10 +5774,15 @@
     return `${hero.id}:${condition.name}`;
   }
 
+  // 燒傷和中毒分開設程度；燒傷（燃燒）之外的都照中毒那一格
+  function huntCureLevelFor(settings, condition) {
+    return /燒|燃/.test(condition.name) ? Number(settings.huntCureBurnLevel) || 1 : Number(settings.huntCureLevel) || 3;
+  }
+
   function huntCureItem(settings, hero, condition) {
     const tries = huntCureTries.get(huntCureKey(hero, condition)) || 0;
     if (!settings.huntCureEnabled || tries >= huntCureMaxUses(settings)) return '';
-    if (!tries && condition.severity < (Number(settings.huntCureLevel) || 3)) return '';
+    if (!tries && condition.severity < huntCureLevelFor(settings, condition)) return '';
     return cureItemName(cureRules(settings.huntCureItems), condition);
   }
 
@@ -9068,7 +9076,6 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     const supplying = manualSupply.busy;
     if (supplying) issues.push({ text: '補給／換裝中' });
     const percent = (value, full) => (full > 0 ? Math.floor((value / full) * 100) : 100);
-    const cureLevel = Number(settings.huntCureLevel) || 3;
     heroes.forEach((hero) => {
       if (hero.perished || hero.hp <= 0) {
         issues.push({ text: `${hero.name} 倒下`, serious: true });
@@ -9079,7 +9086,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       if (hp < settings[groupKey('health', 'ThresholdPercent')]) issues.push({ text: `${hero.name} HP ${hp}%`, serious: !supplying });
       if (sp < settings[groupKey('resource', 'ThresholdPercent')]) issues.push({ text: `${hero.name} 體力 ${sp}%`, serious: !supplying });
       heroConditions(hero)
-        .filter((condition) => condition.severity >= cureLevel)
+        .filter((condition) => condition.severity >= huntCureLevelFor(settings, condition))
         .forEach((condition) => {
           const gaveUp = !settings.huntCureEnabled || (huntCureTries.get(huntCureKey(hero, condition)) || 0) >= huntCureMaxUses(settings);
           issues.push({ text: `${hero.name} ${condition.level}${condition.name}${gaveUp ? '（解不掉，去看看）' : ''}`, serious: gaveUp || !supplying });
