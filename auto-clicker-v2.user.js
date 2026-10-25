@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.55
+// @version      4.56
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -2921,7 +2921,8 @@
   function reloadForUpdateIfIdle() {
     if (!autoUpdate.pendingVersion || forgeRunner.captchaWaiting) return false;
     if (!state.running && (state.verifyResumeMode !== null || dashboard.alert)) return false;
-    if (!state.running && !forgeRunner.running && manualPlayActive()) return false;
+    // 自動鍛造照跑不影響：舊版繼續鍛造，等人閒下來再更新（重整後會自動接著鍛造）
+    if (!state.running && manualPlayActive()) return false;
     try {
       if (resumeModes()) sessionStorage.setItem(RESUME_AFTER_RELOAD_KEY, resumeModes());
     } catch {
