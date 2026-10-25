@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.43
+// @version      4.44
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -367,7 +367,7 @@
     showAccountName: true,
     // 輔助模式：只手動打怪的人用，自動化的分頁和按鈕都收起來，自動掛機／鍛造／挖礦也不會啟動
     assistModeEnabled: false,
-    // 防誤觸：這些按鈕（遊戲頁和小視窗）要連按兩下才算數
+    // 防誤觸：小視窗的這些按鈕要連按兩下才算數（遊戲頁不管）
     buttonLockEnabled: true,
     buttonLockNames: '回城、前行',
     // 面板換成大耳狗風格（天空藍、雲朵、粉紅點綴），預設關
@@ -1305,8 +1305,8 @@
       <label class="row"><input data-field="alertPopupEnabled" type="checkbox" style="flex:none;width:auto"> 彈出提示視窗</label>
       <label class="row"><input data-field="alertNotifyEnabled" type="checkbox" style="flex:none;width:auto"> 系統通知＋分頁標題閃爍</label>
       <label class="row"><input data-field="showAccountName" type="checkbox" style="flex:none;width:auto"> 面板標題、分頁標題和提醒顯示帳號名稱（例如「愛吉吉的小明」）</label>
-      <label class="row"><input data-field="buttonLockEnabled" type="checkbox" style="flex:none;width:auto"> <b>防誤觸鎖定</b>：這些按鈕要在 3 秒內連按兩下才會執行（遊戲頁和小視窗都算）</label>
-      <div class="row">鎖定的按鈕<input data-field="buttonLockNames" placeholder="按鈕上的字，例：回城、前行、後退"></div>
+      <label class="row"><input data-field="buttonLockEnabled" type="checkbox" style="flex:none;width:auto"> <b>小視窗防誤觸</b>：小視窗的這些按鈕要在 3 秒內連按兩下才會執行（遊戲頁的按鈕不受影響）</label>
+      <div class="row">鎖定的按鈕<input data-field="buttonLockNames" placeholder="小視窗按鈕上的字，例：回城、前行、後退"></div>
       <label class="row"><input data-field="assistModeEnabled" type="checkbox" style="flex:none;width:auto"> <b>輔助模式</b>：只留手動打怪用的（補給、解異常、換裝、小視窗、統計），自動掛機、鍛造、挖礦、購卡的分頁和按鈕都收起來，而且會停掉、不能啟動</label>
       <label class="row"><input data-field="cinnamonTheme" type="checkbox" style="flex:none;width:auto"> 風格2</label>
       <fieldset class="group">
@@ -8937,23 +8937,6 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     buttonLock.armed.set(name, Date.now() + BUTTON_LOCK_MILLISECONDS);
     return false;
   }
-
-  // 遊戲頁的按鈕：在 React 收到之前（window 捕獲階段）擋下第一下；按鈕上的「（6）」這類次數不算名稱
-  window.addEventListener(
-    'click',
-    (event) => {
-      if (!event.isTrusted) return;
-      const button = event.target instanceof Element ? event.target.closest('button') : null;
-      if (!button || button.disabled || button.closest('[data-auto-clicker]')) return;
-      const name = button.textContent.replace(/\s*[（(]\s*\d+\s*[）)]\s*$/, '').trim();
-      const settings = readSettingsFromPanel();
-      if (!name || passButtonLock(settings, name)) return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      showToast(`🔒「${name}」已鎖定，3 秒內再按一下才會執行`);
-    },
-    true
-  );
 
   window.__aijijiMiniAttach = (win) => {
     if (miniWindow.win === win) return;
