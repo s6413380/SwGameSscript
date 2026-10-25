@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.56
+// @version      4.57
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -374,6 +374,9 @@
     buttonLockNames: '回城、前行',
     // 小視窗裡耐久低於這個數字的裝備標紅
     miniLowDurability: 450,
+    // 小視窗顯示最近一場的輸出佔比、掉落（小視窗上也能直接切）
+    miniShowDamage: true,
+    miniShowLoot: true,
     // 面板換成大耳狗風格（天空藍、雲朵、粉紅點綴），預設關
     cinnamonTheme: false,
     itemStepSeconds: 1,
@@ -1319,6 +1322,7 @@
       <label class="row"><input data-field="buttonLockEnabled" type="checkbox" style="flex:none;width:auto"> <b>小視窗防誤觸</b>：小視窗的這些按鈕要在 3 秒內連按兩下才會執行（遊戲頁的按鈕不受影響）</label>
       <div class="row">鎖定的按鈕<input data-field="buttonLockNames" placeholder="小視窗按鈕上的字，例：回城、前行、後退"></div>
       <label>小視窗裡裝備耐久低於 ${numberInput('miniLowDurability', 'min="0" style="flex:none;width:60px"')} 標紅（0＝不標）</label>
+      <div class="row"><label style="flex:none"><input data-field="miniShowDamage" type="checkbox" style="width:auto"> 小視窗顯示輸出佔比</label><label style="flex:none"><input data-field="miniShowLoot" type="checkbox" style="width:auto"> 掉落</label></div>
       <label class="row"><input data-field="assistModeEnabled" type="checkbox" style="flex:none;width:auto"> <b>輔助模式</b>：只留手動打怪用的（補給、解異常、換裝、小視窗、統計），自動掛機、鍛造、挖礦、購卡的分頁和按鈕都收起來，而且會停掉、不能啟動</label>
       <label class="row"><input data-field="cinnamonTheme" type="checkbox" style="flex:none;width:auto"> 風格2</label>
       <fieldset class="group">
@@ -8906,7 +8910,7 @@
   // 小視窗：另開一個小瀏覽器視窗，手動按後退／原地狩獵／前行／回城（跟在遊戲頁按一樣，按完照手動打怪的設定補給）。
   // 按鈕的 click 寫在小視窗自己的程式裡、透過 opener 呼叫這頁；主頁重新整理後小視窗會自己重新接上，不用重開
   const MINI_WINDOW_NAME = 'aijijiMiniWindow';
-  const miniWindow = { win: null, busy: '', note: '', moveTimer: null, parts: {}, equipLoading: false, menuHeroId: 0, items: null, itemsAt: 0 };
+  const miniWindow = { win: null, busy: '', note: '', moveTimer: null, parts: {}, equipLoading: false, menuHeroId: 0, items: null, itemsAt: 0, reportCache: { report: null, damage: '', loot: '' } };
 
   function openMiniWindow() {
     const win = window.open('', MINI_WINDOW_NAME, 'popup,width=300,height=620');
@@ -8929,7 +8933,7 @@ button:disabled{opacity:.4;cursor:default}button.main{background:#92400e;border-
 .head{display:flex;justify-content:space-between;color:#a8a29e;margin-bottom:6px}
 .equip{display:flex;justify-content:space-between;font-size:12px;margin-top:2px}.equip.low{color:#f87171;font-weight:bold}
 .cond{display:inline-block;margin:4px 4px 0 0;padding:0 5px;border-radius:4px;font-size:12px;background:#7f1d1d;color:#fecaca}.note{color:#fbbf24;margin-top:6px;min-height:1.2em}
-</style></head><body><div id="mini-root"><div class="head"><span id="mini-place"></span><span id="mini-timer"></span></div><div id="mini-team"></div><div id="mini-ready"></div><div id="mini-buttons"></div><div class="note" id="mini-note"></div></div>
+</style></head><body><div id="mini-root"><div class="head"><span id="mini-place"></span><span id="mini-timer"></span></div><div id="mini-team"></div><div id="mini-report"></div><div id="mini-ready"></div><div id="mini-buttons"></div><div class="note" id="mini-note"></div></div>
 <script>
 document.addEventListener('click', function (event) {
   var button = event.target.closest('[data-mini]');
@@ -9041,6 +9045,11 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       ready.id = 'mini-ready';
       doc.getElementById('mini-buttons').before(ready);
     }
+    if (!doc.getElementById('mini-report') && doc.getElementById('mini-ready')) {
+      const report = doc.createElement('div');
+      report.id = 'mini-report';
+      doc.getElementById('mini-ready').before(report);
+    }
     const info = state.huntInfo;
     // 吃藥、解異常的回應只更新 heroStats，疊上去才是最新的血量和狀態
     const heroes = (info && Array.isArray(info.heroes) ? info.heroes : []).map((hero) => ({ ...hero, ...(state.heroStats.get(hero.id) || {}) }));
@@ -9076,6 +9085,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
         )
         .join('')
     );
+    setMiniPart('mini-report', miniReportHtml(settings));
     const issues = miniReadyIssues(settings, heroes);
     // 黃＝等一下就會好（補給中、冷卻）；紅＝不會自己好，要去看（倒下、解不掉、沒補到）
     const readyColor = issues.some((issue) => issue.serious) ? '#f87171' : '#fbbf24';
@@ -9133,6 +9143,57 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       }
     });
     return issues;
+  }
+
+  // 最近一場的輸出佔比、掉落：同一場只算一次（每秒重畫時不重新解析戰報）
+  function miniReportParts(report) {
+    const cache = miniWindow.reportCache;
+    if (cache.report === report) return cache;
+    let damage = '';
+    try {
+      const { lines, indented, sides } = battleInputOfReport(report);
+      const members = parseBattle(lines, indented, sides).members;
+      const entries = Object.entries(members).sort(byDamage);
+      const total = sumMembers(members).damage;
+      damage = entries
+        .map(([name, member]) => {
+          const share = total > 0 ? (member.damage / total) * 100 : 0;
+          return `<div class="num" style="color:#e7e5e4"><span>${escapeHtml(name)}</span><span>${formatAmount(member.damage)}・${share.toFixed(1)}%</span></div><div class="bar"><div style="width:${share}%;background:#f87171"></div></div>`;
+        })
+        .join('');
+    } catch {
+      damage = '';
+    }
+    const messages = (report.messages || []).filter((message) => String(message.m || '').trim());
+    const rareNames = rareLootNames();
+    const loot = parseLoot(messages)
+      .map(([name, quantity]) => {
+        const rare = isRareLoot(name, rareNames);
+        return `<span style="display:inline-block;margin:2px 4px 0 0;padding:0 6px;border-radius:9px;font-size:12px;border:1px solid ${rare ? '#f59e0b' : '#57534e'};color:${rare ? '#fcd34d' : '#e7e5e4'}">${escapeHtml(name)}${quantity > 1 ? ` ×${quantity}` : ''}</span>`;
+      })
+      .join('');
+    const money = Object.entries(huntMessageMoney(messages))
+      .map(([label, amount]) => `${label} $${amount.toLocaleString()}`)
+      .join('・');
+    Object.assign(cache, {
+      report,
+      damage,
+      loot: `${loot || '<span class="num">沒有掉落</span>'}${money ? `<div style="font-size:12px;color:#fcd34d">${escapeHtml(money)}</div>` : ''}`,
+    });
+    return cache;
+  }
+
+  function miniReportHtml(settings) {
+    const chip = (field, label) =>
+      `<button data-mini="toggle:${field}" style="padding:2px 6px;font-size:12px;${settings[field] ? 'background:#1e3a5f;border-color:#3b82f6' : ''}">${settings[field] ? '☑' : '☐'} ${label}</button>`;
+    const toggles = `<div class="row" style="justify-content:flex-start">${chip('miniShowDamage', '輸出佔比')}${chip('miniShowLoot', '掉落')}</div>`;
+    if (!settings.miniShowDamage && !settings.miniShowLoot) return toggles;
+    const report = (pageReport.hunt && pageReport.hunt.report) || storedHuntReport();
+    if (!report) return `${toggles}<div class="num">還沒有戰報</div>`;
+    const parts = miniReportParts(report);
+    return `${toggles}<div class="card" style="margin-top:4px">
+      ${settings.miniShowDamage ? `<div style="font-weight:bold">⚔️ 輸出佔比</div>${parts.damage || '<div class="num">這場沒有傷害資料</div>'}` : ''}
+      ${settings.miniShowLoot ? `<div style="font-weight:bold;margin-top:${settings.miniShowDamage ? 6 : 0}px">🎁 掉落</div>${parts.loot}` : ''}</div>`;
   }
 
   const MINI_ACTION_LABELS = { back: '後退', hunt: '原地狩獵', forward: '前行', town: '回城' };
@@ -9208,6 +9269,12 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   }
 
   async function miniAction(action) {
+    const toggle = /^toggle:(miniShowDamage|miniShowLoot)$/.exec(action);
+    if (toggle) {
+      setPanelField(toggle[1], !readSettingsFromPanel()[toggle[1]]);
+      renderMiniWindow(readSettingsFromPanel());
+      return;
+    }
     if (miniWindow.busy || (state.running && !state.forgeMode)) return;
     const menu = /^menu:(\d+)$/.exec(action);
     if (menu) {
