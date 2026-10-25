@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.39
+// @version      4.40
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -8827,10 +8827,10 @@
   // 小視窗：另開一個小瀏覽器視窗，手動按後退／原地狩獵／前行／回城（跟在遊戲頁按一樣，按完照手動打怪的設定補給）。
   // 按鈕的 click 寫在小視窗自己的程式裡、透過 opener 呼叫這頁；主頁重新整理後小視窗會自己重新接上，不用重開
   const MINI_WINDOW_NAME = 'aijijiMiniWindow';
-  const miniWindow = { win: null, busy: '', note: '', moveTimer: null, parts: {} };
+  const miniWindow = { win: null, busy: '', note: '', moveTimer: null, parts: {}, equipLoading: false };
 
   function openMiniWindow() {
-    const win = window.open('', MINI_WINDOW_NAME, 'popup,width=300,height=480');
+    const win = window.open('', MINI_WINDOW_NAME, 'popup,width=300,height=620');
     if (!win) {
       setStatus('小視窗被瀏覽器擋了，請允許這個網站開彈出式視窗');
       return;
@@ -8847,7 +8847,9 @@ body{margin:0;padding:8px;background:#1c1917;color:#e7e5e4;font:13px/1.4 system-
 .row{display:flex;gap:6px;margin-top:6px}.row button{flex:1}
 button{padding:7px 4px;border:1px solid #57534e;border-radius:6px;background:#3f3f46;color:#fafaf9;font-size:13px;cursor:pointer}
 button:disabled{opacity:.4;cursor:default}button.main{background:#92400e;border-color:#d97706}
-.head{display:flex;justify-content:space-between;color:#a8a29e;margin-bottom:6px}.note{color:#fbbf24;margin-top:6px;min-height:1.2em}
+.head{display:flex;justify-content:space-between;color:#a8a29e;margin-bottom:6px}
+.equip{display:flex;justify-content:space-between;font-size:12px;margin-top:2px}.equip.low{color:#f87171;font-weight:bold}
+.cond{display:inline-block;margin:4px 4px 0 0;padding:0 5px;border-radius:4px;font-size:12px;background:#7f1d1d;color:#fecaca}.note{color:#fbbf24;margin-top:6px;min-height:1.2em}
 </style></head><body><div id="mini-root"><div class="head"><span id="mini-place"></span><span id="mini-timer"></span></div><div id="mini-team"></div><div id="mini-buttons"></div><div class="note" id="mini-note"></div></div>
 <script>
 document.addEventListener('click', function (event) {
@@ -8889,6 +8891,36 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     return `<div class="bar"><div style="width:${percent}%;background:${color}"></div></div><div class="num"><span>${Number(value || 0).toLocaleString()} / ${Number(full || 0).toLocaleString()}</span><span>${Math.round(percent)}%</span></div>`;
   }
 
+  // 耐久門檻沿用遊戲物品頁的「低耐久高亮」設定（存在 localStorage），遊戲裡改了這裡跟著變
+  function miniLowDurability() {
+    const saved = Number(localStorage.getItem('items_equipmentLowDurThreshold'));
+    return Number.isInteger(saved) && saved >= 0 && localStorage.getItem('items_equipmentLowDurThreshold') !== null ? saved : 100;
+  }
+
+  function miniHeroDetailHtml(hero, lowDurability) {
+    const equipments = state.equipments
+      .filter((equipment) => equipment.equipped === hero.id)
+      .map((equipment) => {
+        const percent = equipment.fullDur > 0 ? Math.round((equipment.dur / equipment.fullDur) * 1000) / 10 : 0;
+        const low = lowDurability > 0 && equipment.dur < lowDurability;
+        return `<div class="equip${low ? ' low' : ''}" title="${escapeHtml(equipment.name)}"><span>${escapeHtml(equipment.type)}</span><span>耐久 ${Number(equipment.dur).toLocaleString()}/${Number(equipment.fullDur).toLocaleString()}（${percent}%）</span></div>`;
+      })
+      .join('');
+    const conditions = heroConditions(hero)
+      .map((condition) => `<span class="cond">${escapeHtml(condition.level)}${escapeHtml(condition.name)}</span>`)
+      .join('');
+    return `${equipments}${conditions ? `<div>${conditions}</div>` : ''}`;
+  }
+
+  // 裝備平常靠打怪回應的 equipmentChanges 更新；小視窗開著卻還沒讀過（或太久沒讀）才自己讀一次背包
+  function refreshMiniEquipments() {
+    if (miniWindow.equipLoading || (state.equipments.length && Date.now() - state.equipmentsAt < 300000) || Date.now() - state.equipmentsAt < 60000) return;
+    miniWindow.equipLoading = true;
+    refreshEquipments()
+      .catch(() => {})
+      .finally(() => (miniWindow.equipLoading = false));
+  }
+
   function renderMiniWindow(settings) {
     if (!miniWindow.win) return;
     try {
@@ -8903,6 +8935,8 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     const info = state.huntInfo;
     const heroes = info && Array.isArray(info.heroes) ? info.heroes : [];
     const now = Date.now();
+    const lowDurability = miniLowDurability();
+    refreshMiniEquipments();
     const cooldown = Math.max(0, Math.ceil((((info && Date.parse(info.huntAvailableAt)) || 0) - now) / 1000));
     const moving = heroes.some((hero) => hero.actionState === 1);
     const moveLeft = Math.max(0, Math.ceil((restUntilOf(heroes.filter((hero) => hero.actionState === 1)) - now) / 1000));
@@ -8913,7 +8947,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       heroes
         .map(
           (hero) => `<div class="card"><div class="name"><span>${escapeHtml(hero.name)}</span><span class="lv">Lv ${hero.lv}</span></div>
-            ${miniBar(hero.hp, hero.fullHp, '#dc2626')}${miniBar(hero.sp, hero.fullSp, '#16a34a')}${miniBar(hero.exp, hero.fullExp, '#0891b2')}</div>`
+            ${miniBar(hero.hp, hero.fullHp, '#dc2626')}${miniBar(hero.sp, hero.fullSp, '#16a34a')}${miniBar(hero.exp, hero.fullExp, '#0891b2')}${miniHeroDetailHtml(hero, lowDurability)}</div>`
         )
         .join('')
     );
