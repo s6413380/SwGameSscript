@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.51
+// @version      4.52
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -2904,9 +2904,24 @@
     if (box) box.textContent = crashLogText() || '還沒有黑掉過';
   }
 
+  const MANUAL_PLAY_QUIET_MILLISECONDS = 10 * 60000;
+  const manualPlay = { at: 0 };
+  ['pointerdown', 'keydown'].forEach((type) => window.addEventListener(type, () => (manualPlay.at = Date.now()), true));
+
+  function manualPlayActive() {
+    let miniOpen = false;
+    try {
+      miniOpen = Boolean(miniWindow.win && !miniWindow.win.closed);
+    } catch {
+      // 讀不到小視窗就當沒開
+    }
+    return miniOpen || Date.now() - manualPlay.at < MANUAL_PLAY_QUIET_MILLISECONDS;
+  }
+
   function reloadForUpdateIfIdle() {
     if (!autoUpdate.pendingVersion || forgeRunner.captchaWaiting) return false;
     if (!state.running && (state.verifyResumeMode !== null || dashboard.alert)) return false;
+    if (!state.running && !forgeRunner.running && manualPlayActive()) return false;
     try {
       if (resumeModes()) sessionStorage.setItem(RESUME_AFTER_RELOAD_KEY, resumeModes());
     } catch {
@@ -5647,6 +5662,7 @@
   }
 
   async function manualSupplyAfterHunt() {
+    manualPlay.at = Date.now();
     const settings = readSettingsFromPanel();
     if (!settings.manualSupplyEnabled || tabShutDown || manualSupply.busy) return;
     if (scriptHuntingActive()) return;
@@ -9045,8 +9061,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
         )
         .join('')
     );
-    const issues = miniReadyIssues(settings, heroes, lowDurability);
-    if (cooldown) issues.push({ text: `冷卻 ${cooldown} 秒` });
+    const issues = miniReadyIssues(settings, heroes);
     // 黃＝等一下就會好（補給中、冷卻）；紅＝不會自己好，要去看（倒下、解不掉、沒補到）
     const readyColor = issues.some((issue) => issue.serious) ? '#f87171' : '#fbbf24';
     setMiniPart(
@@ -9072,10 +9087,10 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     setMiniPart('mini-note', escapeHtml(scriptHunting ? '腳本正在掛機，要手動先按停止' : miniWindow.busy || miniWindow.note));
   }
 
-  // 就緒＝不用再補（HP、體力都在補血／補體力頁的門檻以上）、沒有該解的異常、沒有耐久低的裝備、補給換裝跑完了。
+  // 就緒＝不用再補（HP、體力都在補血／補體力頁的門檻以上）、沒有該解的異常、沒有低於換裝門檻還沒換掉的裝備、補給換裝跑完了。
   // 異常照「暫停」頁解異常的程度：比那個輕的本來就不解，不算沒就緒；到了那個程度還在＝沒解掉（例如解毒劑用光），標紅去看。
   // 回傳 [{ text, serious }]：serious＝不會自己好
-  function miniReadyIssues(settings, heroes, lowDurability) {
+  function miniReadyIssues(settings, heroes) {
     const issues = [];
     const supplying = manualSupply.busy;
     if (supplying) issues.push({ text: '補給／換裝中' });
@@ -9095,9 +9110,12 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
           const gaveUp = !settings.huntCureEnabled || (huntCureTries.get(huntCureKey(hero, condition)) || 0) >= huntCureMaxUses(settings);
           issues.push({ text: `${hero.name} ${condition.level}${condition.name}${gaveUp ? '（解不掉，去看看）' : ''}`, serious: gaveUp || !supplying });
         });
-      state.equipments
-        .filter((equipment) => equipment.equipped === hero.id && lowDurability > 0 && equipment.dur < lowDurability)
-        .forEach((equipment) => issues.push({ text: `${hero.name} ${equipment.type}耐久 ${equipment.dur}`, serious: !supplying }));
+      if (settings.manualEquipEnabled && settings.equipApiEnabled && equipHeroIds(settings).includes(hero.id)) {
+        const minimum = heroMinDurability(settings, hero.id);
+        state.equipments
+          .filter((equipment) => equipment.equipped === hero.id && equipment.dur < minimum)
+          .forEach((equipment) => issues.push({ text: `${hero.name} ${equipment.type}耐久 ${equipment.dur}（沒換掉）`, serious: !supplying }));
+      }
     });
     return issues;
   }
