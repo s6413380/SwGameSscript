@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.50
+// @version      4.51
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -9032,12 +9032,16 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     const moveLeft = Math.max(0, Math.ceil((restUntilOf(heroes.filter((hero) => hero.actionState === 1)) - now) / 1000));
     setMiniPart('mini-place', escapeHtml(apiLocationText(settings) || '位置讀取中…'));
     setMiniPart('mini-timer', moving ? `移動中 ${moveLeft} 秒` : cooldown ? `冷卻 ${cooldown} 秒` : '<span style="color:#4ade80">可行動</span>');
+    const eatDisabled = (state.running && !state.forgeMode) || Boolean(miniWindow.busy) ? 'disabled' : '';
+    const eatButton = (hero, groupId, label) =>
+      `<button data-mini="eat:${hero.id}:${groupId}" ${eatDisabled} style="padding:3px 4px;font-size:12px">${label}</button>`;
     setMiniPart(
       'mini-team',
       heroes
         .map(
           (hero) => `<div class="card"><div class="name"><span>${escapeHtml(hero.name)}</span><span class="lv">Lv ${hero.lv}</span></div>
-            ${miniBar(hero.hp, hero.fullHp, '#dc2626')}${miniBar(hero.sp, hero.fullSp, '#16a34a')}${miniBar(hero.exp, hero.fullExp, '#0891b2')}${miniHeroDetailHtml(hero, lowDurability)}</div>`
+            ${miniBar(hero.hp, hero.fullHp, '#dc2626')}${miniBar(hero.sp, hero.fullSp, '#16a34a')}${miniBar(hero.exp, hero.fullExp, '#0891b2')}${miniHeroDetailHtml(hero, lowDurability)}
+            <div class="row">${eatButton(hero, 'health', 'HP小×10')}${eatButton(hero, 'resource', '體力小×10')}</div></div>`
         )
         .join('')
     );
@@ -9100,8 +9104,49 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
 
   const MINI_ACTION_LABELS = { back: '後退', hunt: '原地狩獵', forward: '前行', town: '回城' };
 
+  // 小視窗的吃藥鈕：挑回復量最小的那種（「小」），照補血／補體力頁限定的道具；有 10 個就吃 10 個，不夠就吃 1 個（遊戲只有這兩種）
+  async function miniEat(heroId, groupId) {
+    const group = SUPPLY_GROUPS.find((candidate) => candidate.id === groupId);
+    const hero = state.heroStats.get(heroId) || {};
+    miniWindow.busy = `${hero.name || ''} 吃${group.name}藥中…`;
+    miniWindow.note = '';
+    try {
+      const items = (await requestGameApi(ITEMS_API)).items || [];
+      const names = itemNames(readSettingsFromPanel(), group);
+      const item = items
+        .filter((candidate) => candidate[group.healField] > 0 && candidate.available > 0 && (!names.length || names.includes(candidate.name)))
+        .sort((first, second) => first[group.healField] - second[group.healField] || second.available - first.available)[0];
+      if (!item) {
+        miniWindow.note = `沒有可用的${group.name}道具`;
+        return;
+      }
+      const quantity = item.available >= 10 ? 10 : 1;
+      await wait(itemRequestGap());
+      const result = await requestGameApi(`${ITEMS_API}/${item.id}/use`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quantity, heroId }),
+      });
+      syncGameItemUse(result);
+      if (result.hero) state.heroStats.set(heroId, { ...(state.heroStats.get(heroId) || {}), ...result.hero });
+      const message = `${hero.name || heroId} 吃了 ${item.name}×${quantity}${quantity < 10 ? '（不到 10 個）' : ''}`;
+      miniWindow.note = message;
+      logItemUse(`［小視窗］${message}`);
+    } catch (error) {
+      miniWindow.note = error.captchaRequired ? '要活人驗證，請到遊戲頁完成' : `吃藥失敗：${error.message}`;
+    } finally {
+      miniWindow.busy = '';
+      renderMiniWindow(readSettingsFromPanel());
+    }
+  }
+
   async function miniAction(action) {
     if (miniWindow.busy || (state.running && !state.forgeMode)) return;
+    const eat = /^eat:(\d+):(health|resource)$/.exec(action);
+    if (eat) {
+      await miniEat(Number(eat[1]), eat[2]);
+      return;
+    }
     if (!passButtonLock(readSettingsFromPanel(), MINI_ACTION_LABELS[action])) {
       renderMiniWindow(readSettingsFromPanel());
       return;
