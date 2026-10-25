@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.58
+// @version      4.59
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -3070,6 +3070,13 @@
 
   window.addEventListener('pagehide', () => {
     const settings = readSettingsFromPanel();
+    // 自己按重新整理（例如畫面卡住）：記下正在跑的，重整後接著跑，不然自動鍛造、掛機就停在那裡。
+    // sessionStorage 只在同一個分頁重整時還在，關掉分頁不會影響下次開
+    try {
+      if (resumeModes() && !sessionStorage.getItem(RESUME_AFTER_RELOAD_KEY)) sessionStorage.setItem(RESUME_AFTER_RELOAD_KEY, resumeModes());
+    } catch {
+      // 記不住就照舊，重整後要自己按開始
+    }
     leaveDashboard(settings);
     // 關分頁時剛好輪到自己，不放手的話別的帳號要等租約過期
     if (relayOn(settings) && settings.turnTakingEnabled) {
@@ -19934,7 +19941,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     // 讀不到就不自動開始
   }
   if (resumeAfterReload) {
-    setStatus('總覽頁要求重新整理後自動開始，5 秒後開始');
+    setStatus(`重新整理前在跑（${resumeAfterReload.replace('hunt', '打怪').replace('forge', '鍛造').replace('mine', '挖礦')}），5 秒後接著開始`);
     backgroundTimer.setTimeout(() => {
       const modes = resumeAfterReload.split(',');
       if (modes.includes('hunt')) start(false);
