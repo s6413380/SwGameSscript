@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.37
+// @version      4.38
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -16,7 +16,8 @@
   window.__autoClickerLoaded = true;
 
   // 網站的 localStorage 只有約 5MB（遊戲和腳本共用）；滿了以後遊戲存東西（例如賭場的 casinoLogs）會丟錯，
-  // 遊戲沒接住，整個畫面就黑掉。吞掉「空間不足」這種錯，頂多那筆沒存到
+  // 遊戲沒接住，整個畫面就黑掉。吞掉「空間不足」這種錯，頂多那筆沒存到；記下來在監看欄提醒，不然成長紀錄這類資料會無聲無息地沒存
+  let storageFullKey = '';
   try {
     const originalSetItem = Storage.prototype.setItem;
     Storage.prototype.setItem = function (key, value) {
@@ -25,6 +26,7 @@
       } catch (error) {
         if (error && error.name === 'QuotaExceededError') {
           console.warn(`[愛吉吉] 瀏覽器儲存空間已滿，${key} 沒存到`);
+          storageFullKey = key;
           return undefined;
         }
         throw error;
@@ -76,7 +78,9 @@
   } catch {
     // 瀏覽器不支援長任務就只看腳本自己的數字
   }
-  const BIG_STORAGE_KEYS = new Set(['autoClickerV2CloudEquipments', 'autoClickerV2CloudScratch', 'autoClickerV2CloudDraws', 'autoClickerV2Scratch']);
+  const BIG_STORAGE_KEYS = new Set(['autoClickerV2CloudEquipments', 'autoClickerV2CloudScratch', 'autoClickerV2CloudDraws', 'autoClickerV2Scratch', 'autoClickerV2ForgedEquipments', 'autoClickerV2ForgeMaterials']);
+  // 自己的鍛造紀錄沒辦法重抓：資料庫開好之前讀到的是空的，這段時間寫進來的只有新的幾件，開好時要跟資料庫裡的合併（同一件以新的為準）
+  const MERGED_BIG_STORAGE_KEYS = new Set(['autoClickerV2ForgedEquipments', 'autoClickerV2ForgeMaterials']);
   const bigStorage = {
     values: new Map(),
     db: null,
@@ -8273,6 +8277,7 @@
     const lines = SUPPLY_GROUPS.filter((group) => Boolean(group.forgeOnly) === forgeMode).map(
       (group) => `${group.name}：${formatPercents(readGroupPercents(settings, group.id))}`
     );
+    if (storageFullKey) lines.unshift(`⚠ 瀏覽器儲存空間已滿，${storageFullKey} 沒存到（紀錄頁「效能檢查」看誰最佔空間）`);
     if (forgeMode && state.forgeStarted.length) lines.push(`鍛造：${forgeProgressText(settings)}`);
     if (settings.expSelectors) lines.push(`經驗：${formatPercents(readExpPercents(settings))}`);
     if (settings.stageEnabled && (settings.stageSelector || isApiHunt(settings))) {
@@ -12736,6 +12741,12 @@
             if (!bigStorage.values.has(key)) {
               const value = typeof get.result === 'string' ? get.result : localStorage.getItem(key);
               if (value !== null) bigStorage.values.set(key, value);
+            } else if (MERGED_BIG_STORAGE_KEYS.has(key) && typeof get.result === 'string') {
+              try {
+                bigStorage.values.set(key, JSON.stringify({ ...JSON.parse(get.result), ...JSON.parse(bigStorage.values.get(key)) }));
+              } catch {
+                // 資料庫裡的壞了就用這個分頁的
+              }
             }
             const value = bigStorage.values.get(key);
             if (value !== undefined && value !== get.result) store.put(value, key);
@@ -12803,11 +12814,7 @@
     const ids = Object.keys(saved);
     // 超過上限就丟最舊的（id 越小越舊）
     ids.slice(0, Math.max(0, ids.length - FORGED_EQUIPMENTS_LIMIT)).forEach((id) => delete saved[id]);
-    try {
-      localStorage.setItem(FORGED_EQUIPMENTS_KEY, JSON.stringify(saved));
-    } catch {
-      // 存不進去只影響材料統計
-    }
+    writeJsonStorage(FORGED_EQUIPMENTS_KEY, saved);
   }
 
   // 三個來源：自己記的、鍛造工具腳本的 sgoBase.forgeMaterials（同格式：id → { materials: [[名稱, 數量]] }）、
