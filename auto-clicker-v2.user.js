@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.38
+// @version      4.39
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1027,6 +1027,7 @@
   panel.innerHTML = `
     <div class="row" style="font-weight:bold;margin:0 0 6px;cursor:move" data-role="header">
       <span style="flex:1"><span data-role="app-name">愛吉吉</span> <span style="font-weight:normal;opacity:.7">v${SCRIPT_VERSION}</span> ⠿ <span data-role="mini-status" style="font-weight:normal;opacity:.85"></span></span>
+      <button data-action="mini-window" title="開小視窗：隊伍狀態＋後退／原地狩獵／前行／回城">◱</button>
       <button data-action="enlarge" title="拉大／縮回原狀">⤢</button>
       <button data-action="minimize" title="縮到最小／展開">–</button>
       <button data-action="close" title="關閉：這個分頁的腳本全部停止（重新整理頁面才會恢復）">×</button>
@@ -8247,6 +8248,7 @@
     const actionLine = lastActionText();
     // 面板縮小或分頁在背景時看不到監看欄，不用每秒重算（讀血條、算路線都要碰畫面）
     if (panelBody.style.display !== 'none' && !document.hidden) monitorElement.textContent = monitorLines(settings, actionLine).join('\n');
+    renderMiniWindow(settings);
     reportToDashboard(settings);
     pollDashboardCommands(settings);
     checkForUpdate(settings);
@@ -8819,6 +8821,173 @@
     } catch (error) {
       if (runId !== state.runId) return;
       handleApiHuntError(settings, error);
+    }
+  }
+
+  // 小視窗：另開一個小瀏覽器視窗，手動按後退／原地狩獵／前行／回城（跟在遊戲頁按一樣，按完照手動打怪的設定補給）。
+  // 按鈕的 click 寫在小視窗自己的程式裡、透過 opener 呼叫這頁；主頁重新整理後小視窗會自己重新接上，不用重開
+  const MINI_WINDOW_NAME = 'aijijiMiniWindow';
+  const miniWindow = { win: null, busy: '', note: '', moveTimer: null, parts: {} };
+
+  function openMiniWindow() {
+    const win = window.open('', MINI_WINDOW_NAME, 'popup,width=300,height=480');
+    if (!win) {
+      setStatus('小視窗被瀏覽器擋了，請允許這個網站開彈出式視窗');
+      return;
+    }
+    if (!win.document.getElementById('mini-root')) {
+      win.document.open();
+      win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(appName())}</title>
+<style>
+body{margin:0;padding:8px;background:#1c1917;color:#e7e5e4;font:13px/1.4 system-ui,"Microsoft JhengHei",sans-serif}
+.card{background:#292524;border:1px solid #44403c;border-radius:6px;padding:6px 8px;margin-bottom:6px}
+.name{display:flex;justify-content:space-between;font-weight:bold}.lv{color:#fbbf24}
+.bar{height:6px;background:#44403c;border-radius:3px;overflow:hidden;margin-top:3px}.bar>div{height:100%}
+.num{display:flex;justify-content:space-between;font-size:11px;color:#a8a29e}
+.row{display:flex;gap:6px;margin-top:6px}.row button{flex:1}
+button{padding:7px 4px;border:1px solid #57534e;border-radius:6px;background:#3f3f46;color:#fafaf9;font-size:13px;cursor:pointer}
+button:disabled{opacity:.4;cursor:default}button.main{background:#92400e;border-color:#d97706}
+.head{display:flex;justify-content:space-between;color:#a8a29e;margin-bottom:6px}.note{color:#fbbf24;margin-top:6px;min-height:1.2em}
+</style></head><body><div id="mini-root"><div class="head"><span id="mini-place"></span><span id="mini-timer"></span></div><div id="mini-team"></div><div id="mini-buttons"></div><div class="note" id="mini-note"></div></div>
+<script>
+document.addEventListener('click', function (event) {
+  var button = event.target.closest('[data-mini]');
+  if (!button || button.disabled) return;
+  try { opener.__aijijiMiniAction(button.dataset.mini); } catch (error) { document.getElementById('mini-note').textContent = '連不到遊戲頁（關掉了？），請從遊戲頁重新開小視窗'; }
+});
+setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (error) {} }, 2000);
+<\/script></body></html>`);
+      win.document.close();
+    }
+    miniWindow.win = win;
+    miniWindow.parts = {};
+    win.focus();
+    if (!state.huntInfo) refreshHeroStats().catch((error) => (miniWindow.note = `讀取狩獵資訊失敗（${error.message}）`));
+    renderMiniWindow(readSettingsFromPanel());
+  }
+
+  window.__aijijiMiniAttach = (win) => {
+    if (miniWindow.win === win) return;
+    miniWindow.win = win;
+    miniWindow.parts = {};
+    if (!state.huntInfo) refreshHeroStats().catch(() => {});
+  };
+  window.__aijijiMiniAction = (action) => {
+    miniAction(action).catch((error) => (miniWindow.note = error.message));
+  };
+
+  function setMiniPart(id, html) {
+    if (miniWindow.parts[id] === html) return;
+    const element = miniWindow.win.document.getElementById(id);
+    if (!element) return;
+    miniWindow.parts[id] = html;
+    element.innerHTML = html;
+  }
+
+  function miniBar(value, full, color) {
+    const percent = full > 0 ? Math.max(0, Math.min(100, (value / full) * 100)) : 0;
+    return `<div class="bar"><div style="width:${percent}%;background:${color}"></div></div><div class="num"><span>${Number(value || 0).toLocaleString()} / ${Number(full || 0).toLocaleString()}</span><span>${Math.round(percent)}%</span></div>`;
+  }
+
+  function renderMiniWindow(settings) {
+    if (!miniWindow.win) return;
+    try {
+      if (miniWindow.win.closed || !miniWindow.win.document.getElementById('mini-root')) {
+        miniWindow.win = null;
+        return;
+      }
+    } catch {
+      miniWindow.win = null;
+      return;
+    }
+    const info = state.huntInfo;
+    const heroes = info && Array.isArray(info.heroes) ? info.heroes : [];
+    const now = Date.now();
+    const cooldown = Math.max(0, Math.ceil((((info && Date.parse(info.huntAvailableAt)) || 0) - now) / 1000));
+    const moving = heroes.some((hero) => hero.actionState === 1);
+    const moveLeft = Math.max(0, Math.ceil((restUntilOf(heroes.filter((hero) => hero.actionState === 1)) - now) / 1000));
+    setMiniPart('mini-place', escapeHtml(apiLocationText(settings) || '位置讀取中…'));
+    setMiniPart('mini-timer', moving ? `移動中 ${moveLeft} 秒` : cooldown ? `冷卻 ${cooldown} 秒` : '<span style="color:#4ade80">可行動</span>');
+    setMiniPart(
+      'mini-team',
+      heroes
+        .map(
+          (hero) => `<div class="card"><div class="name"><span>${escapeHtml(hero.name)}</span><span class="lv">Lv ${hero.lv}</span></div>
+            ${miniBar(hero.hp, hero.fullHp, '#dc2626')}${miniBar(hero.sp, hero.fullSp, '#16a34a')}${miniBar(hero.exp, hero.fullExp, '#0891b2')}</div>`
+        )
+        .join('')
+    );
+    const scriptHunting = state.running && !state.forgeMode;
+    const blocked = !info || scriptHunting || Boolean(miniWindow.busy) || moving;
+    const inTown = Boolean(info) && Number(info.huntZone) === 0;
+    const huntBlocked = blocked || cooldown > 0 || inTown;
+    const button = (action, label, disabled, extra = '') => `<button data-mini="${action}" ${extra} ${disabled ? 'disabled' : ''}>${label}</button>`;
+    setMiniPart(
+      'mini-buttons',
+      `<div class="row">${button('back', '後退', huntBlocked || !info.canBack)}${button('hunt', '原地狩獵', huntBlocked, 'class="main"')}${button('forward', '前行', huntBlocked || !info.canForward)}</div>
+      <div class="row">${button('town', '回城', blocked || inTown)}</div>`
+    );
+    setMiniPart('mini-note', escapeHtml(scriptHunting ? '腳本正在掛機，要手動先按停止' : miniWindow.busy || miniWindow.note));
+  }
+
+  async function miniAction(action) {
+    if (miniWindow.busy || (state.running && !state.forgeMode)) return;
+    if (action === 'town') {
+      await miniGoTown();
+      return;
+    }
+    const type = { hunt: '', back: 'back', forward: 'forward' }[action];
+    if (type === undefined || apiHuntInFlight) return;
+    miniWindow.busy = { hunt: '狩獵中…', back: '後退中…', forward: '前行中…' }[action];
+    miniWindow.note = '';
+    apiHuntInFlight = true;
+    try {
+      const data = await requestGameApi(`/api/hunt${type ? `?type=${type}` : ''}`, { method: 'POST' }).finally(() => {
+        apiHuntInFlight = false;
+      });
+      if (data && data.huntInfo) state.huntInfo = data.huntInfo;
+      syncGameHuntView(data);
+      manualSupplyAfterHunt().catch(() => {});
+    } catch (error) {
+      miniWindow.note = error.captchaRequired ? '要活人驗證，請到遊戲頁完成' : `失敗：${error.message}`;
+    } finally {
+      miniWindow.busy = '';
+      renderMiniWindow(readSettingsFromPanel());
+    }
+  }
+
+  // 回城要等移動時間到了再 move/complete，跟遊戲裡一樣；時間到了自己完成
+  async function miniGoTown() {
+    miniWindow.busy = '回城中…';
+    miniWindow.note = '';
+    try {
+      const data = await requestGameApi('/api/move/0', { method: 'POST' });
+      syncGameMove(data, 'move');
+      forgetZoneUsers();
+      await refreshHeroStats();
+      const until = restUntilOf(huntTeam().filter((hero) => hero.actionState === 1));
+      backgroundTimer.clearTimeout(miniWindow.moveTimer);
+      if (until) miniWindow.moveTimer = backgroundTimer.setTimeout(() => miniFinishMove().catch(() => {}), Math.max(0, until - Date.now()) + randomGap(1000, 2500));
+    } catch (error) {
+      miniWindow.note = error.captchaRequired ? '要活人驗證，請到遊戲頁完成' : `回城失敗：${error.message}`;
+    } finally {
+      miniWindow.busy = '';
+      renderMiniWindow(readSettingsFromPanel());
+    }
+  }
+
+  async function miniFinishMove() {
+    // 腳本開始掛機了就交給腳本自己完成移動
+    if (state.running && !state.forgeMode) return;
+    try {
+      const data = await requestGameApi('/api/move/complete', { method: 'POST' });
+      syncGameMove(data, 'complete');
+      forgetZoneUsers();
+      await refreshHeroStats();
+      miniWindow.note = '已回到城鎮';
+    } catch (error) {
+      miniWindow.note = `完成移動失敗：${error.message}（可在遊戲頁按完成）`;
+      await refreshHeroStats().catch(() => {});
     }
   }
 
@@ -10140,6 +10309,8 @@
     } else if (action === 'crash-log-clear') {
       writeJsonStorage(CRASH_LOG_KEY, []);
       renderCrashLog();
+    } else if (action === 'mini-window') {
+      openMiniWindow();
     } else if (action === 'minimize') {
       setMinimized(panelBody.style.display !== 'none');
     } else if (action === 'enlarge') {
