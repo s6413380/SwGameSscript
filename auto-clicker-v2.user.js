@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.53
+// @version      4.54
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -5613,10 +5613,13 @@
       const beforeValue = hero[group.heroField];
       // 回應帶回最新的物品欄與角色數值，直接拿來算下一次；萬一沒帶就自己估
       items = (result.items && result.items.items) || items;
-      hero = result.hero || {
-        ...hero,
-        [group.heroField]: Math.min(hero[group.fullField], hero[group.heroField] + quantity * item[group.healField]),
-      };
+      // 吃藥回應的 hero 不帶異常狀態（另外放在 heroStatuses）；整個換掉的話中毒就被洗掉，後面解異常以為沒事
+      hero = result.hero
+        ? { ...hero, ...result.hero, statuses: result.heroStatuses ?? result.hero.statuses ?? hero.statuses }
+        : {
+            ...hero,
+            [group.heroField]: Math.min(hero[group.fullField], hero[group.heroField] + quantity * item[group.healField]),
+          };
       const remaining = (items.find((candidate) => candidate.id === item.id) || { available: '?' }).available;
       logItemUse(
         `${who} ${item.name}×${quantity}：${group.heroField} ${beforeValue}→${hero[group.heroField]}/${hero[group.fullField]}` +
@@ -9146,7 +9149,10 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
         body: JSON.stringify({ quantity, heroId }),
       });
       syncGameItemUse(result);
-      if (result.hero) state.heroStats.set(heroId, { ...(state.heroStats.get(heroId) || {}), ...result.hero });
+      if (result.hero) {
+        const previous = state.heroStats.get(heroId) || {};
+        state.heroStats.set(heroId, { ...previous, ...result.hero, statuses: result.heroStatuses ?? result.hero.statuses ?? previous.statuses });
+      }
       const message = `${hero.name || heroId} 吃了 ${item.name}×${quantity}${quantity < 10 ? '（不到 10 個）' : ''}`;
       miniWindow.note = message;
       logItemUse(`［小視窗］${message}`);
