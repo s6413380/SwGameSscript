@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.54
+// @version      4.55
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -8905,7 +8905,7 @@
   // 小視窗：另開一個小瀏覽器視窗，手動按後退／原地狩獵／前行／回城（跟在遊戲頁按一樣，按完照手動打怪的設定補給）。
   // 按鈕的 click 寫在小視窗自己的程式裡、透過 opener 呼叫這頁；主頁重新整理後小視窗會自己重新接上，不用重開
   const MINI_WINDOW_NAME = 'aijijiMiniWindow';
-  const miniWindow = { win: null, busy: '', note: '', moveTimer: null, parts: {}, equipLoading: false };
+  const miniWindow = { win: null, busy: '', note: '', moveTimer: null, parts: {}, equipLoading: false, menuHeroId: 0, items: null, itemsAt: 0 };
 
   function openMiniWindow() {
     const win = window.open('', MINI_WINDOW_NAME, 'popup,width=300,height=620');
@@ -9051,16 +9051,27 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     const moveLeft = Math.max(0, Math.ceil((restUntilOf(heroes.filter((hero) => hero.actionState === 1)) - now) / 1000));
     setMiniPart('mini-place', escapeHtml(apiLocationText(settings) || '位置讀取中…'));
     setMiniPart('mini-timer', moving ? `移動中 ${moveLeft} 秒` : cooldown ? `冷卻 ${cooldown} 秒` : '<span style="color:#4ade80">可行動</span>');
-    const eatDisabled = (state.running && !state.forgeMode) || Boolean(miniWindow.busy) ? 'disabled' : '';
-    const eatButton = (hero, groupId, label) =>
-      `<button data-mini="eat:${hero.id}:${groupId}" ${eatDisabled} style="padding:3px 4px;font-size:12px">${label}</button>`;
+    const eatDisabled = (state.running && !state.forgeMode) || Boolean(miniWindow.busy);
+    const smallButton = 'padding:3px 4px;font-size:12px';
+    const menuHtml = (hero) => {
+      const open = miniWindow.menuHeroId === hero.id;
+      const toggle = `<div class="row"><button data-mini="menu:${hero.id}" style="${smallButton}">吃藥 ${open ? '▴' : '▾'}</button></div>`;
+      if (!open) return toggle;
+      if (!miniWindow.items) return `${toggle}<div class="num">讀取物品欄…</div>`;
+      return `${toggle}<div class="row" style="flex-wrap:wrap">${MINI_ITEM_KINDS.map((kind) => {
+        const item = miniItemFor(settings, miniWindow.items, kind);
+        const count = item ? item.available : 0;
+        const quantity = kind.ten && count >= 10 ? 10 : 1;
+        return `<button data-mini="use:${hero.id}:${kind.id}" ${eatDisabled || !item ? 'disabled' : ''} title="${item ? escapeHtml(item.name) : '沒有'}" style="${smallButton};flex:1 1 30%">${kind.label}×${quantity}<br><span style="font-size:11px;opacity:.7">剩 ${count}</span></button>`;
+      }).join('')}</div>`;
+    };
     setMiniPart(
       'mini-team',
       heroes
         .map(
           (hero) => `<div class="card"><div class="name"><span>${escapeHtml(hero.name)}</span><span class="lv">Lv ${hero.lv}</span></div>
             ${miniBar(hero.hp, hero.fullHp, '#dc2626')}${miniBar(hero.sp, hero.fullSp, '#16a34a')}${miniBar(hero.exp, hero.fullExp, '#0891b2')}${miniHeroDetailHtml(hero, lowDurability)}
-            <div class="row">${eatButton(hero, 'health', 'HP小×10')}${eatButton(hero, 'resource', '體力小×10')}</div></div>`
+            ${menuHtml(hero)}</div>`
         )
         .join('')
     );
@@ -9125,23 +9136,49 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
 
   const MINI_ACTION_LABELS = { back: '後退', hunt: '原地狩獵', forward: '前行', town: '回城' };
 
-  // 小視窗的吃藥鈕：挑回復量最小的那種（「小」），照補血／補體力頁限定的道具；有 10 個就吃 10 個，不夠就吃 1 個（遊戲只有這兩種）
-  async function miniEat(heroId, groupId) {
-    const group = SUPPLY_GROUPS.find((candidate) => candidate.id === groupId);
+  // 小視窗的吃藥選單：HP、體力挑回復量最小的那種（照補血／補體力頁限定的道具），有 10 個就吃 10 個（遊戲只有 1 和 10）；
+  // 解毒劑、急救包、蘆薈照名稱找，一次 1 個
+  const MINI_ITEM_KINDS = [
+    { id: 'hp', label: 'HP藥水', group: 'health', ten: true },
+    { id: 'sp', label: '體力藥水', group: 'resource', ten: true },
+    { id: 'antidote', label: '解毒劑', name: '解毒劑' },
+    { id: 'firstAid', label: '急救包', name: '急救包' },
+    { id: 'aloe', label: '蘆薈', name: '蘆薈' },
+  ];
+
+  function miniItemFor(settings, items, kind) {
+    if (kind.group) {
+      const group = SUPPLY_GROUPS.find((candidate) => candidate.id === kind.group);
+      const names = itemNames(settings, group);
+      return (
+        items
+          .filter((item) => item[group.healField] > 0 && item.available > 0 && (!names.length || names.includes(item.name)))
+          .sort((first, second) => first[group.healField] - second[group.healField] || second.available - first.available)[0] || null
+      );
+    }
+    return items.filter((item) => item.available > 0 && String(item.name).includes(kind.name)).sort((first, second) => second.available - first.available)[0] || null;
+  }
+
+  // 打開選單時讀一次物品欄（像人打開道具欄），30 秒內再開就用剛剛讀的
+  async function loadMiniItems(force = false) {
+    if (!force && miniWindow.items && Date.now() - miniWindow.itemsAt < 30000) return;
+    miniWindow.items = (await requestGameApi(ITEMS_API)).items || [];
+    miniWindow.itemsAt = Date.now();
+  }
+
+  async function miniEat(heroId, kindId) {
+    const kind = MINI_ITEM_KINDS.find((candidate) => candidate.id === kindId);
     const hero = state.heroStats.get(heroId) || {};
-    miniWindow.busy = `${hero.name || ''} 吃${group.name}藥中…`;
+    miniWindow.busy = `${hero.name || ''} 吃${kind.label}中…`;
     miniWindow.note = '';
     try {
-      const items = (await requestGameApi(ITEMS_API)).items || [];
-      const names = itemNames(readSettingsFromPanel(), group);
-      const item = items
-        .filter((candidate) => candidate[group.healField] > 0 && candidate.available > 0 && (!names.length || names.includes(candidate.name)))
-        .sort((first, second) => first[group.healField] - second[group.healField] || second.available - first.available)[0];
+      await loadMiniItems(true);
+      const item = miniItemFor(readSettingsFromPanel(), miniWindow.items, kind);
       if (!item) {
-        miniWindow.note = `沒有可用的${group.name}道具`;
+        miniWindow.note = `沒有${kind.label}`;
         return;
       }
-      const quantity = item.available >= 10 ? 10 : 1;
+      const quantity = kind.ten && item.available >= 10 ? 10 : 1;
       await wait(itemRequestGap());
       const result = await requestGameApi(`${ITEMS_API}/${item.id}/use`, {
         method: 'POST',
@@ -9153,7 +9190,12 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
         const previous = state.heroStats.get(heroId) || {};
         state.heroStats.set(heroId, { ...previous, ...result.hero, statuses: result.heroStatuses ?? result.hero.statuses ?? previous.statuses });
       }
-      const message = `${hero.name || heroId} 吃了 ${item.name}×${quantity}${quantity < 10 ? '（不到 10 個）' : ''}`;
+      // 回應帶最新物品欄就直接用，剩幾個馬上更新
+      if (result.items && Array.isArray(result.items.items)) {
+        miniWindow.items = result.items.items;
+        miniWindow.itemsAt = Date.now();
+      }
+      const message = `${hero.name || heroId} 吃了 ${item.name}×${quantity}${kind.ten && quantity < 10 ? '（不到 10 個）' : ''}`;
       miniWindow.note = message;
       logItemUse(`［小視窗］${message}`);
     } catch (error) {
@@ -9166,9 +9208,20 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
 
   async function miniAction(action) {
     if (miniWindow.busy || (state.running && !state.forgeMode)) return;
-    const eat = /^eat:(\d+):(health|resource)$/.exec(action);
-    if (eat) {
-      await miniEat(Number(eat[1]), eat[2]);
+    const menu = /^menu:(\d+)$/.exec(action);
+    if (menu) {
+      const heroId = Number(menu[1]);
+      miniWindow.menuHeroId = miniWindow.menuHeroId === heroId ? 0 : heroId;
+      renderMiniWindow(readSettingsFromPanel());
+      if (miniWindow.menuHeroId) {
+        await loadMiniItems().catch((error) => (miniWindow.note = `讀取物品欄失敗：${error.message}`));
+        renderMiniWindow(readSettingsFromPanel());
+      }
+      return;
+    }
+    const use = /^use:(\d+):(\w+)$/.exec(action);
+    if (use) {
+      await miniEat(Number(use[1]), use[2]);
       return;
     }
     if (!passButtonLock(readSettingsFromPanel(), MINI_ACTION_LABELS[action])) {
