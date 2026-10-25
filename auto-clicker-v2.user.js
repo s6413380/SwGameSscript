@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.60
+// @version      4.61
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -5662,7 +5662,10 @@
 
   // 手動打怪自動吃藥：遊戲自己送的打怪回應帶隊伍最新血量、體力（handleHuntResponse 已經存進 heroStats），
   // 照補血、補體力的門檻挑出要補的人，用 API 吃；不看「用 API 補給」有沒有勾，也不點畫面
-  const manualSupply = { busy: false };
+  // equipping：手動打怪後正在換裝／補裝（脫下到穿上中間身上是空的），小視窗這段時間不給打
+  const manualSupply = { busy: false, equipping: false };
+  // 換裝脫下了還沒穿回去的部位：equipmentId → { heroId, type, name, expected（脫之前同類型穿幾件）}
+  const emptiedEquipSlots = new Map();
   const MANUAL_SUPPLY_MAX_ROUNDS = 8;
 
   function manualSupplyTarget(settings) {
@@ -5728,16 +5731,17 @@
     const options = { isCancelled: scriptHunting, manual: true };
     const runUntilDone = (start) => Promise.race([new Promise((resolve) => start(resolve).catch(resolve)), wait(90000)]);
     const worn = findWornEquipmentNeedingSwap(settings);
-    if (worn) {
+    const missing = worn ? null : findMissingEquipment(settings);
+    if (!worn && !missing) return;
+    manualSupply.equipping = true;
+    try {
       // 人看到耐久低了才去換，晚幾秒
       await wait(randomGap(1500, 4000));
-      if (!scriptHunting()) await runUntilDone((resolve) => swapEquipmentByApi(settings, worn, { ...options, onDone: resolve }));
-      return;
-    }
-    const missing = findMissingEquipment(settings);
-    if (missing) {
-      await wait(randomGap(1500, 4000));
-      if (!scriptHunting()) await runUntilDone((resolve) => fillEquipmentByApi(settings, missing, { ...options, onDone: resolve }));
+      if (scriptHunting()) return;
+      if (worn) await runUntilDone((resolve) => swapEquipmentByApi(settings, worn, { ...options, onDone: resolve }));
+      else await runUntilDone((resolve) => fillEquipmentByApi(settings, missing, { ...options, onDone: resolve }));
+    } finally {
+      manualSupply.equipping = false;
     }
   }
 
@@ -6222,6 +6226,12 @@
         fail(`脫下沒有生效（伺服器回應：${describeEquipResult(result)}）`);
         return;
       }
+      emptiedEquipSlots.set(worn.id, {
+        heroId,
+        type: worn.type,
+        name: worn.name,
+        expected: state.equipments.filter((equipment) => equipment.equipped === heroId && equipment.type === worn.type).length,
+      });
       state.equipments = result.equipments;
     } catch (error) {
       if (cancelled()) return;
@@ -6236,6 +6246,7 @@
       fail(`已脫下但${problem}，請手動檢查`);
       return;
     }
+    emptiedEquipSlots.delete(worn.id);
     const message = `${who} → 換上「${replacement.name}」(耐久 ${replacement.dur}/${replacement.fullDur})`;
     setStatus(message);
     logItemUse(message);
@@ -9109,7 +9120,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     const scriptHunting = state.running && !state.forgeMode;
     const blocked = !info || scriptHunting || Boolean(miniWindow.busy) || moving;
     const inTown = Boolean(info) && Number(info.huntZone) === 0;
-    const huntBlocked = blocked || cooldown > 0 || inTown;
+    const huntBlocked = blocked || cooldown > 0 || inTown || manualSupply.equipping;
     const locked = lockedButtonNames(settings);
     const button = (action, label, disabled, extra = '') =>
       `<button data-mini="${action}" ${extra} ${disabled ? 'disabled' : ''}>${locked.includes(label) ? (buttonLockArmed(label) ? `再按一下${label}` : `🔒${label}`) : label}</button>`;
@@ -9118,7 +9129,10 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       `<div class="row">${button('back', '後退', huntBlocked || !info.canBack)}${button('hunt', '原地狩獵', huntBlocked, 'class="main"')}${button('forward', '前行', huntBlocked || !info.canForward)}</div>
       <div class="row">${button('town', '回城', blocked || inTown)}</div>`
     );
-    setMiniPart('mini-note', escapeHtml(scriptHunting ? '腳本正在掛機，要手動先按停止' : miniWindow.busy || miniWindow.note));
+    setMiniPart(
+      'mini-note',
+      escapeHtml(scriptHunting ? '腳本正在掛機，要手動先按停止' : miniWindow.busy || (manualSupply.equipping ? '換裝中，換好才能打' : miniWindow.note))
+    );
   }
 
   // 就緒＝不用再補（HP、體力都在補血／補體力頁的門檻以上）、沒有該解的異常、沒有低於換裝門檻還沒換掉的裝備、補給換裝跑完了。
@@ -9127,7 +9141,18 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   function miniReadyIssues(settings, heroes) {
     const issues = [];
     const supplying = manualSupply.busy;
-    if (supplying) issues.push({ text: '補給／換裝中' });
+    if (manualSupply.equipping) issues.push({ text: '換裝中（換好才能打）' });
+    else if (supplying) issues.push({ text: '補給／換裝中' });
+    emptiedEquipSlots.forEach((slot, equipmentId) => {
+      const wearing = state.equipments.filter((equipment) => equipment.equipped === slot.heroId && equipment.type === slot.type).length;
+      if (wearing >= slot.expected) {
+        emptiedEquipSlots.delete(equipmentId);
+        return;
+      }
+      if (manualSupply.equipping) return;
+      const hero = heroes.find((candidate) => candidate.id === slot.heroId);
+      if (hero) issues.push({ text: `${hero.name} 的${slot.type}脫下了沒穿回去`, serious: true });
+    });
     const percent = (value, full) => (full > 0 ? Math.floor((value / full) * 100) : 100);
     heroes.forEach((hero) => {
       if (hero.perished || hero.hp <= 0) {
@@ -9311,6 +9336,12 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     }
     const type = { hunt: '', back: 'back', forward: 'forward' }[action];
     if (type === undefined || apiHuntInFlight) return;
+    // 按鈕灰掉前就按下去的也擋：脫下到穿上中間打會空手上場
+    if (manualSupply.equipping) {
+      miniWindow.note = '換裝中，換好才能打';
+      renderMiniWindow(readSettingsFromPanel());
+      return;
+    }
     miniWindow.busy = { hunt: '狩獵中…', back: '後退中…', forward: '前行中…' }[action];
     miniWindow.note = '';
     apiHuntInFlight = true;
