@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.49
+// @version      4.50
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -9120,6 +9120,14 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
         apiHuntInFlight = false;
       });
       if (data && data.huntInfo) state.huntInfo = data.huntInfo;
+      // 攔截器讀回應是另一條路，不一定比這裡先跑完；沒先更新的話補給、換裝會拿打之前的血量和耐久判斷，以為不用補
+      const heroes = data && data.huntInfo && data.huntInfo.heroes;
+      if (Array.isArray(heroes)) {
+        state.heroStats = new Map(heroes.map((hero) => [hero.id, hero]));
+        state.huntTeamIds = heroes.map((hero) => hero.id);
+        state.heroStatsAt = Date.now();
+      }
+      if (data && firstTimeReport(data.report)) applyEquipmentChanges(data.equipmentChanges);
       syncGameHuntView(data);
       manualSupplyAfterHunt().catch(() => {});
     } catch (error) {
