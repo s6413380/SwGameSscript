@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.47
+// @version      4.48
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -8900,7 +8900,6 @@ button{padding:7px 4px;border:1px solid #57534e;border-radius:6px;background:#3f
 button:disabled{opacity:.4;cursor:default}button.main{background:#92400e;border-color:#d97706}
 .head{display:flex;justify-content:space-between;color:#a8a29e;margin-bottom:6px}
 .equip{display:flex;justify-content:space-between;font-size:12px;margin-top:2px}.equip.low{color:#f87171;font-weight:bold}
-.ready{margin-top:6px;padding:6px 8px;border-radius:6px;font-weight:bold}.ready.ok{background:#14532d;color:#bbf7d0}.ready.wait{background:#78350f;color:#fde68a;font-weight:normal}
 .cond{display:inline-block;margin:4px 4px 0 0;padding:0 5px;border-radius:4px;font-size:12px;background:#7f1d1d;color:#fecaca}.note{color:#fbbf24;margin-top:6px;min-height:1.2em}
 </style></head><body><div id="mini-root"><div class="head"><span id="mini-place"></span><span id="mini-timer"></span></div><div id="mini-team"></div><div id="mini-ready"></div><div id="mini-buttons"></div><div class="note" id="mini-note"></div></div>
 <script>
@@ -9035,14 +9034,16 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
         .join('')
     );
     const issues = miniReadyIssues(settings, heroes, lowDurability);
-    if (cooldown) issues.push(`冷卻 ${cooldown} 秒`);
+    if (cooldown) issues.push({ text: `冷卻 ${cooldown} 秒` });
+    // 黃＝等一下就會好（補給中、冷卻）；紅＝不會自己好，要去看（倒下、解不掉、沒補到）
+    const readyColor = issues.some((issue) => issue.serious) ? '#f87171' : '#fbbf24';
     setMiniPart(
       'mini-ready',
       !info || moving
         ? ''
         : issues.length
-          ? `<div class="ready wait">⏳ 還沒就緒：${escapeHtml(issues.join('、'))}</div>`
-          : '<div class="ready ok">✔ 完全就緒，可以打</div>'
+          ? `<div style="margin-top:6px;color:${readyColor}">⏳ 還沒就緒：${escapeHtml(issues.map((issue) => issue.text).join('、'))}</div>`
+          : '<div style="margin-top:6px;color:#4ade80;font-weight:bold">✔ 完全就緒，可以打</div>'
     );
     const scriptHunting = state.running && !state.forgeMode;
     const blocked = !info || scriptHunting || Boolean(miniWindow.busy) || moving;
@@ -9059,24 +9060,33 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     setMiniPart('mini-note', escapeHtml(scriptHunting ? '腳本正在掛機，要手動先按停止' : miniWindow.busy || miniWindow.note));
   }
 
-  // 就緒＝不用再補（HP、體力都在補血／補體力頁的門檻以上）、沒有異常、沒有耐久低的裝備、補給換裝跑完了
+  // 就緒＝不用再補（HP、體力都在補血／補體力頁的門檻以上）、沒有該解的異常、沒有耐久低的裝備、補給換裝跑完了。
+  // 異常照「暫停」頁解異常的程度：比那個輕的本來就不解，不算沒就緒；到了那個程度還在＝沒解掉（例如解毒劑用光），標紅去看。
+  // 回傳 [{ text, serious }]：serious＝不會自己好
   function miniReadyIssues(settings, heroes, lowDurability) {
     const issues = [];
-    if (manualSupply.busy) issues.push('補給／換裝中');
+    const supplying = manualSupply.busy;
+    if (supplying) issues.push({ text: '補給／換裝中' });
     const percent = (value, full) => (full > 0 ? Math.floor((value / full) * 100) : 100);
+    const cureLevel = Number(settings.huntCureLevel) || 3;
     heroes.forEach((hero) => {
       if (hero.perished || hero.hp <= 0) {
-        issues.push(`${hero.name} 倒下`);
+        issues.push({ text: `${hero.name} 倒下`, serious: true });
         return;
       }
       const hp = percent(hero.hp, hero.fullHp);
       const sp = percent(hero.sp, hero.fullSp);
-      if (hp < settings[groupKey('health', 'ThresholdPercent')]) issues.push(`${hero.name} HP ${hp}%`);
-      if (sp < settings[groupKey('resource', 'ThresholdPercent')]) issues.push(`${hero.name} 體力 ${sp}%`);
-      heroConditions(hero).forEach((condition) => issues.push(`${hero.name} ${condition.level}${condition.name}`));
+      if (hp < settings[groupKey('health', 'ThresholdPercent')]) issues.push({ text: `${hero.name} HP ${hp}%`, serious: !supplying });
+      if (sp < settings[groupKey('resource', 'ThresholdPercent')]) issues.push({ text: `${hero.name} 體力 ${sp}%`, serious: !supplying });
+      heroConditions(hero)
+        .filter((condition) => condition.severity >= cureLevel)
+        .forEach((condition) => {
+          const gaveUp = !settings.huntCureEnabled || (huntCureTries.get(huntCureKey(hero, condition)) || 0) >= huntCureMaxUses(settings);
+          issues.push({ text: `${hero.name} ${condition.level}${condition.name}${gaveUp ? '（解不掉，去看看）' : ''}`, serious: gaveUp || !supplying });
+        });
       state.equipments
         .filter((equipment) => equipment.equipped === hero.id && lowDurability > 0 && equipment.dur < lowDurability)
-        .forEach((equipment) => issues.push(`${hero.name} ${equipment.type}耐久 ${equipment.dur}`));
+        .forEach((equipment) => issues.push({ text: `${hero.name} ${equipment.type}耐久 ${equipment.dur}`, serious: !supplying }));
     });
     return issues;
   }
