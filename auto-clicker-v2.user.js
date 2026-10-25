@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.46
+// @version      4.47
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -8900,8 +8900,9 @@ button{padding:7px 4px;border:1px solid #57534e;border-radius:6px;background:#3f
 button:disabled{opacity:.4;cursor:default}button.main{background:#92400e;border-color:#d97706}
 .head{display:flex;justify-content:space-between;color:#a8a29e;margin-bottom:6px}
 .equip{display:flex;justify-content:space-between;font-size:12px;margin-top:2px}.equip.low{color:#f87171;font-weight:bold}
+.ready{margin-top:6px;padding:6px 8px;border-radius:6px;font-weight:bold}.ready.ok{background:#14532d;color:#bbf7d0}.ready.wait{background:#78350f;color:#fde68a;font-weight:normal}
 .cond{display:inline-block;margin:4px 4px 0 0;padding:0 5px;border-radius:4px;font-size:12px;background:#7f1d1d;color:#fecaca}.note{color:#fbbf24;margin-top:6px;min-height:1.2em}
-</style></head><body><div id="mini-root"><div class="head"><span id="mini-place"></span><span id="mini-timer"></span></div><div id="mini-team"></div><div id="mini-buttons"></div><div class="note" id="mini-note"></div></div>
+</style></head><body><div id="mini-root"><div class="head"><span id="mini-place"></span><span id="mini-timer"></span></div><div id="mini-team"></div><div id="mini-ready"></div><div id="mini-buttons"></div><div class="note" id="mini-note"></div></div>
 <script>
 document.addEventListener('click', function (event) {
   var button = event.target.closest('[data-mini]');
@@ -9006,8 +9007,16 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       miniWindow.win = null;
       return;
     }
+    // 舊版開的小視窗沒有就緒那一格，補上
+    const doc = miniWindow.win.document;
+    if (!doc.getElementById('mini-ready') && doc.getElementById('mini-buttons')) {
+      const ready = doc.createElement('div');
+      ready.id = 'mini-ready';
+      doc.getElementById('mini-buttons').before(ready);
+    }
     const info = state.huntInfo;
-    const heroes = info && Array.isArray(info.heroes) ? info.heroes : [];
+    // 吃藥、解異常的回應只更新 heroStats，疊上去才是最新的血量和狀態
+    const heroes = (info && Array.isArray(info.heroes) ? info.heroes : []).map((hero) => ({ ...hero, ...(state.heroStats.get(hero.id) || {}) }));
     const now = Date.now();
     const lowDurability = Math.max(0, Number(settings.miniLowDurability) || 0);
     refreshMiniEquipments();
@@ -9025,6 +9034,16 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
         )
         .join('')
     );
+    const issues = miniReadyIssues(settings, heroes, lowDurability);
+    if (cooldown) issues.push(`冷卻 ${cooldown} 秒`);
+    setMiniPart(
+      'mini-ready',
+      !info || moving
+        ? ''
+        : issues.length
+          ? `<div class="ready wait">⏳ 還沒就緒：${escapeHtml(issues.join('、'))}</div>`
+          : '<div class="ready ok">✔ 完全就緒，可以打</div>'
+    );
     const scriptHunting = state.running && !state.forgeMode;
     const blocked = !info || scriptHunting || Boolean(miniWindow.busy) || moving;
     const inTown = Boolean(info) && Number(info.huntZone) === 0;
@@ -9038,6 +9057,28 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       <div class="row">${button('town', '回城', blocked || inTown)}</div>`
     );
     setMiniPart('mini-note', escapeHtml(scriptHunting ? '腳本正在掛機，要手動先按停止' : miniWindow.busy || miniWindow.note));
+  }
+
+  // 就緒＝不用再補（HP、體力都在補血／補體力頁的門檻以上）、沒有異常、沒有耐久低的裝備、補給換裝跑完了
+  function miniReadyIssues(settings, heroes, lowDurability) {
+    const issues = [];
+    if (manualSupply.busy) issues.push('補給／換裝中');
+    const percent = (value, full) => (full > 0 ? Math.floor((value / full) * 100) : 100);
+    heroes.forEach((hero) => {
+      if (hero.perished || hero.hp <= 0) {
+        issues.push(`${hero.name} 倒下`);
+        return;
+      }
+      const hp = percent(hero.hp, hero.fullHp);
+      const sp = percent(hero.sp, hero.fullSp);
+      if (hp < settings[groupKey('health', 'ThresholdPercent')]) issues.push(`${hero.name} HP ${hp}%`);
+      if (sp < settings[groupKey('resource', 'ThresholdPercent')]) issues.push(`${hero.name} 體力 ${sp}%`);
+      heroConditions(hero).forEach((condition) => issues.push(`${hero.name} ${condition.level}${condition.name}`));
+      state.equipments
+        .filter((equipment) => equipment.equipped === hero.id && lowDurability > 0 && equipment.dur < lowDurability)
+        .forEach((equipment) => issues.push(`${hero.name} ${equipment.type}耐久 ${equipment.dur}`));
+    });
+    return issues;
   }
 
   const MINI_ACTION_LABELS = { back: '後退', hunt: '原地狩獵', forward: '前行', town: '回城' };
