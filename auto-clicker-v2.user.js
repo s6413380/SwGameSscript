@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.40
+// @version      4.41
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1131,7 +1131,7 @@
       .map(
         (group) => `<div data-tab="${group.id}">${
           group.id === 'health'
-            ? `<label class="row"><input data-field="manualSupplyEnabled" type="checkbox" style="flex:none;width:auto"> <b>我手動打怪、或組隊隊友打怪時也自動吃藥</b></label>
+            ? `<label class="row"><input data-field="manualSupplyEnabled" type="checkbox" style="flex:none;width:auto"> <b>我手動打怪、或組隊隊友打怪時也自動吃藥</b>（含解異常）</label>
               <label class="row"><input data-field="manualEquipEnabled" type="checkbox" style="flex:none;width:auto"> <b>同上，也自動換裝</b>（照「換裝」頁 API 換裝勾的角色和設定，要先勾「用 API 自動換裝」）</label>
               <div class="hint">腳本沒在掛機時：你自己按打怪，或組隊時隊友按打怪（遊戲會即時推播戰報過來），每打完一場看隊伍的血量、體力，低於這頁和「補體力」頁的門檻就直接用 API 吃藥（不用勾「用 API 補給」、不會去點畫面）；耐久低的裝備照換裝設定換掉。不會額外去查，只用遊戲自己收到的資料</div>`
             : ''
@@ -1261,7 +1261,7 @@
       <div class="row">　🔔 只提醒、繼續打：<select data-field="statusAlertLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">不處理</option><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select></div>
       <div class="row">　⏸ 暫停：<select data-field="statusPauseLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">不處理</option><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select></div>
       <div class="hint">例：提醒選「輕度以上」、暫停選「重度」＝輕度、中度只響提醒，重度才停下來</div>
-      <div class="row"><label style="flex:none;display:flex;align-items:center;gap:4px"><input data-field="huntCureEnabled" type="checkbox" style="flex:none;width:auto"> 自動打怪時</label><select data-field="huntCureLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select>先吃藥</div>
+      <div class="row"><label style="flex:none;display:flex;align-items:center;gap:4px"><input data-field="huntCureEnabled" type="checkbox" style="flex:none;width:auto"> 打怪時（含手動）</label><select data-field="huntCureLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select>先吃藥</div>
       <div class="row">吃什麼<input data-field="huntCureItems" placeholder="中毒=解毒劑、輕度燒傷=蘆薈" style="flex:1;min-width:0"></div>
       <label>每種異常最多吃 ${numberInput('huntCureMaxUses', 'min="1" max="20"')} 次</label>
       <div class="hint">異常名稱=道具名稱，「、」分隔；名稱前加「重度／中度／輕度」就只在那個程度吃。開始吃之後降到較輕的程度也會繼續照表吃。吃到上限還沒好、或沒有藥，才照上面的提醒／暫停</div>
@@ -5621,6 +5621,15 @@
           wait(90000),
         ]);
       }
+      for (let round = 0; round < MANUAL_SUPPLY_MAX_ROUNDS; round++) {
+        const cure = findHeroNeedingCure(settings, true);
+        if (!cure || scriptHunting()) break;
+        await wait(randomGap(800, 2500));
+        await Promise.race([
+          new Promise((resolve) => cureHuntHero(settings, cure, { onDone: resolve, isCancelled: scriptHunting }).catch(resolve)),
+          wait(30000),
+        ]);
+      }
       if (!scriptHunting()) await manualEquipAfterHunt(settings, scriptHunting);
     } finally {
       manualSupply.busy = false;
@@ -5728,33 +5737,34 @@
     return cureItemName(cureRules(settings.huntCureItems), condition);
   }
 
-  function huntCurePending(settings, hero, condition) {
-    return state.running && !state.forgeMode && Boolean(huntCureItem(settings, hero, condition));
+  function huntCurePending(settings, hero, condition, manual = false) {
+    return (manual || (state.running && !state.forgeMode)) && Boolean(huntCureItem(settings, hero, condition));
   }
 
-  function findHeroNeedingCure(settings) {
+  function findHeroNeedingCure(settings, manual = false) {
     const present = new Set();
     let found = null;
     state.heroStats.forEach((hero) => {
       if (hero.perished || hero.hp <= 0) return;
       heroConditions(hero).forEach((condition) => {
         present.add(huntCureKey(hero, condition));
-        if (!found && huntCurePending(settings, hero, condition)) found = { hero, condition, itemName: huntCureItem(settings, hero, condition) };
+        if (!found && huntCurePending(settings, hero, condition, manual)) found = { hero, condition, itemName: huntCureItem(settings, hero, condition) };
       });
     });
     [...huntCureTries.keys()].filter((key) => !present.has(key)).forEach((key) => huntCureTries.delete(key));
     return found;
   }
 
-  async function cureHuntHero(settings, { hero, condition, itemName }) {
+  async function cureHuntHero(settings, { hero, condition, itemName }, { onDone = null, isCancelled = null } = {}) {
     const runId = state.runId;
+    const cancelled = isCancelled || (() => runId !== state.runId);
     const key = huntCureKey(hero, condition);
     const tries = (huntCureTries.get(key) || 0) + 1;
     huntCureTries.set(key, tries);
     const who = `［解異常］${hero.name} ${condition.level}${condition.name}`;
     try {
       const items = (await requestGameApi(ITEMS_API)).items || [];
-      if (runId !== state.runId) return;
+      if (cancelled()) return;
       const item = items.find((candidate) => candidate.available > 0 && String(candidate.name).includes(itemName));
       if (!item) {
         huntCureTries.set(key, huntCureMaxUses(settings));
@@ -5762,7 +5772,7 @@
         logItemUse(`${who} ✗ 沒有${itemName}`);
       } else {
         await wait(itemRequestGap());
-        if (runId !== state.runId) return;
+        if (cancelled()) return;
         const reply = await requestGameApi(`${ITEMS_API}/${item.id}/use`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -5771,7 +5781,7 @@
         syncGameItemUse(reply);
         let statuses = reply.heroStatuses;
         if (statuses === undefined) statuses = (await requestGameApi(`${HEROES_API}/${hero.id}/statuses`).catch(() => ({}))).statuses || hero.statuses;
-        if (runId !== state.runId) return;
+        if (cancelled()) return;
         const updated = { ...(state.heroStats.get(hero.id) || hero), ...(reply.hero || {}), statuses };
         state.heroStats.set(hero.id, updated);
         state.heroStatsAt = Date.now();
@@ -5781,12 +5791,12 @@
         logItemUse(message);
       }
     } catch (error) {
-      if (runId !== state.runId) return;
+      if (cancelled()) return;
       logItemUse(`${who} ✗ 吃藥失敗（${error.message}）`);
     }
     // 吃滿三次或沒藥：照「異常狀態」的提醒／暫停設定處理
     checkHeroConditions([...state.heroStats.values()], settings);
-    if (runId === state.runId) continueAfterItem(settings);
+    if (!cancelled()) (onDone || (() => continueAfterItem(settings)))();
   }
 
   const handledReportIds = new Set();
