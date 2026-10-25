@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.41
+// @version      4.42
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -146,6 +146,8 @@
     ['transfer', '轉移'],
     ['cardBuy', '購卡'],
   ];
+  // 輔助模式收起來的分頁：都是自動化才用得到的
+  const ASSIST_HIDDEN_TABS = ['main', 'move', 'train', 'forge', 'mining', 'pick', 'transfer', 'cardBuy', 'api'];
   // 分頁太多，先選大類再選分頁；大類裡記住上次看的分頁
   const TAB_GROUPS = [
     ['hunt', '打怪', ['main', 'health', 'resource', 'move', 'equip', 'train', 'pause']],
@@ -363,6 +365,8 @@
     alertNotifyEnabled: true,
     // 開好幾個帳號時分得出是哪個；截圖分享時可以關掉
     showAccountName: true,
+    // 輔助模式：只手動打怪的人用，自動化的分頁和按鈕都收起來，自動掛機／鍛造／挖礦也不會啟動
+    assistModeEnabled: false,
     // 面板換成大耳狗風格（天空藍、雲朵、粉紅點綴），預設關
     cinnamonTheme: false,
     itemStepSeconds: 1,
@@ -1026,23 +1030,23 @@
   const panel = document.createElement('div');
   panel.innerHTML = `
     <div class="row" style="font-weight:bold;margin:0 0 6px;cursor:move" data-role="header">
-      <span style="flex:1"><span data-role="app-name">愛吉吉</span> <span style="font-weight:normal;opacity:.7">v${SCRIPT_VERSION}</span> ⠿ <span data-role="mini-status" style="font-weight:normal;opacity:.85"></span></span>
+      <span style="flex:1"><span data-role="app-name">愛吉吉</span> <span style="font-weight:normal;opacity:.7">v${SCRIPT_VERSION}</span> ⠿ <span data-role="mini-status" data-assist-hide style="font-weight:normal;opacity:.85"></span></span>
       <button data-action="mini-window" title="開小視窗：隊伍狀態＋後退／原地狩獵／前行／回城">◱</button>
       <button data-action="enlarge" title="拉大／縮回原狀">⤢</button>
       <button data-action="minimize" title="縮到最小／展開">–</button>
       <button data-action="close" title="關閉：這個分頁的腳本全部停止（重新整理頁面才會恢復）">×</button>
     </div>
     <div data-role="body">
-    <div class="row">
+    <div class="row" data-assist-hide>
       <button data-action="start">開始</button>
       <button data-action="stop">停止</button>
     </div>
-    <div class="row global-row">全體
+    <div class="row global-row" data-assist-hide>全體
       <button data-action="global-run" data-global-mode="run">開始</button>
       <button data-action="global-temp" data-global-mode="temp">暫時暫停</button>
       <button data-action="global-stop" data-global-mode="stop">永久暫停</button>
     </div>
-    <div class="row global-row">低調
+    <div class="row global-row" data-assist-hide>低調
       <button data-action="low-mode" data-low-mode="off">關</button>
       <button data-action="low-mode" data-low-mode="serious">認真</button>
       <button data-action="low-mode" data-low-mode="casual">休閒</button>
@@ -1052,7 +1056,7 @@
     <div data-role="monitor" class="monitor"></div>
     <hr class="divider">
     <div class="tab-groups">${TAB_GROUPS.map(([id, name]) => `<button data-tab-group="${id}">${name}</button>`).join('')}</div>
-    <div class="tabs">${TABS.map(([id, name]) => `<button data-tab-button="${id}" data-group="${tabGroupOf(id)}">${name}</button>`).join('')}</div>
+    <div class="tabs">${TABS.map(([id, name]) => `<button data-tab-button="${id}" data-group="${tabGroupOf(id)}"${ASSIST_HIDDEN_TABS.includes(id) ? ' data-assist-hide' : ''}>${name}</button>`).join('')}</div>
 
     <div data-tab="main">
       <label class="row"><input data-field="huntByApiEnabled" type="checkbox" style="flex:none;width:auto"> <b>用 API 打怪</b>（不用停在狩獵頁，可以同一個分頁 API 鍛造）</label>
@@ -1298,6 +1302,7 @@
       <label class="row"><input data-field="alertPopupEnabled" type="checkbox" style="flex:none;width:auto"> 彈出提示視窗</label>
       <label class="row"><input data-field="alertNotifyEnabled" type="checkbox" style="flex:none;width:auto"> 系統通知＋分頁標題閃爍</label>
       <label class="row"><input data-field="showAccountName" type="checkbox" style="flex:none;width:auto"> 面板標題、分頁標題和提醒顯示帳號名稱（例如「愛吉吉的小明」）</label>
+      <label class="row"><input data-field="assistModeEnabled" type="checkbox" style="flex:none;width:auto"> <b>輔助模式</b>：只留手動打怪用的（補給、解異常、換裝、小視窗、統計），自動掛機、鍛造、挖礦、購卡的分頁和按鈕都收起來，而且會停掉、不能啟動</label>
       <label class="row"><input data-field="cinnamonTheme" type="checkbox" style="flex:none;width:auto"> 風格2</label>
       <fieldset class="group">
         <legend>多帳號總覽</legend>
@@ -1630,6 +1635,7 @@
     [data-auto-clicker] .tabs { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:10px; }
     [data-auto-clicker] .tabs button { padding:2px 8px; color:#fff; background:#2a2a30; border-color:#3a3a40; }
     [data-auto-clicker] .tabs button:hover { background:#3a3a42; }
+    [data-auto-clicker][data-assist] [data-assist-hide] { display:none !important; }
     [data-auto-clicker] .tabs button[data-active] { background:#fff; color:#111; border-color:#fff; font-weight:bold; }
     [data-auto-clicker] fieldset.group { border:1px solid #3a3a40; border-radius:8px; margin:8px 0; padding:4px 8px 8px; }
     [data-auto-clicker] fieldset.group legend { font-weight:bold; padding:0 4px; cursor:pointer; user-select:none; }
@@ -1898,7 +1904,15 @@
   // 每個瀏覽器分頁各自記目前看的是哪一頁，停著時監控區用來決定顯示鍛造體力還是血條
   let activeTab = 'main';
 
+  function assistModeOn() {
+    return Boolean(readSettingsFromPanel().assistModeEnabled);
+  }
+
   function showTab(tabId) {
+    if (assistModeOn() && ASSIST_HIDDEN_TABS.includes(tabId)) {
+      const [, , tabIds] = TAB_GROUPS.find(([id]) => id === tabGroupOf(tabId));
+      tabId = tabIds.find((id) => !ASSIST_HIDDEN_TABS.includes(id)) || 'health';
+    }
     activeTab = tabId;
     const group = tabGroupOf(tabId);
     if (tabId === 'growth') renderGrowthSummary();
@@ -1980,6 +1994,19 @@
     }
     const [, , tabIds] = TAB_GROUPS.find(([id]) => id === group);
     showTab(tabIds.includes(tabId) ? tabId : tabIds[0]);
+  }
+
+  // 輔助模式不只是藏起來：正在跑的自動化一併停掉，購卡自動買也關掉
+  function applyAssistMode() {
+    const on = assistModeOn();
+    panel.toggleAttribute('data-assist', on);
+    if (on) {
+      if (state.running) stop('輔助模式：已停止自動掛機');
+      if (forgeRunner.running) stopForgeRunner('輔助模式：已停止自動鍛造');
+      if (miningRunner.running) stopMiningRunner('輔助模式：已停止挖礦');
+      if (readSettingsFromPanel().cardBuyEnabled) setPanelField('cardBuyEnabled', false);
+    }
+    showTab(activeTab);
   }
 
   const statusElement = panel.querySelector('[data-role="status"]');
@@ -9832,6 +9859,10 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
 
   function start(forgeMode = false) {
     const settings = readSettingsFromPanel();
+    if (settings.assistModeEnabled) {
+      setStatus('輔助模式開著，不會自動掛機或鍛造（到「其他 → 提醒」取消勾選）');
+      return;
+    }
     if (forgeMode && settings.forgeByApiEnabled) {
       startForgeRunner();
       return;
@@ -17068,6 +17099,10 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
 
   function startForgeRunner() {
     const settings = readSettingsFromPanel();
+    if (settings.assistModeEnabled) {
+      forgeLog('輔助模式開著，不會自動鍛造');
+      return;
+    }
     if (forgeRunner.running) {
       forgeLog('已經在鍛造了');
       return;
@@ -18177,6 +18212,10 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   }
 
   function startMiningRunner() {
+    if (readSettingsFromPanel().assistModeEnabled) {
+      miningLog('輔助模式開著，不會自動挖礦');
+      return;
+    }
     if (miningRunner.running) {
       miningLog('已經在挖礦了');
       return;
@@ -19438,6 +19477,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       renderAppName();
       applyTitlePrefix();
     }
+    if (event.target.dataset.field === 'assistModeEnabled') applyAssistMode();
     // 剛切到主動：從現在起算自動切回的時間，第一次馬上查
     if (event.target.dataset.field === 'cardWatchMode' && event.target.value === 'active') {
       writeJsonStorage(CARD_ACTIVE_SINCE_KEY, Date.now());
@@ -19533,6 +19573,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     // 讀不到就停在主流程
   }
   showTab(TABS.some(([id]) => id === savedTab) ? savedTab : 'main');
+  applyAssistMode();
   showCharacter(0);
   let startMinimized = false;
   try {
