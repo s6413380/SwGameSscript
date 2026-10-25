@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.52
+// @version      4.53
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -19664,6 +19664,8 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       applyTitlePrefix();
     }
     if (event.target.dataset.field === 'assistModeEnabled') applyAssistMode();
+    // 改了收爐方式：鍛造可能正照舊設定睡到很久以後（例如等全部好），叫它起來照新設定重算
+    if (['forgeCollectMode', 'forgeCollectPercent'].includes(event.target.dataset.field)) wakeForgeRunner();
     // 剛切到主動：從現在起算自動切回的時間，第一次馬上查
     if (event.target.dataset.field === 'cardWatchMode' && event.target.value === 'active') {
       writeJsonStorage(CARD_ACTIVE_SINCE_KEY, Date.now());
