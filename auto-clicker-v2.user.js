@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.64
+// @version      4.65
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -17890,6 +17890,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   async function sendForeman(settings, foreman, data, opened, site, parked = false) {
     const pageHero = await openGameHeroPage(foreman, opened);
     if (!canSendForeman(settings, pageHero)) return false;
+    await drinkForemanPotions(settings, pageHero);
     syncGameHeroAction(await requestGameApi(`${HEROES_API}/${foreman.id}/mining/${site}`, { method: 'POST' }), 'mine');
     data.foreman = { heroId: foreman.id, at: Date.now(), site, ...(parked ? { parked: true } : {}) };
     saveMining(data);
@@ -18495,6 +18496,30 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     }
     if (used.length || empty) logItemUse(`［挖礦］${hero.name} ${used.length ? `用了 ${used.join('、')}` : ''}${empty ? `${used.length ? '，' : ''}沒有${supply.item}了` : ''}，${supply.label} ${current[supply.field]}/${target}`);
     return { hero: current, used, empty };
+  }
+
+  // 工頭進場前也照挖礦頁的 HP／體力設定喝藥（跟挖礦的人一樣）；喝不到也照樣進去，收礦不能等他休息
+  async function drinkForemanPotions(settings, hero) {
+    const kinds = Object.keys(MINING_SUPPLIES).filter((kind) => settings[MINING_SUPPLIES[kind].enabled] && hero[MINING_SUPPLIES[kind].field] < hero[MINING_SUPPLIES[kind].full]);
+    if (!kinds.length) return;
+    try {
+      const items = (await requestGameApi(ITEMS_API)).items || [];
+      for (const kind of kinds) {
+        const supply = MINING_SUPPLIES[kind];
+        const drink = await drinkMiningPotions(settings, hero, kind, items);
+        if (drink.used.length) miningLog(`工頭 ${hero.name} 用了 ${drink.used.length} 個${supply.item}`);
+        const key = `${hero.id}:potion:${kind}`;
+        if (!drink.empty) miningNotified.delete(key);
+        if (drink.empty && !miningNotified.has(key)) {
+          miningNotified.add(key);
+          showToast(`挖礦：工頭 ${hero.name} 沒有${supply.item}了`);
+        }
+        hero = drink.hero;
+      }
+    } catch (error) {
+      if (error.captchaRequired) throw error;
+      miningLog(`工頭 ${hero.name} 喝藥失敗（${error.message}），照樣進場`);
+    }
   }
 
   async function miningHeroStep(settings, hero, plans, data, now, waits, opened, roundHours) {
