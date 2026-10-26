@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.62
+// @version      4.63
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -5668,6 +5668,8 @@
   const manualSupply = { busy: false, equipping: false };
   // 換裝脫下了還沒穿回去的部位：equipmentId → { heroId, type, name, expected（脫之前同類型穿幾件）}
   const emptiedEquipSlots = new Map();
+  // 換裝跳過的原因：equipmentId → 文字
+  const equipSkipReasons = new Map();
   const MANUAL_SUPPLY_MAX_ROUNDS = 8;
 
   function manualSupplyTarget(settings) {
@@ -6201,6 +6203,7 @@
     const replacement = findReplacementEquipment(settings, worn);
     if (!replacement) {
       state.equipApiSkipped.add(worn.id);
+      equipSkipReasons.set(worn.id, '沒有可替換的閒置裝備');
       logItemUse(`${who} ✗ 沒有可替換的閒置裝備`);
       const reason = `${hero ? hero.name : heroId} 的${worn.type}耐久 ${worn.dur}，沒有可替換的閒置裝備`;
       // 改去設定的關卡（通常是比較好打、不太耗耐久的地方），自動移動會接手走過去
@@ -6219,6 +6222,7 @@
     }
     const fail = (message) => {
       state.equipApiSkipped.add(worn.id);
+      equipSkipReasons.set(worn.id, message);
       state.equipmentsAt = 0;
       setStatus(`${who}：${message}，本輪不再換`);
       logItemUse(`${who} ✗ ${message}`);
@@ -9149,6 +9153,18 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   // 就緒＝不用再補（HP、體力都在補血／補體力頁的門檻以上）、沒有該解的異常、沒有低於換裝門檻還沒換掉的裝備、補給換裝跑完了。
   // 異常照「暫停」頁解異常的程度：比那個輕的本來就不解，不算沒就緒；到了那個程度還在＝沒解掉（例如解毒劑用光），標紅去看。
   // 回傳 [{ text, serious }]：serious＝不會自己好
+  // 低於換裝門檻卻不會自動換的原因；空字串＝會換（等下一場打完）
+  function manualEquipBlocker(settings, equipment, checked) {
+    if (!checked) return '這個角色沒勾 API 換裝';
+    if (!settings.equipApiEnabled) return '沒勾「用 API 自動換裝」';
+    if (!settings.manualSupplyEnabled) return '沒勾「手動打怪也自動吃藥」，換裝跟著它跑';
+    if (!settings.manualEquipEnabled) return '沒勾「手動打怪也自動換裝」';
+    if (!isMonitoredEquipment(settings, equipment)) return '這個部位個別設定沒開換';
+    if (state.equipApiSkipped.has(equipment.id)) return `換不成：${equipSkipReasons.get(equipment.id) || '不明'}，過幾分鐘再打會重試`;
+    if (!findReplacementEquipment(settings, equipment)) return '沒有可換的閒置裝備（看換裝頁的條件）';
+    return '';
+  }
+
   function miniReadyIssues(settings, heroes) {
     const issues = [];
     const supplying = manualSupply.busy;
@@ -9180,12 +9196,14 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
           const gaveUp = !settings.huntCureEnabled || (huntCureTries.get(huntCureKey(hero, condition)) || 0) >= huntCureMaxUses(settings);
           issues.push({ text: `${hero.name} ${condition.level}${condition.name}${gaveUp ? '（解不掉，去看看）' : ''}`, serious: gaveUp || !supplying });
         });
-      if (settings.manualEquipEnabled && settings.equipApiEnabled && equipHeroIds(settings).includes(hero.id)) {
-        const minimum = heroMinDurability(settings, hero.id);
-        state.equipments
-          .filter((equipment) => equipment.equipped === hero.id && equipment.dur < minimum)
-          .forEach((equipment) => issues.push({ text: `${hero.name} ${equipment.type}耐久 ${equipment.dur}（沒換掉）`, serious: !supplying }));
-      }
+      const checked = equipHeroIds(settings).includes(hero.id);
+      const minimum = checked ? heroMinDurability(settings, hero.id) : 1;
+      state.equipments
+        .filter((equipment) => equipment.equipped === hero.id && equipment.dur < minimum)
+        .forEach((equipment) => {
+          const why = manualEquipBlocker(settings, equipment, checked);
+          issues.push({ text: `${hero.name} ${equipment.type}耐久 ${equipment.dur}（${why || '沒換掉'}）`, serious: Boolean(why) || !supplying });
+        });
     });
     return issues;
   }
