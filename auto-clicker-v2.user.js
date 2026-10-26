@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.61
+// @version      4.62
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -5189,9 +5189,11 @@
   }
 
   // 持法決定武器能換成哪幾類，再跟這個部位勾的類型取交集
-  function equipPartTypes(plan, part) {
+  // heldType：身上（或剛脫下）那把的類型；雙持時拿的是雙手武器（有些角色能拿兩把太刀）就也照那一類換
+  function equipPartTypes(plan, part, heldType = null) {
     let types = part.types;
     if (part.id === 'weapon' && (plan.grip === 'single' || plan.grip === 'dual')) types = ONE_HAND_WEAPONS;
+    if (part.id === 'weapon' && plan.grip === 'dual' && TWO_HAND_WEAPONS.includes(heldType)) types = [...ONE_HAND_WEAPONS, heldType];
     if (part.id === 'weapon' && plan.grip === 'two') types = TWO_HAND_WEAPONS;
     const chosen = plan.parts[part.id].types;
     return chosen.length ? types.filter((type) => chosen.includes(type)) : types;
@@ -5721,8 +5723,15 @@
   const MANUAL_EQUIP_FRESH_MILLISECONDS = 10 * 60000;
   const MANUAL_EQUIP_UNTAPPED_FRESH_MILLISECONDS = 2 * 60000;
 
+  const MANUAL_EQUIP_RETRY_MILLISECONDS = 5 * 60000;
+  let manualEquipSkipClearedAt = Date.now();
+
   async function manualEquipAfterHunt(settings, scriptHunting) {
     if (!settings.manualEquipEnabled || !settings.equipApiEnabled || !equipHeroIds(settings).length) return;
+    if (Date.now() - manualEquipSkipClearedAt > MANUAL_EQUIP_RETRY_MILLISECONDS) {
+      state.equipApiSkipped.clear();
+      manualEquipSkipClearedAt = Date.now();
+    }
     const fresh = huntEventsTap.active ? MANUAL_EQUIP_FRESH_MILLISECONDS : MANUAL_EQUIP_UNTAPPED_FRESH_MILLISECONDS;
     if (!state.equipments.length || Date.now() - state.equipmentsAt > fresh) {
       await refreshEquipments().catch(() => {});
@@ -6114,7 +6123,7 @@
   }
 
   function pickIdleEquipment(settings, plan, part, minimum, preferredType) {
-    const types = equipPartTypes(plan, part);
+    const types = equipPartTypes(plan, part, preferredType);
     const rank = (equipment) => [equipment.type === preferredType ? 1 : 0, equipment.dur];
     const blocked = noAutoEquipIds();
     return state.equipments
@@ -6159,7 +6168,9 @@
         if (!plan.parts[part.id].on || state.equipApiSkipped.has(fillKey(heroId, part))) continue;
         const worn = state.equipments.filter((equipment) => equipment.equipped === heroId && part.types.includes(equipment.type)).length;
         if (worn >= expectedPartCount(plan, part, heroId)) continue;
-        return { heroId, part, worn, replacement: pickIdleEquipment(settings, plan, part, heroMinDurability(settings, heroId), null) };
+        // 雙持少一把：照另一手拿的類型補（兩把太刀的就補太刀）
+        const held = state.equipments.find((equipment) => equipment.equipped === heroId && part.types.includes(equipment.type));
+        return { heroId, part, worn, replacement: pickIdleEquipment(settings, plan, part, heroMinDurability(settings, heroId), held ? held.type : null) };
       }
     }
     return null;
