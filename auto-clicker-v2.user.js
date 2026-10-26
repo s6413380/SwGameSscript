@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.63
+// @version      4.64
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -6124,6 +6124,37 @@
       .reduce((best, equipment) => (!best || equipment.dur > best.dur ? equipment : best), null);
   }
 
+  // 找不到替換時說清楚同類型的每一件為什麼不能用（紀錄裡只寫「沒有」查不出是哪個條件擋掉）
+  function explainNoReplacement(settings, worn) {
+    const heroId = worn.equipped;
+    const plan = equipHeroPlan(settings, heroId);
+    const part = equipPartOf(worn.type);
+    const minimum = heroMinDurability(settings, heroId);
+    const blocked = noAutoEquipIds();
+    const types = plan && part ? equipPartTypes(plan, part, worn.type) : [worn.type];
+    const reasonOf = (equipment) => {
+      if (equipment.equipped !== null) return '別人穿著';
+      if (equipment.state !== 0) return `狀態 ${equipment.state}（上架或其他用途中）`;
+      if (blocked.has(equipment.id)) return '標了不自動穿';
+      if (!types.includes(equipment.type)) return `持法／勾的類型不含${equipment.type}`;
+      if (plan && part) {
+        if (!isAllowedForPart(settings, plan, part, equipment)) return plan.parts[part.id].names.length ? '不在這個部位勾的裝備裡' : settings.equipRuleEnabled ? '不符合換裝條件（屬性／重量／附魔）' : '不在勾選清單裡';
+      } else {
+        if (settings.equipApiSameName && equipment.name !== worn.name) return '有勾「只換同名」';
+        if (!(settings.equipRuleEnabled ? matchesEquipRule(settings, equipment) : isAllowedEquipment(equipAllowedNames(settings), equipment))) return settings.equipRuleEnabled ? '不符合換裝條件（屬性／重量／附魔）' : '不在勾選清單裡';
+      }
+      if (equipment.dur < minimum) return `耐久 ${equipment.dur} 低於門檻 ${minimum}`;
+      return '看起來可以用（請回報）';
+    };
+    const sameType = state.equipments.filter((equipment) => equipment.type === worn.type && equipment.id !== worn.id && equipment.equipped !== heroId);
+    const age = state.equipmentsAt ? Math.round((Date.now() - state.equipmentsAt) / 60000) : null;
+    if (!sameType.length) return `裝備清單裡沒有其他${worn.type}（清單 ${age === null ? '沒讀過' : `${age} 分鐘前讀的`}）`;
+    return sameType
+      .slice(0, 6)
+      .map((equipment) => `「${equipment.name}」${equipment.dur}：${reasonOf(equipment)}`)
+      .join('；');
+  }
+
   function pickIdleEquipment(settings, plan, part, minimum, preferredType) {
     const types = equipPartTypes(plan, part, preferredType);
     const rank = (equipment) => [equipment.type === preferredType ? 1 : 0, equipment.dur];
@@ -6200,11 +6231,17 @@
     const heroId = worn.equipped;
     const hero = state.heroStats.get(heroId);
     const who = `[換裝] ${hero ? hero.name : heroId} 的${worn.type}「${worn.name}」(耐久 ${worn.dur}/${worn.fullDur})`;
-    const replacement = findReplacementEquipment(settings, worn);
+    let replacement = findReplacementEquipment(settings, worn);
+    if (!replacement) {
+      await refreshEquipments().catch(() => {});
+      if (cancelled()) return;
+      replacement = findReplacementEquipment(settings, worn);
+    }
     if (!replacement) {
       state.equipApiSkipped.add(worn.id);
-      equipSkipReasons.set(worn.id, '沒有可替換的閒置裝備');
-      logItemUse(`${who} ✗ 沒有可替換的閒置裝備`);
+      const detail = explainNoReplacement(settings, worn);
+      equipSkipReasons.set(worn.id, `沒有可替換的閒置裝備（${detail}）`);
+      logItemUse(`${who} ✗ 沒有可替換的閒置裝備：${detail}`);
       const reason = `${hero ? hero.name : heroId} 的${worn.type}耐久 ${worn.dur}，沒有可替換的閒置裝備`;
       // 改去設定的關卡（通常是比較好打、不太耗耐久的地方），自動移動會接手走過去
       if (!manual && settings.equipEmptyMoveEnabled && settings.equipEmptyArea) {
