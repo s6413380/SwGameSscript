@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.70
+// @version      4.71
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -7778,7 +7778,7 @@
   const COMBAT_STORAGE_KEY = 'autoClickerV2CombatStats';
   // 統計格式或判斷方式改過就換版本，舊資料對不上（例如治療沒分生命、體力），直接重新統計
   const COMBAT_STATS_VERSION = 4;
-  const MEMBER_FIELDS = ['damage', 'hits', 'crits', 'healthHealing', 'staminaHealing', 'controls', 'kills', 'damageTaken'];
+  const MEMBER_FIELDS = ['damage', 'hits', 'crits', 'healthHealing', 'staminaHealing', 'controls', 'kills', 'damageTaken', 'buffs', 'cleanses'];
   const SKILL_FIELDS = ['casts', 'damage', 'hits', 'crits'];
   const BASIC_ATTACK = '普通攻擊';
   const ANOMALY_LIMIT = 10;
@@ -7807,6 +7807,10 @@
   const BATTLE_END_PATTERN = /還剩下\s*\d[\d,]*\s*點生命值|點經驗值/;
   // 這些字眼一定是自己出手，就算剛被治療過也不能當成治療後的狀態描述
   const ACTION_VERB_PATTERN = /使出|攻擊|發動/;
+  // 「無情者哈拉爾的攻擊力提升了」
+  const BUFF_PATTERN = /(?:提升|上升|提高|增加|增強|強化)了/;
+  // 「…發出亮光，舒緩了健忘的奧特斯的混亂」；動詞後面要接被解除的人，「X的混亂解除了」是自己退掉的，不算
+  const CLEANSE_PATTERN = /(?:舒緩|解除|消除|驅散|淨化|治癒|治好|清除)了(.+)/;
 
   function countCombatLines(text) {
     return text.split('\n').filter((line) => /造成|擊中|恢復了|攻擊/.test(line)).length;
@@ -7996,6 +8000,13 @@
       skillCounted = true;
       addStats(skillStats, { casts: 0, damage: amount, hits: 1, crits: critical }, SKILL_FIELDS);
     };
+    // 解除我方異常：開頭是我方又不是子行就是他自己出手（含裝備發動），否則算上面那個出手的人
+    const cleanser = (line, name, isIndented) => {
+      const cleansed = line.match(CLEANSE_PATTERN);
+      if (!cleansed || !party.has(leadingName(cleansed[1]))) return null;
+      if (name && party.has(name) && !isIndented) return name;
+      return members[actor] ? actor : null;
+    };
     const handleLine = (line, index) => {
       // 縮排在出手那行底下、又是敵方受傷：不管寫法（擊中、第 N 擊…）都是上面那個人打的
       if (indented && indented[index] && damaged[index] === 'b') {
@@ -8025,6 +8036,12 @@
       }
       const name = leadingName(line);
       const isIndented = Boolean(indented && indented[index]);
+      const cleanerName = cleanser(line, name, isIndented);
+      if (cleanerName) {
+        if (cleanerName === name && !isIndented) startAction(line, name);
+        members[cleanerName].cleanses++;
+        if (!line.includes('恢復了')) return;
+      }
       const healText = line.split('恢復了')[1];
       if (healText !== undefined) {
         let healer;
@@ -8049,6 +8066,13 @@
         }
         return;
       }
+      // 我方被加增益：緊接在我方出手後（縮排子行，或沒縮排資訊時上一行就是他）算出手的人放的，否則算本人（自己放、被動、裝備）
+      if (name && party.has(name) && BUFF_PATTERN.test(line) && !ANY_DAMAGE_PATTERN.test(line)) {
+        const follows = indented ? isIndented : index > 0 && leadingName(lines[index - 1]) === actor;
+        if (!follows) startAction(line, name);
+        members[members[actor] ? actor : name].buffs++;
+        return;
+      }
       const isStatusLine =
         isIndented ||
         (name &&
@@ -8056,15 +8080,18 @@
           (name === lastTarget || !party.has(name)) &&
           isStatusLike(line, name, otherNames));
       if (isStatusLine) {
-        if (name && !party.has(name)) credit('controls');
+        if (name && !party.has(name) && !BUFF_PATTERN.test(line)) credit('controls');
         return;
       }
       startAction(line, name);
       creditDamage(line, damaged[index] === 'b' || /上前保護受到/.test(line) ? ANY_DAMAGE_PATTERN : DAMAGE_PATTERN);
-      // 同一行後半段描述敵人狀態（例如「綠水靈1因害怕攻擊力降低了」）也算控制
+      // 同一行後半段描述敵人狀態（例如「綠水靈1因害怕攻擊力降低了」）也算控制；描述我方變強算增益，敵人變強不算
       line.split('，').slice(1).forEach((clause) => {
         const subject = leadingName(clause);
-        if (subject && !party.has(subject) && !/傷害|沒有/.test(clause)) credit('controls');
+        if (!subject || /傷害|沒有/.test(clause)) return;
+        if (BUFF_PATTERN.test(clause)) {
+          if (party.has(subject)) credit('buffs');
+        } else if (!party.has(subject)) credit('controls');
       });
     };
     const partyOutput = () =>
@@ -8321,11 +8348,11 @@
       .sort(byDamage)
       .map(([name, memberStats]) => `<tr><td>${escapeHtml(name)}</td><td>${formatAmount(memberStats.damage)}</td>
         <td>${percentText(memberStats.crits, memberStats.hits)}</td><td>${formatAmount(memberStats.healthHealing)}</td>
-        <td>${formatAmount(memberStats.staminaHealing)}</td><td>${memberStats.controls}</td><td>${memberStats.kills}</td>
-        <td>${formatAmount(memberStats.damageTaken || 0)}</td></tr>`)
+        <td>${formatAmount(memberStats.staminaHealing)}</td><td>${memberStats.controls}</td><td>${memberStats.buffs || 0}</td>
+        <td>${memberStats.cleanses || 0}</td><td>${memberStats.kills}</td><td>${formatAmount(memberStats.damageTaken || 0)}</td></tr>`)
       .join('');
     return `<table class="combat"><tr><th>角色</th><th>傷害</th><th>爆擊</th><th title="恢復生命值">回血</th>
-      <th title="恢復體力">回體</th><th>控制</th><th>擊殺</th><th title="被敵人打、中毒燒傷等受到的傷害">承傷</th></tr>${rows}</table>`;
+      <th title="恢復體力">回體</th><th title="敵人被加負面狀態">控制</th><th title="幫自己或隊友加增益">增益</th><th title="解除隊友的異常狀態">解除</th><th>擊殺</th><th title="被敵人打、中毒燒傷等受到的傷害">承傷</th></tr>${rows}</table>`;
   }
 
   // 每個角色各招的傷害；key 用來在重畫後保留展開狀態
@@ -8352,7 +8379,7 @@
     const anomalyNote = anomalyCount ? ` ⚠異常 ${anomalyCount}` : '';
     if (!combatStats.last) return anomalyNote.trim();
     const last = sumMembers(combatStats.last);
-    return `上場：傷 ${formatAmount(last.damage)} 回血 ${formatAmount(last.healthHealing)} 回體 ${formatAmount(last.staminaHealing)} 控 ${last.controls} 殺 ${last.kills}（共 ${combatStats.battles} 場）${anomalyNote}`;
+    return `上場：傷 ${formatAmount(last.damage)} 回血 ${formatAmount(last.healthHealing)} 回體 ${formatAmount(last.staminaHealing)} 控 ${last.controls} 增 ${last.buffs} 解 ${last.cleanses} 殺 ${last.kills}（共 ${combatStats.battles} 場）${anomalyNote}`;
   }
 
   function renderCombatAnomalies() {
@@ -8419,7 +8446,7 @@
       <div style="margin-top:6px"><b>累計 ${battles} 場</b>（${new Date(combatStats.since).toLocaleString('zh-TW', { hour12: false })} 起，約 ${minutes} 分鐘）</div>
       ${combatTableHtml(combatStats.members)}${skillDetailsHtml(combatStats.members, 'total')}
       <div>平均每場：傷害 ${formatAmount(total.damage / battles)}、回血 ${formatAmount(total.healthHealing / battles)}、
-        回體 ${formatAmount(total.staminaHealing / battles)}、控制 ${(total.controls / battles).toFixed(1)}、擊殺 ${(total.kills / battles).toFixed(1)}、
+        回體 ${formatAmount(total.staminaHealing / battles)}、控制 ${(total.controls / battles).toFixed(1)}、增益 ${(total.buffs / battles).toFixed(1)}、解除 ${(total.cleanses / battles).toFixed(1)}、擊殺 ${(total.kills / battles).toFixed(1)}、
         承受傷害 ${formatAmount(total.damageTaken / battles)}</div>
       <div>每分鐘傷害 ${formatAmount(total.damage / minutes)}</div>`;
     openDetails.forEach((key) => container.querySelector(`[data-skill-details="${key}"]`)?.setAttribute('open', ''));
@@ -15904,13 +15931,13 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
             <td style="${cell};position:relative"><span style="position:absolute;left:0;top:2px;bottom:2px;width:${Math.round((member.damage / top) * 100)}%;background:rgba(248,113,113,.25);border-radius:2px"></span><span style="position:relative">${formatAmount(member.damage)}</span></td>
             <td style="${cell}">${percentText(member.damage, totals.damage)}</td>
             <td style="${cell}">${member.hits} 中</td><td style="${cell}">爆 ${percentText(member.crits, member.hits)}</td>
-            <td style="${cell}">${extra}</td><td style="${cell}">${member.controls ? `控 ${member.controls}` : ''}</td><td style="${cell}">${member.kills ? `殺 ${member.kills}` : ''}</td>
+            <td style="${cell}">${extra}</td><td style="${cell}">${[member.controls ? `控 ${member.controls}` : '', member.buffs ? `增 ${member.buffs}` : '', member.cleanses ? `解 ${member.cleanses}` : ''].filter(Boolean).join(' ')}</td><td style="${cell}">${member.kills ? `殺 ${member.kills}` : ''}</td>
             <td style="${cell};color:#fca5a5" title="承受傷害（被打、保護隊友、中毒燒傷）">${member.damageTaken ? `承 ${formatAmount(member.damageTaken)}` : ''}</td></tr>
           <tbody data-ac-skills="${escapeHtml(name)}" style="display:${pageReport.openMembers.has(name) ? 'table-row-group' : 'none'}">${skills}</tbody>`;
       })
       .join('');
     return `<table style="width:100%;border-collapse:collapse;font:12px/1.6 monospace"><tbody>${rows}</tbody></table>
-      <div style="color:#a8a29e">全隊 傷害 ${formatAmount(totals.damage)}・爆擊 ${percentText(totals.crits, totals.hits)}${totals.healthHealing ? `・回血 ${formatAmount(totals.healthHealing)}` : ''}${totals.controls ? `・控制 ${totals.controls}` : ''}・擊殺 ${totals.kills}${totals.damageTaken ? `・承受傷害 ${formatAmount(totals.damageTaken)}` : ''}</div>`;
+      <div style="color:#a8a29e">全隊 傷害 ${formatAmount(totals.damage)}・爆擊 ${percentText(totals.crits, totals.hits)}${totals.healthHealing ? `・回血 ${formatAmount(totals.healthHealing)}` : ''}${totals.controls ? `・控制 ${totals.controls}` : ''}${totals.buffs ? `・增益 ${totals.buffs}` : ''}${totals.cleanses ? `・解除 ${totals.cleanses}` : ''}・擊殺 ${totals.kills}${totals.damageTaken ? `・承受傷害 ${formatAmount(totals.damageTaken)}` : ''}</div>`;
   }
 
   function pageReportHtml(report, withStatus) {
