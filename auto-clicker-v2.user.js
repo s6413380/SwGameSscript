@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.69
+// @version      4.70
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -7872,21 +7872,34 @@
     names.forEach((name) => {
       if (!party.has(name) && [...party].some((member) => name.startsWith(member))) names.delete(name);
     });
-    // 召喚物（戰馬2…）不在敵我名單裡：打到敵方（dmged b）的行，開頭又不是任何已知的名字，開頭那個就是我方的召喚物
+    // 召喚物（戰馬2…）不在敵我名單裡：打到敵方（dmged b）的行，開頭又不是任何已知的名字，開頭那個就是我方的召喚物。
+    // 名字切在第一個「對／朝／向／使出／攻擊」或敵人名字前（「戰馬1對狗頭人巨斧兵2…」→「戰馬1」）；
+    // 戰馬1、戰馬2 合成一列「戰馬」（aliases：戰報裡的名字 → 統計用的名字）
+    const aliases = new Map();
     if (sides) {
       lines.forEach((line, index) => {
         if (sides.damaged[index] !== 'b' || HIT_PATTERN.test(line) || /^第\s*\d/.test(line)) return;
         if ([...names].some((name) => line.startsWith(name))) return;
-        const summon = line.match(/^([^，]+?)(?:朝|使出|攻擊)/);
-        if (summon && isPlausibleName(summon[1])) {
-          party.add(summon[1]);
-          names.add(summon[1]);
-        }
+        const head = line.match(/^(.+?)(?:對|朝|向|使出|攻擊|，)/);
+        if (!head) return;
+        let raw = head[1];
+        names.forEach((name) => {
+          const at = raw.indexOf(name);
+          if (at > 0) raw = raw.slice(0, at);
+        });
+        if (!isPlausibleName(raw)) return;
+        const merged = raw.replace(/\d+$/, '') || raw;
+        party.add(merged);
+        names.add(raw);
+        if (merged !== raw) aliases.set(raw, merged);
       });
     }
     // 長的先比，避免「綠水靈1」吃掉「綠水靈10」
     const sortedNames = [...names].sort((first, second) => second.length - first.length);
-    const leadingName = (text) => sortedNames.find((name) => text.startsWith(name)) || null;
+    const leadingName = (text) => {
+      const name = sortedNames.find((candidate) => text.startsWith(candidate)) || null;
+      return aliases.get(name) || name;
+    };
     const otherNames = (line, name) => sortedNames.filter((other) => line.slice(name.length).includes(other));
     return { party, leadingName, otherNames };
   }
