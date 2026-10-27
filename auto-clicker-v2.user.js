@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.68
+// @version      4.69
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -7872,6 +7872,18 @@
     names.forEach((name) => {
       if (!party.has(name) && [...party].some((member) => name.startsWith(member))) names.delete(name);
     });
+    // 召喚物（戰馬2…）不在敵我名單裡：打到敵方（dmged b）的行，開頭又不是任何已知的名字，開頭那個就是我方的召喚物
+    if (sides) {
+      lines.forEach((line, index) => {
+        if (sides.damaged[index] !== 'b' || HIT_PATTERN.test(line) || /^第\s*\d/.test(line)) return;
+        if ([...names].some((name) => line.startsWith(name))) return;
+        const summon = line.match(/^([^，]+?)(?:朝|使出|攻擊)/);
+        if (summon && isPlausibleName(summon[1])) {
+          party.add(summon[1]);
+          names.add(summon[1]);
+        }
+      });
+    }
     // 長的先比，避免「綠水靈1」吃掉「綠水靈10」
     const sortedNames = [...names].sort((first, second) => second.length - first.length);
     const leadingName = (text) => sortedNames.find((name) => text.startsWith(name)) || null;
@@ -8035,7 +8047,7 @@
         return;
       }
       startAction(line, name);
-      creditDamage(line);
+      creditDamage(line, damaged[index] === 'b' || /上前保護受到/.test(line) ? ANY_DAMAGE_PATTERN : DAMAGE_PATTERN);
       // 同一行後半段描述敵人狀態（例如「綠水靈1因害怕攻擊力降低了」）也算控制
       line.split('，').slice(1).forEach((clause) => {
         const subject = leadingName(clause);
