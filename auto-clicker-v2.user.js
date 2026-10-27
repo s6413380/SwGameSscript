@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.66
+// @version      4.67
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -5039,6 +5039,25 @@
 
   let scriptFetchActive = false;
 
+  // 電腦時鐘跟伺服器不一定一樣（快了幾秒，冷卻就會提早顯示結束、按了跳 CD 錯誤）。
+  // 遊戲自己用回應標頭 server-time（毫秒）算時差來比冷卻，這裡照做
+  let serverClockOffset = 0;
+
+  function noteServerTime(response) {
+    try {
+      const serverNow = Number(response.headers.get('server-time'));
+      if (Number.isFinite(serverNow) && serverNow > 0) serverClockOffset = serverNow - Date.now();
+    } catch {
+      // 沒有這個標頭就照電腦時間
+    }
+  }
+
+  // 伺服器給的時間（例如 huntAvailableAt）換成這台電腦的時間
+  function serverTimeToLocal(value) {
+    const at = Date.parse(value);
+    return Number.isFinite(at) ? at - serverClockOffset : NaN;
+  }
+
   async function sendGameRequestNow(path, options = {}) {
     const token = currentGameToken();
     if (!token) throw new Error('還沒取得 token，請在遊戲裡點一下任一分頁再試');
@@ -5061,6 +5080,7 @@
         scriptFetchActive = false;
       }
       response = await pending;
+      noteServerTime(response);
       text = await response.text();
     } catch (cause) {
       // 網路斷掉、逾時：過一下通常就好，呼叫的一方可以重試
@@ -8719,7 +8739,7 @@
   // 等伺服器說可以打的時間（huntAvailableAt）再晚個 1～3 秒，像人看到冷卻結束才按
   function scheduleApiHunt(settings, huntInfo) {
     if (reloadForUpdateIfIdle()) return;
-    const availableAt = huntInfo && huntInfo.huntAvailableAt ? Date.parse(huntInfo.huntAvailableAt) : 0;
+    const availableAt = huntInfo && huntInfo.huntAvailableAt ? serverTimeToLocal(huntInfo.huntAvailableAt) : 0;
     const cooldown = Math.max(0, (availableAt || 0) - Date.now());
     const sideWait = sideAccountWait(settings, cooldown);
     const delay = lowProfileDelay(settings, cooldown + huntReactGap(settings)) + sideWait;
@@ -8911,7 +8931,7 @@
     }
     const waiting = teammateHeroesNotReady(settings, data.heroes);
     if (!waiting.length) {
-      const teammateCooldown = (Date.parse(data.huntAvailableAt) || 0) - Date.now();
+      const teammateCooldown = (serverTimeToLocal(data.huntAvailableAt) || 0) - Date.now();
       if (teammateCooldown > 0) {
         setStatus(`隊友冷卻中，${Math.ceil(teammateCooldown / 1000)} 秒後再打`);
         state.timerId = planTick(() => tick(settings), teammateCooldown + randomGap(500, 2000));
@@ -8956,7 +8976,7 @@
         });
       return true;
     }
-    const availableAt = Date.parse(state.huntInfo.huntAvailableAt) || 0;
+    const availableAt = serverTimeToLocal(state.huntInfo.huntAvailableAt) || 0;
     if (availableAt <= Date.now()) return false;
     setStatus('打怪冷卻中，冷卻結束再打');
     scheduleApiHunt(settings, state.huntInfo);
@@ -9142,7 +9162,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     const now = Date.now();
     const lowDurability = Math.max(0, Number(settings.miniLowDurability) || 0);
     refreshMiniEquipments();
-    const cooldown = Math.max(0, Math.ceil((((info && Date.parse(info.huntAvailableAt)) || 0) - now) / 1000));
+    const cooldown = Math.max(0, Math.ceil((((info && serverTimeToLocal(info.huntAvailableAt)) || 0) - now) / 1000));
     const moving = heroes.some((hero) => hero.actionState === 1);
     const moveLeft = Math.max(0, Math.ceil((restUntilOf(heroes.filter((hero) => hero.actionState === 1)) - now) / 1000));
     setMiniPart('mini-place', escapeHtml(apiLocationText(settings) || '位置讀取中…'));
@@ -11017,6 +11037,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       // 回應內容也只能讀一次，必須在交給網頁之前先複製，否則網頁讀完就複製不了
       return originalFetch.apply(this, args).then(
         (response) => {
+          noteServerTime(response);
           const responseTextPromise = response.clone().text().catch(() => '[讀不到回應內容]');
           Promise.all([requestBodyPromise, responseTextPromise]).then(([requestBody, responseText]) => perfTimed(perfApiLabel(method, url), () => {
             if (response.ok && !growthOnly) captureHeroId(url, requestBody);
