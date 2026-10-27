@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.72
+// @version      4.73
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -8559,9 +8559,55 @@
     return (state.huntTeamIds || []).map((id) => state.heroStats.get(id)).filter(Boolean);
   }
 
-  // 畫面上的血條可能不在（人在別頁），改用 API 拿到的隊伍數值判斷要不要暫停
-  function pauseIfApiTeamInDanger(settings) {
+  // 隊伍裡只有部分人在休息＝使用者手動讓它休息、不想讓它出戰（遊戲原地打怪不用全隊閒置），腳本不幫它完成休息。
+  // 全隊都在休息時（腳本或手動按全隊休息）沿用上次記下的，腳本的全隊休息結束後再讓它們休息回去
+  function noteBenchedHeroes() {
     const team = huntTeam();
+    const resting = team.filter((hero) => hero.actionState === 2);
+    if (resting.length < team.length) state.benchedHeroIds = new Set(resting.map((hero) => hero.id));
+  }
+
+  function benchedHeroes() {
+    const ids = state.benchedHeroIds || new Set();
+    return huntTeam().filter((hero) => ids.has(hero.id) && hero.actionState === 2);
+  }
+
+  function wholeTeamResting() {
+    const team = huntTeam();
+    return team.length > 0 && team.every((hero) => hero.actionState === 2);
+  }
+
+  async function restBenchedHeroes(runId) {
+    const ids = [...(state.benchedHeroIds || [])].filter((id) => state.heroStats.get(id)?.actionState === 0);
+    for (const id of ids) {
+      try {
+        const hero = await requestGameApi(`${HEROES_API}/${id}/rest`, { method: 'POST' });
+        if (runId !== state.runId) return;
+        syncGameHeroAction(hero, 'rest');
+        if (hero && hero.id) state.heroStats.set(hero.id, { ...state.heroStats.get(hero.id), ...hero });
+      } catch (error) {
+        if (error.captchaRequired) throw error;
+        // 休息不回去就讓它照常出戰，不卡住打怪
+        state.benchedHeroIds.delete(id);
+        setStatus(`${state.heroStats.get(id)?.name || id} 讓它休息回去失敗（${error.message}），這輪會出戰`);
+      }
+    }
+  }
+
+  // 前進、後退、換地圖要全隊閒置；有手動休息的人就停在原地等，不幫它結束休息
+  function waitForBenchedBeforeMove(settings) {
+    const benched = benchedHeroes();
+    if (!benched.length) return false;
+    setStatus(`要移動，但 ${benched.map((hero) => hero.name).join('、')} 在休息（你手動讓它休息的），移動要全隊閒置：到遊戲完成它的休息，或把它移出隊伍`);
+    state.heroStatsAt = 0;
+    state.timerId = planTick(() => tick(settings), randomGap(20000, 40000));
+    return true;
+  }
+
+  // 畫面上的血條可能不在（人在別頁），改用 API 拿到的隊伍數值判斷要不要暫停；手動休息不出戰的人不算
+  function pauseIfApiTeamInDanger(settings) {
+    const benched = new Set(benchedHeroes().map((hero) => hero.id));
+    const team = huntTeam().filter((hero) => !benched.has(hero.id));
     const percent = (value, full) => (full ? (value / full) * 100 : 100);
     const names = (heroes) => heroes.map((hero) => hero.name).join('、');
     const dead = team.filter((hero) => hero.perished || hero.hp === 0);
@@ -9595,6 +9641,8 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
         state.heroStats = new Map((info.heroes || []).map((hero) => [hero.id, hero]));
         state.heroStatsAt = Date.now();
       }
+      await restBenchedHeroes(runId);
+      if (runId !== state.runId) return;
       setStatus(`第 ${state.cycleCount + 1} 輪：API 完成休息`);
       scheduleApiHunt(settings, info);
     } catch (error) {
@@ -9806,8 +9854,10 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       return;
     }
 
-    // API 打怪：上一輪全隊休息後，到時間就完成休息；一開始就在休息中（例如手動按過）也一樣
-    if (apiHunt && !state.apiResting && huntTeam().some((hero) => hero.actionState === 2)) {
+    // API 打怪：上一輪全隊休息後，到時間就完成休息；一開始全隊都在休息中（例如手動按過全隊休息）也一樣。
+    // 只有部分人在休息是手動讓它不出戰，照常原地打怪
+    if (apiHunt && !state.apiResting) noteBenchedHeroes();
+    if (apiHunt && !state.apiResting && wholeTeamResting()) {
       state.apiResting = true;
       state.apiRestUntil = restUntilOf(huntTeam());
     }
@@ -9901,6 +9951,8 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
           setStatus(`移動：${move.problem}`);
           state.timerId = planTick(() => tick(settings), randomGap(10000, 20000));
         } else if (waitForBusyHuntTeam(settings)) {
+          return;
+        } else if (move && waitForBenchedBeforeMove(settings)) {
           return;
         } else if ((!move || move.type) && waitForTeammateReady(settings)) {
           return;
