@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.67
+// @version      4.68
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1390,7 +1390,7 @@
       <fieldset class="group">
         <legend>背包表格</legend>
         <label class="row"><input data-field="itemTableSortEnabled" type="checkbox" style="flex:none;width:auto"> 點表頭排序（再點一次反向；品質照品質高低）</label>
-        <label class="row"><input data-field="sellHelperEnabled" type="checkbox" style="flex:none;width:auto"> 販賣視窗顯示市場最低價，填數量時照最低單價算總價</label>
+        <label class="row"><input data-field="sellHelperEnabled" type="checkbox" style="flex:none;width:auto"> 販賣視窗顯示市場最低價和「填最大數量＋最低價」按鈕</label>
         <label>最低價比第二低便宜超過 ${numberInput('sellGapWarnPercent', 'min="0" style="flex:none;width:60px"')} % 紅字提醒（0＝不提醒）</label>
         <div class="hint">鎖定的裝備在背包表格會標 🔒、整列淡黃色；按了「🚫 保留」（自動換裝不會換上）的，名稱後面標 🚫</div>
         <div class="row"><button data-action="equip-export">匯出勾選的裝備</button><label style="flex:none"><input data-field="equipExportBase" type="checkbox" style="width:auto"> 換算成普通品質</label></div>
@@ -3828,10 +3828,7 @@
       box.dataset.role = 'sell-price';
       box.style.cssText = 'margin:6px 0;padding:6px 8px;border:1px solid #57534e;border-radius:4px;background:#1c1917;font-size:13px;line-height:1.6;color:#d6d3d1';
       parts.priceInput.closest('.grid').insertAdjacentElement('afterend', box);
-      parts.dialog.addEventListener('input', (event) => {
-        if (event.isTrusted && event.target.id === 'itemSellQuantity') fillSellPrice();
-        renderSellPrices();
-      });
+      parts.dialog.addEventListener('input', () => renderSellPrices());
     }
     box.dataset.name = parts.name;
     box.innerHTML = '<span style="color:#a8a29e">市場價格查詢中…</span>';
@@ -3839,8 +3836,6 @@
       const trades = await marketGoods(parts.kind, force);
       box.trades = trades.filter((trade) => trade.name === parts.name && Number(trade.quantity) > 0);
       renderSellPrices();
-      // 價格查回來前就填好數量的：總價還空著就補算
-      if (!Number(parts.priceInput.value)) fillSellPrice();
     } catch (error) {
       box.innerHTML = `<span style="color:#fca5a5">查不到市場價格（${escapeHtml(error.message)}）</span> <button type="button" data-sell-refresh style="text-decoration:underline">再查一次</button>`;
     }
@@ -3874,8 +3869,8 @@
       ${compare}
       ${
         sellFillUnit(box)
-          ? `<div style="display:flex;gap:6px;margin-top:4px;align-items:center"><span style="color:#a8a29e;flex:1">先填數量，總價會照最低單價算好</span>
-              <button type="button" data-sell-fill="fill" style="padding:3px 8px;border:1px solid #b45309;border-radius:4px;background:#451a03;color:#fcd34d">照最低價重算</button></div>`
+          ? `<div style="display:flex;gap:6px;margin-top:4px">
+              <button type="button" data-sell-fill="fill" style="flex:1;padding:3px;border:1px solid #b45309;border-radius:4px;background:#451a03;color:#fcd34d">填最大數量＋最低價</button></div>`
           : '<div style="color:#a8a29e">別人沒在賣，價格要自己填</div>'
       }`;
   }
@@ -3900,13 +3895,14 @@
     return units.length ? Math.min(...units) : 0;
   }
 
-  // 數量照玩家自己填的，總價＝最低單價 × 數量（取整數，不會比最低貴）；上架由玩家自己按遊戲的「掛單販賣」
+  // 數量填全部（遊戲輸入框的上限就是可賣的數量），總價＝最低單價 × 數量（取整數，不會比最低貴）；上架由玩家自己按遊戲的「掛單販賣」
   function fillSellPrice() {
     const parts = sellDialogParts();
     const box = parts && parts.dialog.querySelector('[data-role="sell-price"]');
     const unit = box && sellFillUnit(box);
-    const quantity = parts && parts.quantityInput ? Number(parts.quantityInput.value) || 0 : 0;
-    if (!unit || quantity <= 0) return;
+    if (!unit || !parts.quantityInput) return;
+    const quantity = Math.max(1, Number(parts.quantityInput.max) || Number(parts.quantityInput.value) || 1);
+    setReactInputValue(parts.quantityInput, String(quantity));
     setReactInputValue(parts.priceInput, String(Math.max(1, Math.floor(unit * quantity))));
   }
 
