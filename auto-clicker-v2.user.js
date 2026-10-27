@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.71
+// @version      4.72
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1535,7 +1535,8 @@
     <div data-tab="loot">
       <div class="hint">打怪、PvP（打劫、切磋）、挖礦伐木收到的東西分開記（腳本跑的、自己手動的都算），勾的來源才算進「合計」</div>
       <div class="row"><label style="flex:none"><input data-field="lootSourceHunt" type="checkbox" style="width:auto"> 狩獵</label><label style="flex:none"><input data-field="lootSourcePvp" type="checkbox" style="width:auto"> PvP</label><label style="flex:none"><input data-field="lootSourceAction" type="checkbox" style="width:auto"> 挖礦伐木</label>
-        <select data-role="loot-period" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">今天</option><option value="3">近 3 天</option><option value="7">近 7 天</option><option value="14">近 14 天</option></select></div>
+        <select data-role="loot-period" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">今天</option><option value="3">近 3 天</option><option value="7">近 7 天</option><option value="14">近 14 天</option><option value="session">按清空後</option></select>
+        <button data-action="loot-clear" style="flex:none" title="從現在開始另外算一段，每天的紀錄不受影響">清空重算</button></div>
       <div data-role="loot-ledger" style="font-size:12px"></div>
     </div>
 
@@ -10582,6 +10583,8 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     } else if (action === 'enchant-plan-clear') {
       enchantPlan.clear();
       renderMaterialSummary();
+    } else if (action === 'loot-clear') {
+      startLootSession();
     } else if (action === 'scratch-clear') {
       if (window.confirm('要清除這個帳號的刮刮樂紀錄嗎？清掉就找不回來')) {
         writeJsonStorage(SCRATCH_LOG_KEY, []);
@@ -15769,6 +15772,23 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   const PVP_ATTACK_PATTERN = /\/api\/users\/\d+\/attack(?:[?#]|$)/;
   const ACTION_COMPLETE_PATTERN = /\/api\/heroes\/\d+\/completeAction(?:[?#]|$)/;
   const reportLootSeen = new Set();
+  // 「清空重算」另外記的一段 {since, sources:{hunt|pvp|action: bucket}}；每天的紀錄照記，切回「今天」等還看得到
+  const LOOT_SESSION_KEY = 'autoClickerV2LootSession';
+
+  function addLootBucket(buckets, source, loot, money) {
+    const bucket = (buckets[source] = buckets[source] || { items: {}, money: 0, count: 0 });
+    loot.forEach(([name, quantity]) => (bucket.items[name] = (bucket.items[name] || 0) + quantity));
+    bucket.money += money;
+    bucket.count++;
+  }
+
+  function startLootSession() {
+    const session = readJsonStorage(LOOT_SESSION_KEY, null);
+    if (session && Object.keys(session.sources).length && !window.confirm('要把「按清空後」這段歸零、從現在重新算嗎？每天的紀錄不受影響')) return;
+    writeJsonStorage(LOOT_SESSION_KEY, { since: Date.now(), sources: {} });
+    panel.querySelector('[data-role="loot-period"]').value = 'session';
+    renderLootLedger();
+  }
 
   function recordLootLedger(...args) {
     return perfTimed('recordLootLedger', () => recordLootLedgerUntimed(...args));
@@ -15785,15 +15805,17 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     if (!loot.length && !money) return;
     const ledger = readJsonStorage(LOOT_LEDGER_KEY, {});
     const day = localDayKey(Date.now());
-    const bucket = ((ledger[day] = ledger[day] || {})[source] = ledger[day][source] || { items: {}, money: 0, count: 0 });
-    loot.forEach(([name, quantity]) => (bucket.items[name] = (bucket.items[name] || 0) + quantity));
-    bucket.money += money;
-    bucket.count++;
+    addLootBucket((ledger[day] = ledger[day] || {}), source, loot, money);
     Object.keys(ledger)
       .sort()
       .slice(0, -LOOT_LEDGER_DAYS)
       .forEach((old) => delete ledger[old]);
     writeJsonStorage(LOOT_LEDGER_KEY, ledger);
+    const session = readJsonStorage(LOOT_SESSION_KEY, null);
+    if (session) {
+      addLootBucket(session.sources, source, loot, money);
+      writeJsonStorage(LOOT_SESSION_KEY, session);
+    }
     if (activeTab === 'loot') renderLootLedger();
   }
 
@@ -15801,9 +15823,20 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     const box = panel.querySelector('[data-role="loot-ledger"]');
     if (!box) return;
     const settings = readSettingsFromPanel();
-    const days = Number(panel.querySelector('[data-role="loot-period"]').value) || 1;
+    const period = panel.querySelector('[data-role="loot-period"]').value;
+    const session = period === 'session' ? readJsonStorage(LOOT_SESSION_KEY, null) : null;
+    if (period === 'session' && !session) {
+      box.innerHTML = '<div class="hint">按「清空重算」後，從那一刻起收到的東西另外算在這裡</div>';
+      return;
+    }
     const ledger = readJsonStorage(LOOT_LEDGER_KEY, {});
-    const keys = Array.from({ length: days }, (_, index) => localDayKey(Date.now() - index * 86400000));
+    const days = Number(period) || 1;
+    const periodBuckets = session
+      ? [session.sources]
+      : Array.from({ length: days }, (_, index) => ledger[localDayKey(Date.now() - index * 86400000)] || {});
+    const sinceText = session
+      ? `<div>${new Date(session.since).toLocaleString('zh-TW', { hour12: false })} 起，約 ${Math.max(1, Math.round((Date.now() - session.since) / 60000))} 分鐘</div>`
+      : '';
     const sources = LOOT_SOURCES.filter(([, , field]) => settings[field]);
     if (!sources.length) {
       box.innerHTML = '<div class="hint">至少勾一個來源</div>';
@@ -15811,9 +15844,9 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     }
     const table = new Map();
     const totals = Object.fromEntries(sources.map(([id]) => [id, { money: 0, count: 0 }]));
-    keys.forEach((key) =>
+    periodBuckets.forEach((buckets) =>
       sources.forEach(([id]) => {
-        const bucket = (ledger[key] || {})[id];
+        const bucket = buckets[id];
         if (!bucket) return;
         totals[id].money += bucket.money;
         totals[id].count += bucket.count;
@@ -15825,7 +15858,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       })
     );
     if (!table.size && !sources.some(([id]) => totals[id].money)) {
-      box.innerHTML = '<div class="hint">這段時間還沒有紀錄</div>';
+      box.innerHTML = `${sinceText}<div class="hint">這段時間還沒有紀錄</div>`;
       return;
     }
     const total = (row) => sources.reduce((sum, [id]) => sum + (row[id] || 0), 0);
@@ -15836,7 +15869,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
         .map(([id]) => `<td>${row[id] ? row[id].toLocaleString() : ''}</td>`)
         .join('')}${sources.length > 1 ? `<td><b>${total(row).toLocaleString()}</b></td>` : ''}</tr>`)
       .join('');
-    box.innerHTML = `<div>${sources.map(([id, label]) => `${label} ${totals[id].count} 次${totals[id].money ? `・$${totals[id].money.toLocaleString()}` : ''}`).join('　')}</div>
+    box.innerHTML = `${sinceText}<div>${sources.map(([id, label]) => `${label} ${totals[id].count} 次${totals[id].money ? `・$${totals[id].money.toLocaleString()}` : ''}`).join('　')}</div>
       <table class="combat" style="width:100%"><tr><th style="text-align:left">道具</th>${sources.map(([, label]) => `<th>${label}</th>`).join('')}${sources.length > 1 ? '<th>合計</th>' : ''}</tr>${rows}</table>`;
   }
 
@@ -20174,6 +20207,8 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   // data-role 的欄位不會進設定的 change 處理，篩選道具要自己接
   panel.querySelector('[data-role="draw-item"]').addEventListener('change', renderDrawStats);
   panel.querySelector('[data-role="loot-period"]').addEventListener('change', renderLootLedger);
+  // 有在算的一段就預設顯示它，重新整理後不用再切
+  if (readJsonStorage(LOOT_SESSION_KEY, null)) panel.querySelector('[data-role="loot-period"]').value = 'session';
   panel.querySelector('[data-role="recipe-show-all"]').addEventListener('change', renderRecipePicker);
   panel.querySelector('[data-role="scratch-card"]').addEventListener('change', renderScratchStats);
   panel.querySelector('[data-role="sales-kind"]').addEventListener('change', renderSalesStats);
