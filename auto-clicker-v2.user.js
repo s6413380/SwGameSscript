@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.65
+// @version      4.66
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -452,6 +452,8 @@
     equipDetailEnabled: true,
     // 背包的販賣視窗加上比價和「填入／掛單」按鈕
     sellHelperEnabled: true,
+    // 別人掛的最低單價比第二低便宜超過這個 %：紅字提醒（可能有人賤賣或掛錯，跟著填會虧）
+    sellGapWarnPercent: 30,
     // API 鍛造前把配方填進遊戲的鍛造表單（人在鍛造頁時才有作用）
     forgeFillGameForm: true,
     recipeNameAdjust: true,
@@ -1388,7 +1390,8 @@
       <fieldset class="group">
         <legend>背包表格</legend>
         <label class="row"><input data-field="itemTableSortEnabled" type="checkbox" style="flex:none;width:auto"> 點表頭排序（再點一次反向；品質照品質高低）</label>
-        <label class="row"><input data-field="sellHelperEnabled" type="checkbox" style="flex:none;width:auto"> 販賣視窗顯示市場最低價和「填入／掛單」按鈕</label>
+        <label class="row"><input data-field="sellHelperEnabled" type="checkbox" style="flex:none;width:auto"> 販賣視窗顯示市場最低價，填數量時照最低單價算總價</label>
+        <label>最低價比第二低便宜超過 ${numberInput('sellGapWarnPercent', 'min="0" style="flex:none;width:60px"')} % 紅字提醒（0＝不提醒）</label>
         <div class="hint">鎖定的裝備在背包表格會標 🔒、整列淡黃色；按了「🚫 保留」（自動換裝不會換上）的，名稱後面標 🚫</div>
         <div class="row"><button data-action="equip-export">匯出勾選的裝備</button><label style="flex:none"><input data-field="equipExportBase" type="checkbox" style="width:auto"> 換算成普通品質</label></div>
         <div class="hint">在遊戲背包的裝備表勾好裝備再按，複製成表格（貼進 Excel、Google 試算表會自動分欄）：名稱、類型、品質、攻防智幸重、耐久上限、孔、鍊金價、鍛造素材</div>
@@ -3825,7 +3828,10 @@
       box.dataset.role = 'sell-price';
       box.style.cssText = 'margin:6px 0;padding:6px 8px;border:1px solid #57534e;border-radius:4px;background:#1c1917;font-size:13px;line-height:1.6;color:#d6d3d1';
       parts.priceInput.closest('.grid').insertAdjacentElement('afterend', box);
-      parts.dialog.addEventListener('input', () => renderSellPrices());
+      parts.dialog.addEventListener('input', (event) => {
+        if (event.isTrusted && event.target.id === 'itemSellQuantity') fillSellPrice();
+        renderSellPrices();
+      });
     }
     box.dataset.name = parts.name;
     box.innerHTML = '<span style="color:#a8a29e">市場價格查詢中…</span>';
@@ -3833,6 +3839,8 @@
       const trades = await marketGoods(parts.kind, force);
       box.trades = trades.filter((trade) => trade.name === parts.name && Number(trade.quantity) > 0);
       renderSellPrices();
+      // 價格查回來前就填好數量的：總價還空著就補算
+      if (!Number(parts.priceInput.value)) fillSellPrice();
     } catch (error) {
       box.innerHTML = `<span style="color:#fca5a5">查不到市場價格（${escapeHtml(error.message)}）</span> <button type="button" data-sell-refresh style="text-decoration:underline">再查一次</button>`;
     }
@@ -3858,17 +3866,31 @@
       const cheaper = sorted.filter((trade) => trade.unit < mine).length;
       compare = `<div style="color:#a8a29e">你現在填 ${unitPriceText(mine)} / 個：${cheaper ? `前面還有 ${cheaper} 筆比你便宜` : '<span style="color:#86efac">市場最便宜</span>'}</div>`;
     }
+    const gap = sellPriceGap(box, readSettingsFromPanel());
     box.innerHTML = `
       <div style="display:flex;justify-content:space-between;gap:6px"><b>市場上的「${escapeHtml(box.dataset.name)}」</b><button type="button" data-sell-refresh style="color:#a8a29e;text-decoration:underline">重新查</button></div>
       ${sorted.length ? `${line('最低', sorted[0])}${line('第二低', sorted[1])}<div style="color:#a8a29e">共 ${sorted.length} 筆在賣</div>` : '<div style="color:#86efac">市場上目前沒人在賣</div>'}
+      ${gap ? `<div style="color:#f87171;font-weight:bold">⚠ 最低價比第二低便宜 ${gap}%，可能有人賤賣或掛錯，照最低價填會虧，看一下再決定</div>` : ''}
       ${compare}
       ${
         sellFillUnit(box)
-          ? `<div style="display:flex;gap:6px;margin-top:4px">
-              <button type="button" data-sell-fill="fill" style="flex:1;padding:3px;border:1px solid #b45309;border-radius:4px;background:#451a03;color:#fcd34d">填最大數量＋最低價</button>
-              <button type="button" data-sell-fill="submit" style="flex:1;padding:3px;border:1px solid #b45309;border-radius:4px;background:#b45309;color:#fff">填好直接上架</button></div>`
+          ? `<div style="display:flex;gap:6px;margin-top:4px;align-items:center"><span style="color:#a8a29e;flex:1">先填數量，總價會照最低單價算好</span>
+              <button type="button" data-sell-fill="fill" style="padding:3px 8px;border:1px solid #b45309;border-radius:4px;background:#451a03;color:#fcd34d">照最低價重算</button></div>`
           : '<div style="color:#a8a29e">別人沒在賣，價格要自己填</div>'
       }`;
+  }
+
+  // 別人掛的最低、第二低單價差太多：回傳便宜了幾 %，不用提醒回傳 0
+  function sellPriceGap(box, settings) {
+    const limit = Number(settings.sellGapWarnPercent) || 0;
+    const ownId = dashboard.profile && Number(dashboard.profile.id);
+    const units = (box.trades || [])
+      .filter((trade) => Number(trade.sellerId) !== ownId)
+      .map((trade) => trade.price / trade.quantity)
+      .sort((first, second) => first - second);
+    if (!limit || units.length < 2 || !(units[1] > 0)) return 0;
+    const percent = Math.round((1 - units[0] / units[1]) * 100);
+    return percent > limit ? percent : 0;
   }
 
   // 別人掛的最低單價（自己的不算，不然會跟自己比）
@@ -3878,28 +3900,20 @@
     return units.length ? Math.min(...units) : 0;
   }
 
-  // 數量填全部（遊戲輸入框的上限就是可賣的數量），總價＝最低單價 × 數量（取整數，不會比最低貴）；要的話直接按遊戲的「掛單販賣」
-  function fillSellDialog(submit) {
+  // 數量照玩家自己填的，總價＝最低單價 × 數量（取整數，不會比最低貴）；上架由玩家自己按遊戲的「掛單販賣」
+  function fillSellPrice() {
     const parts = sellDialogParts();
     const box = parts && parts.dialog.querySelector('[data-role="sell-price"]');
     const unit = box && sellFillUnit(box);
-    if (!unit || !parts.quantityInput) return;
-    const quantity = Math.max(1, Number(parts.quantityInput.max) || Number(parts.quantityInput.value) || 1);
-    setReactInputValue(parts.quantityInput, String(quantity));
+    const quantity = parts && parts.quantityInput ? Number(parts.quantityInput.value) || 0 : 0;
+    if (!unit || quantity <= 0) return;
     setReactInputValue(parts.priceInput, String(Math.max(1, Math.floor(unit * quantity))));
-    if (!submit) return;
-    // 等 React 把新的數字畫上去、按鈕解鎖再按
-    backgroundTimer.setTimeout(() => {
-      const button = [...parts.dialog.querySelectorAll('button')].find((candidate) => candidate.textContent.trim() === '掛單販賣');
-      if (button && !button.disabled) button.click();
-    }, 400);
   }
 
   document.addEventListener('click', (event) => {
     if (!event.target.closest) return;
     if (event.target.closest('[data-sell-refresh]')) showSellPrices(true);
-    const fill = event.target.closest('[data-sell-fill]');
-    if (fill) fillSellDialog(fill.dataset.sellFill === 'submit');
+    if (event.target.closest('[data-sell-fill]')) fillSellPrice();
   });
 
   // 遊戲的視窗是 React 動態掛上去的，有出現就補上比價
