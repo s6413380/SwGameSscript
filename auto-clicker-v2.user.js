@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.74
+// @version      4.75
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -520,6 +520,8 @@
     // 掉落名稱包含這些字就提醒（逗號分隔）
     lootRareNames: '英雄券',
     lootRarePause: false,
+    // 稀有掉落（沒設暫停時）怎麼提醒：toast＝右下角＋系統通知（Windows 會響）；silent＝一樣顯示但系統通知不出聲；off＝不提醒
+    lootRareAlert: 'silent',
     // 留空＝用內建的共用試算表
     cloudUrl: '',
     cloudName: '',
@@ -1296,7 +1298,8 @@
       <label>每種異常最多吃 ${numberInput('huntCureMaxUses', 'min="1" max="20"')} 次</label>
       <div class="hint">異常名稱=道具名稱，「、」分隔；名稱前加「重度／中度／輕度」就只在那個程度吃。開始吃之後降到較輕的程度也會繼續照表吃。吃到上限還沒好、或沒有藥，才照上面的提醒／暫停</div>
       <div class="row">撿到稀有道具提醒<input data-field="lootRareNames" placeholder="名稱包含這些字就提醒，逗號分隔"></div>
-      <label class="row"><input data-field="lootRarePause" type="checkbox" style="flex:none;width:auto"> 撿到稀有道具時暫停掛機（沒勾就只在右下角小提示）</label>
+      <label class="row"><input data-field="lootRarePause" type="checkbox" style="flex:none;width:auto"> 撿到稀有道具時暫停掛機（沒勾就照下面的方式提醒）</label>
+      <div class="row">稀有道具提醒<select data-field="lootRareAlert" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="toast">右下角＋系統通知（有聲音）</option><option value="silent">右下角＋系統通知（不出聲）</option><option value="off">不提醒</option></select></div>
       <fieldset class="group">
         <legend>避難：換關卡掛機</legend>
         <label class="row"><input data-field="healthEscapeEnabled" type="checkbox" style="flex:none;width:auto"> 血量低於上面「緊急暫停」的 % 時，不暫停、改去</label>
@@ -7183,7 +7186,7 @@
   }
 
   // 瀏覽器允許的話也跳系統通知（Windows 在右下角），切到別的視窗也看得到
-  function showToast(message) {
+  function showToast(message, { silent = false } = {}) {
     const toast = document.createElement('div');
     toast.textContent = `${appName()}：${message}`;
     toast.title = '點一下關掉';
@@ -7194,7 +7197,7 @@
     toast.addEventListener('click', () => toast.remove());
     toastBox.appendChild(toast);
     setTimeout(() => toast.remove(), 15000);
-    if ('Notification' in window && Notification.permission === 'granted') new Notification(`${appName()}提醒`, { body: message });
+    if ('Notification' in window && Notification.permission === 'granted') new Notification(`${appName()}提醒`, { body: message, silent });
   }
 
   function clearAlert() {
@@ -19869,9 +19872,9 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     if (!rare.length) return;
     const message = `撿到稀有道具：${rare.map(([name, quantity]) => `${name} ×${quantity}`).join('、')}（${place}）`;
     if (settings.lootRarePause && state.running) pauseWithAlert(message);
-    else {
+    else if (settings.lootRareAlert !== 'off') {
       setStatus(message);
-      showToast(message);
+      showToast(message, { silent: settings.lootRareAlert === 'silent' });
     }
   }
 
