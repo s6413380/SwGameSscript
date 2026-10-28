@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.73
+// @version      4.74
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -464,9 +464,13 @@
     // 每個角色自己的 { type, recipe, name }（JSON）；鍛造師數值不同，最好的配方也不同
     forgeByApiPlans: '{}',
     forgeByApiCount: 0,
-    // 收爐方式：each＝好一爐收一爐；most＝低調，大多數（forgeCollectPercent %）好了再一口氣收；all＝全部好了再收
+    // 收爐方式：each＝好一爐收一爐；most＝低調，好了 forgeCollectMinCount～MaxCount 爐（每輪抽一次）再一口氣收；all＝全部好了再收。
+    // most、all 到了之後再晚 forgeCollectDelayMin～MaxMinutes 分鐘才收
     forgeCollectMode: 'each',
-    forgeCollectPercent: 70,
+    forgeCollectMinCount: 3,
+    forgeCollectMaxCount: 5,
+    forgeCollectDelayMinMinutes: 1,
+    forgeCollectDelayMaxMinutes: 3,
     // 挖礦：{ heroId: 地點 1～4 }（JSON）；每幾小時收一次（每次前後飄幾 %）；出發前喝勾選的體力藥水（都不勾＝任何體力道具）
     miningPlans: '{}',
     // 收礦順序（heroId 陣列，JSON）；有的角色要最後收
@@ -1165,9 +1169,10 @@
       <label class="row"><input data-field="forgeByApiEnabled" type="checkbox" style="flex:none;width:auto"> <b>用 API 鍛造</b>（建議勾）</label>
       <div class="row">鍛造欄位 ${numberInput('forgeShopSlots', 'min="0"')} 個（0＝自動）</div>
       <div class="row">開 ${numberInput('forgeByApiCount', 'min="0"')} 爐就停（0＝不限）</div>
-      <div class="row">收爐<select data-field="forgeCollectMode" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="each">好一爐收一爐</option><option value="most">低調：大多數好了再一口氣收</option><option value="all">全部好了再一起收</option></select></div>
-      <div class="row">低調：鍛造中的 ${numberInput('forgeCollectPercent', 'min="1" max="100"')}% 好了才收</div>
-      <div class="hint">低調、全部好了再收：先好的爐子放著不收，等到了才回來一次收完、接著把空出來的角色一起開下去（回來的時間再晚 1～5 分鐘，像人回來看）</div>
+      <div class="row">收爐<select data-field="forgeCollectMode" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="each">好一爐收一爐</option><option value="most">低調：好幾爐好了再一口氣收</option><option value="all">全部好了再一起收</option></select></div>
+      <div class="row">低調：好了 ${numberInput('forgeCollectMinCount', 'min="1"')}～${numberInput('forgeCollectMaxCount', 'min="1"')} 爐才收</div>
+      <div class="row">到了之後 ${numberInput('forgeCollectDelayMinMinutes', 'min="0" step="0.5"')}～${numberInput('forgeCollectDelayMaxMinutes', 'min="0" step="0.5"')} 分鐘才收</div>
+      <div class="hint">低調、全部好了再收：先好的爐子放著不收，等到了才回來一次收完、接著把空出來的角色一起開下去。幾爐、晚幾分鐘每輪各抽一次；鍛造中的不到那麼多爐就等全部好</div>
       <fieldset class="group">
         <legend>鍛造佇列</legend>
         <div class="hint" style="margin-top:0">每個角色類型旁邊的「用途」選 <b>用</b> 或 <b>賣</b>：<b>用</b>＝自己用（武器挑攻防、大衣挑智防幸，重量也算）；<b style="color:#fbbf24">賣</b>＝做來鍊金（挑攻防智幸耐總和高的名稱，不管重量）。新增角色到「配方」頁 ④ 給誰用 按「加入」</div>
@@ -17503,7 +17508,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
 
   // API 鍛造自己跑一條線，不佔用打怪的流程：同一個分頁可以一邊打怪一邊 API 鍛造。
   // 不用定時巡：有空的角色就開爐，否則睡到最早那爐的完成時間（遊戲有給 actionCompleteTime）再來收
-  const forgeRunner = { running: false, runId: 0, timerId: null, started: 0, captchaWaiting: false, captchaCheckedAt: 0, failures: 0, nameWaiting: '', stuck: new Map() };
+  const forgeRunner = { running: false, runId: 0, timerId: null, started: 0, captchaWaiting: false, captchaCheckedAt: 0, failures: 0, nameWaiting: '', stuck: new Map(), collectRoll: null };
   // 某一爐一直收不了（伺服器回錯）：那個角色先跳過一陣子，其他爐照常收、照常開，不要整個鍛造停下來
   const FORGE_STUCK_MILLISECONDS = 10 * 60000;
 
@@ -17767,21 +17772,42 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     const mode = offHours ? 'all' : settings.forgeCollectMode;
     if (mode !== 'most' && mode !== 'all') return null;
     const now = Date.now();
-    const doneAt = (hero) => (hero.canComplete ? 0 : Date.parse(hero.actionCompleteTime) || now + 60000);
+    // 已經可以收的也照它真正好的時間算，「好了之後晚幾分鐘」才有起點
+    const doneAt = (hero) => Date.parse(hero.actionCompleteTime) || (hero.canComplete ? 0 : now + 60000);
     const forging = heroes.filter((hero) => heroIds.includes(hero.id) && hero.actionState === 5);
     if (!forging.length) return null;
-    const done = forging.filter((hero) => doneAt(hero) <= now).length;
-    const percent = Math.min(100, Math.max(1, Number(settings.forgeCollectPercent) || 70));
-    const need = mode === 'all' ? forging.length : Math.max(1, Math.ceil((forging.length * percent) / 100));
-    if (done >= need) return null;
-    const pending = forging.map(doneAt).filter((at) => at > now).sort((first, second) => first - second);
-    const until = pending[need - done - 1] || pending[pending.length - 1];
+    const roll = forgeCollectRoll(settings);
+    const need = mode === 'all' ? forging.length : Math.min(forging.length, roll.count);
+    const doneTimes = forging.map(doneAt).sort((first, second) => first - second);
+    const until = doneTimes[need - 1] + roll.delay;
+    if (until <= now) {
+      // 這輪收了，下一輪重抽
+      forgeRunner.collectRoll = null;
+      return null;
+    }
+    const done = doneTimes.filter((at) => at <= now).length;
     const at = new Date(until);
     const label = offHours ? '完全休息中' : mode === 'all' ? '全部好了再收' : '低調收爐';
     return {
       until,
-      text: `${label}：${done}/${forging.length} 爐好了，等 ${at.getHours()}:${String(at.getMinutes()).padStart(2, '0')} ${mode === 'all' ? '全部' : `${need} 爐`}好了再一起收`,
+      text: `${label}：${done}/${forging.length} 爐好了，${mode === 'all' ? '全部' : `${need} 爐`}好了再晚 ${Math.round(roll.delay / 60000 * 10) / 10} 分鐘收（約 ${at.getHours()}:${String(at.getMinutes()).padStart(2, '0')}）`,
     };
+  }
+
+  // 每輪收爐抽一次「幾爐好了才收」「好了再晚多久」，收完才重抽，不會每次看都換
+  function forgeCollectRoll(settings) {
+    if (forgeRunner.collectRoll) return forgeRunner.collectRoll;
+    const range = (first, second, fallback) => {
+      const values = [Number(first), Number(second)].map((value) => (Number.isFinite(value) && value >= 0 ? value : fallback));
+      return [Math.min(...values), Math.max(...values)];
+    };
+    const [minCount, maxCount] = range(settings.forgeCollectMinCount, settings.forgeCollectMaxCount, 3).map((value) => Math.max(1, Math.round(value)));
+    const [minDelay, maxDelay] = range(settings.forgeCollectDelayMinMinutes, settings.forgeCollectDelayMaxMinutes, 1);
+    forgeRunner.collectRoll = {
+      count: minCount + Math.floor(Math.random() * (maxCount - minCount + 1)),
+      delay: (minDelay + Math.random() * (maxDelay - minDelay)) * 60000,
+    };
+    return forgeRunner.collectRoll;
   }
 
   // 同一時間只跑一輪：手動收爐叫醒鍛造時，不會跟正在跑的那輪一起開爐
@@ -17820,7 +17846,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       forgeHeroesAt = Date.now();
       renderRecipeHeroes();
       const hold = forgeCollectHold(settings, heroes, heroIds.filter((id) => !forgeHeroStuck(id)));
-      const holdDelay = () => Math.max(0, hold.until - Date.now()) + randomGap(60000, 300000);
+      const holdDelay = () => Math.max(0, hold.until - Date.now()) + randomGap(3000, 12000);
       const actions = [];
       for (const hero of heroes.filter((candidate) => !hold && heroIds.includes(candidate.id) && candidate.actionState === 5 && candidate.canComplete && !forgeHeroStuck(candidate.id))) {
         let completed;
@@ -20187,7 +20213,10 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     }
     if (event.target.dataset.field === 'assistModeEnabled') applyAssistMode();
     // 改了收爐方式：鍛造可能正照舊設定睡到很久以後（例如等全部好），叫它起來照新設定重算
-    if (['forgeCollectMode', 'forgeCollectPercent'].includes(event.target.dataset.field)) wakeForgeRunner();
+    if (/^forgeCollect/.test(event.target.dataset.field || '')) {
+      forgeRunner.collectRoll = null;
+      wakeForgeRunner();
+    }
     // 剛切到主動：從現在起算自動切回的時間，第一次馬上查
     if (event.target.dataset.field === 'cardWatchMode' && event.target.value === 'active') {
       writeJsonStorage(CARD_ACTIVE_SINCE_KEY, Date.now());
