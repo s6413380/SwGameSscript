@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.75
+// @version      4.76
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -18074,6 +18074,23 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     renderMiningHeroes();
   }
 
+  // 工頭「平時」選修練時 miningForemanParkSite 存這個值（地點編號都是正數）
+  const FOREMAN_TRAIN_SITE = -1;
+
+  function foremanTrains(settings) {
+    return Number(settings.miningForemanParkSite) === FOREMAN_TRAIN_SITE;
+  }
+
+  // 平時修練的工頭：要收礦時先結束修練（遊戲要閒置才能進礦場）；還不能結束就這次不帶工頭
+  async function foremanFromTraining(settings, foreman, data, opened) {
+    if (!foreman || foreman.actionState !== 7 || !foremanTrains(settings)) return foreman;
+    if (!canCompleteNow(foreman, Date.now())) return null;
+    const pageHero = await openGameHeroPage(foreman, opened);
+    const after = await completeMiningAction(settings, pageHero, data, 'train');
+    miningLog(`工頭 ${foreman.name} 結束修練，準備進礦場`);
+    return after;
+  }
+
   function miningForemanId(settings) {
     return Number(settings.miningForemanId) || 0;
   }
@@ -18231,6 +18248,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       let foreman = foremanId ? heroes.find((hero) => hero.id === foremanId) || null : null;
       if (foreman) miningNotified.delete(`foreman:${foreman.id}`);
       foreman = await recoverForeman(settings, foreman, data, opened, null);
+      if (withForeman) foreman = await foremanFromTraining(settings, foreman, data, opened);
       done = await collectMiningSites(settings, targets, data, opened, { foreman: withForeman ? foreman : null });
       return `主動收礦（${siteName}）：${done.join('、') || '沒有收到'}`;
     } finally {
@@ -18854,7 +18872,9 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
         }
       };
       if (due) {
-        actions.push(...(await collectMiningSites(settings, mining, data, opened, { foreman: foremanReady, byId, afterSite })));
+        const siteForeman = await foremanFromTraining(settings, foremanReady, data, opened);
+        if (cancelled()) return;
+        actions.push(...(await collectMiningSites(settings, mining, data, opened, { foreman: siteForeman, byId, afterSite })));
         if (cancelled()) return;
       } else {
         mining.forEach((hero) => waits.push(miningCollectAt(settings, hero, data, now)));
@@ -18891,9 +18911,11 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     }
   }
 
-  // 工頭平時掛機：閒著就進去；掛超過收礦間隔就收回來（放太久會死），下一輪再進去
+  // 工頭平時掛機：閒著就進去；掛超過收礦間隔就收回來（放太久會死），下一輪再進去。
+  // 平時修練：閒著就去修練，收礦時 foremanFromTraining 叫回來，收完閒下來再回去修練
   async function parkForeman(settings, foreman, data, opened, waits) {
     const site = Number(settings.miningForemanParkSite) || 0;
+    if (foreman && site === FOREMAN_TRAIN_SITE) return trainForeman(settings, foreman, data, opened);
     if (!foreman || !MINING_SITES[site]) return [];
     try {
       if (foremanParked(data, foreman)) {
@@ -18912,6 +18934,19 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     } catch (error) {
       if (error.captchaRequired) throw error;
       return [`工頭 ${foreman.name}：${error.message}`];
+    }
+  }
+
+  async function trainForeman(settings, foreman, data, opened) {
+    if (data.foreman || foreman.actionState !== 0) return [];
+    try {
+      const pageHero = await openGameHeroPage(foreman, opened);
+      if (!canSendForeman(settings, pageHero)) return [];
+      syncGameHeroAction(await requestGameApi(`${HEROES_API}/${foreman.id}/training`, { method: 'POST' }), 'train');
+      return [`工頭 ${foreman.name} 去修練`];
+    } catch (error) {
+      if (error.captchaRequired) throw error;
+      return [`工頭 ${foreman.name} 修練不了：${error.message}`];
     }
   }
 
@@ -19075,11 +19110,11 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
         <select data-mining-foreman style="${selectStyle}"><option value="">不用</option>${data.heroes
           .map((hero) => `<option value="${hero.id}" ${hero.id === foremanId ? 'selected' : ''}>${escapeHtml(hero.name)}</option>`)
           .join('')}</select>
-        平時<select data-mining-foreman-park style="${selectStyle}"><option value="0">回城</option>${Object.entries(MINING_SITES)
+        平時<select data-mining-foreman-park style="${selectStyle}"><option value="0">回城</option><option value="${FOREMAN_TRAIN_SITE}" ${foremanTrains(settings) ? 'selected' : ''}>修練</option>${Object.entries(MINING_SITES)
           .map(([site, name]) => `<option value="${site}" ${Number(site) === Number(settings.miningForemanParkSite) ? 'selected' : ''}>在${name}掛機</option>`)
           .join('')}</select>
 </div>
-      <div class="hint" style="margin-top:0">收礦時一個地點一個地點收：工頭先進那個地點 3 分鐘，把那裡的人全部收完（不管挖了多久）就收回工頭，再換下一個地點。工頭不算挖礦角色。<br>選「平時在某地掛機」：沒事時工頭待在那裡；收礦時先收那裡的人（工頭本來就在，不用等）並讓他們馬上再進去挖，再收回工頭帶去別的地點，最後回去掛機；掛太久（超過收礦間隔）也會收回來再進去</div>`;
+      <div class="hint" style="margin-top:0">收礦時一個地點一個地點收：工頭先進那個地點 3 分鐘，把那裡的人全部收完（不管挖了多久）就收回工頭，再換下一個地點。工頭不算挖礦角色。<br>選「平時在某地掛機」：沒事時工頭待在那裡；收礦時先收那裡的人（工頭本來就在，不用等）並讓他們馬上再進去挖，再收回工頭帶去別的地點，最後回去掛機；掛太久（超過收礦間隔）也會收回來再進去。<br>選「平時修練」：沒事時工頭去修練，要收礦才結束修練帶進礦場，收完再回去修練</div>`;
     box.innerHTML = data.heroes.length
       ? foremanRow + data.heroes
           .slice()
@@ -19178,6 +19213,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
           .reverse()
           .map((entry) => {
             if (entry.kind === 'foreman') return `<div style="color:#a0a0aa">工頭 ${escapeHtml(entry.name)} 待了 ${miningDurationText(entry.minutes)}</div>`;
+            if (entry.kind === 'train') return `<div style="color:#a0a0aa">工頭 ${escapeHtml(entry.name)} 修練了 ${miningDurationText(entry.minutes)}${entry.text ? `（${escapeHtml(entry.text)}）` : ''}</div>`;
             if (entry.kind !== 'mine') return `<div style="color:#a0a0aa">${escapeHtml(entry.name)} 休息 ${miningDurationText(entry.minutes)}</div>`;
             const parts = miningEntryParts(entry);
             const spent = parts.map(([, text]) => /消耗了\s*([\d,]+)\s*點體力/.exec(text)).find(Boolean);
