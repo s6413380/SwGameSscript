@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.76
+// @version      4.77
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -9116,10 +9116,10 @@
     }
   }
 
-  // 小視窗：另開一個小瀏覽器視窗，手動按後退／原地狩獵／前行／回城（跟在遊戲頁按一樣，按完照手動打怪的設定補給）。
+  // 小視窗：另開一個小瀏覽器視窗，手動按後退／原地狩獵／前行（跟在遊戲頁按一樣，按完照手動打怪的設定補給）。
   // 按鈕的 click 寫在小視窗自己的程式裡、透過 opener 呼叫這頁；主頁重新整理後小視窗會自己重新接上，不用重開
   const MINI_WINDOW_NAME = 'aijijiMiniWindow';
-  const miniWindow = { win: null, busy: '', note: '', moveTimer: null, parts: {}, equipLoading: false, menuHeroId: 0, items: null, itemsAt: 0, reportCache: { report: null, damage: '', loot: '' } };
+  const miniWindow = { win: null, busy: '', note: '', parts: {}, equipLoading: false, menuHeroId: 0, items: null, itemsAt: 0, reportCache: { report: null, damage: '', loot: '' } };
 
   function openMiniWindow() {
     const win = window.open('', MINI_WINDOW_NAME, 'popup,width=300,height=620');
@@ -9315,8 +9315,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       `<button data-mini="${action}" ${extra} ${disabled ? 'disabled' : ''}>${locked.includes(label) ? (buttonLockArmed(label) ? `再按一下${label}` : `🔒${label}`) : label}</button>`;
     setMiniPart(
       'mini-buttons',
-      `<div class="row">${button('back', '後退', huntBlocked || !info.canBack)}${button('hunt', '原地狩獵', huntBlocked, 'class="main"')}${button('forward', '前行', huntBlocked || !info.canForward)}</div>
-      <div class="row">${button('town', '回城', blocked || inTown)}</div>`
+      `<div class="row">${button('back', '後退', huntBlocked || !info.canBack)}${button('hunt', '原地狩獵', huntBlocked, 'class="main"')}${button('forward', '前行', huntBlocked || !info.canForward)}</div>`
     );
     setMiniPart(
       'mini-note',
@@ -9433,7 +9432,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       ${settings.miniShowLoot ? `<div style="font-weight:bold;margin-top:${settings.miniShowDamage ? 6 : 0}px">🎁 掉落</div>${parts.loot}` : ''}</div>`;
   }
 
-  const MINI_ACTION_LABELS = { back: '後退', hunt: '原地狩獵', forward: '前行', town: '回城' };
+  const MINI_ACTION_LABELS = { back: '後退', hunt: '原地狩獵', forward: '前行' };
 
   // 小視窗的吃藥選單：HP、體力挑回復量最小的那種（照補血／補體力頁限定的道具），有 10 個就吃 10 個（遊戲只有 1 和 10）；
   // 解毒劑、急救包、蘆薈照名稱找，一次 1 個
@@ -9533,10 +9532,6 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       renderMiniWindow(readSettingsFromPanel());
       return;
     }
-    if (action === 'town') {
-      await miniGoTown();
-      return;
-    }
     const type = { hunt: '', back: 'back', forward: 'forward' }[action];
     if (type === undefined || apiHuntInFlight) return;
     // 按鈕灰掉前就按下去的也擋：脫下到穿上中間打會空手上場
@@ -9568,41 +9563,6 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     } finally {
       miniWindow.busy = '';
       renderMiniWindow(readSettingsFromPanel());
-    }
-  }
-
-  // 回城要等移動時間到了再 move/complete，跟遊戲裡一樣；時間到了自己完成
-  async function miniGoTown() {
-    miniWindow.busy = '回城中…';
-    miniWindow.note = '';
-    try {
-      const data = await requestGameApi('/api/move/0', { method: 'POST' });
-      syncGameMove(data, 'move');
-      forgetZoneUsers();
-      await refreshHeroStats();
-      const until = restUntilOf(huntTeam().filter((hero) => hero.actionState === 1));
-      backgroundTimer.clearTimeout(miniWindow.moveTimer);
-      if (until) miniWindow.moveTimer = backgroundTimer.setTimeout(() => miniFinishMove().catch(() => {}), Math.max(0, until - Date.now()) + randomGap(1000, 2500));
-    } catch (error) {
-      miniWindow.note = error.captchaRequired ? '要活人驗證，請到遊戲頁完成' : `回城失敗：${error.message}`;
-    } finally {
-      miniWindow.busy = '';
-      renderMiniWindow(readSettingsFromPanel());
-    }
-  }
-
-  async function miniFinishMove() {
-    // 腳本開始掛機了就交給腳本自己完成移動
-    if (state.running && !state.forgeMode) return;
-    try {
-      const data = await requestGameApi('/api/move/complete', { method: 'POST' });
-      syncGameMove(data, 'complete');
-      forgetZoneUsers();
-      await refreshHeroStats();
-      miniWindow.note = '已回到城鎮';
-    } catch (error) {
-      miniWindow.note = `完成移動失敗：${error.message}（可在遊戲頁按完成）`;
-      await refreshHeroStats().catch(() => {});
     }
   }
 
