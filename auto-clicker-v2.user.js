@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.77
+// @version      4.78
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -301,6 +301,8 @@
     deathPauseEnabled: true,
     // 異常狀態（中毒、燒傷…）：0＝不處理、1＝輕度以上、2＝中度以上、3＝重度
     statusAlertLevel: 2,
+    // 這些異常連續幾場還在才提醒／暫停（疫病常常自己好），「異常名稱=場數」用「、」分隔
+    statusDelayRules: '疫病=5',
     // 自動打怪中了異常（到這個程度）先吃對應的道具，吃到上限還沒好才照上面提醒／暫停；開始吃之後降到較輕的程度也繼續吃
     huntCureEnabled: true,
     huntCureLevel: 3,
@@ -1292,6 +1294,8 @@
       <div class="row">　🔔 只提醒、繼續打：<select data-field="statusAlertLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">不處理</option><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select></div>
       <div class="row">　⏸ 暫停：<select data-field="statusPauseLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">不處理</option><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select></div>
       <div class="hint">例：提醒選「輕度以上」、暫停選「重度」＝輕度、中度只響提醒，重度才停下來</div>
+      <div class="row">晚點再通報<input data-field="statusDelayRules" placeholder="疫病=5" style="flex:1;min-width:0"></div>
+      <div class="hint">異常名稱=場數，「、」分隔：連續打這麼多場都還沒解掉才提醒／暫停。例「疫病=5」＝第 5 場打完還有疫病才通報</div>
       <div class="row"><label style="flex:none;display:flex;align-items:center;gap:4px"><input data-field="huntCureEnabled" type="checkbox" style="flex:none;width:auto"> 打怪時（含手動）先吃藥</label></div>
       <div class="row">　中毒等：<select data-field="huntCureLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select>才吃　燒傷：<select data-field="huntCureBurnLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select>就吃</div>
       <div class="row">吃什麼<input data-field="huntCureItems" placeholder="中毒=解毒劑、輕度燒傷=蘆薈" style="flex:1;min-width:0"></div>
@@ -5819,6 +5823,36 @@
       });
   }
 
+  function statusDelayBattles(settings, name) {
+    const rules = String(settings.statusDelayRules || '').split(/[、,，;；\s]+/);
+    for (const rule of rules) {
+      const match = /^(.+?)[=＝:：](\d+)$/.exec(rule.trim());
+      if (match && match[1] === name) return Number(match[2]);
+    }
+    return 0;
+  }
+
+  // 每人每種異常連續幾場戰鬥都還在（程度變了也算同一種）；同一場報告只算一次，因為吃藥後也會再檢查
+  const conditionBattles = new Map();
+  let conditionBattlesReportId = null;
+  function countConditionBattles(heroes, report) {
+    const reportId = report && report.id !== undefined ? report.id : null;
+    if (reportId === null || reportId === conditionBattlesReportId) return;
+    conditionBattlesReportId = reportId;
+    const active = new Set();
+    heroes.forEach((hero) =>
+      heroConditions(hero).forEach((condition) => {
+        const key = `${hero.id}:${condition.name}`;
+        if (active.has(key)) return;
+        active.add(key);
+        conditionBattles.set(key, (conditionBattles.get(key) || 0) + 1);
+      })
+    );
+    [...conditionBattles.keys()].forEach((key) => {
+      if (!active.has(key)) conditionBattles.delete(key);
+    });
+  }
+
   // 同一個人同一種同程度的異常只提醒一次；好了之後再中才會再提醒
   const notifiedConditions = new Set();
   function checkHeroConditions(...args) {
@@ -5836,7 +5870,10 @@
         const key = `${hero.id}:${condition.name}:${condition.severity}`;
         active.add(key);
         if (notifiedConditions.has(key) || huntCurePending(settings, hero, condition)) return;
-        const text = `${hero.name} ${condition.level}${condition.name}`;
+        const delay = statusDelayBattles(settings, condition.name);
+        const battles = conditionBattles.get(`${hero.id}:${condition.name}`) || 0;
+        if (delay && battles < delay) return;
+        const text = `${hero.name} ${condition.level}${condition.name}${delay ? `（連續 ${battles} 場沒解）` : ''}`;
         if (pauseLevel && condition.severity >= pauseLevel) pauseTexts.push(text);
         else if (alertLevel && condition.severity >= alertLevel) alertTexts.push(text);
         else return;
@@ -6073,7 +6110,10 @@
     if (Array.isArray(heroes)) rememberHuntTeam(heroes, huntPlace(data.huntInfo));
     if (firstTimeReport(data.report)) applyEquipmentChanges(data.equipmentChanges);
     const settings = readSettingsFromPanel();
-    if (Array.isArray(heroes) && !state.forgeMode) checkHeroConditions(heroes, settings);
+    if (Array.isArray(heroes) && !state.forgeMode) {
+      countConditionBattles(heroes, data.report);
+      checkHeroConditions(heroes, settings);
+    }
     if (settings.combatEnabled) recordBattleFromApi(data.report);
     recordLootLedger('hunt', data.report);
     if (data.report) {
