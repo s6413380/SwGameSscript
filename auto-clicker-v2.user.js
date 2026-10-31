@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.80
+// @version      4.81
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1361,6 +1361,11 @@
       <div data-role="combat-anomalies"></div>
       <div class="row"><button data-action="copy-last-report">複製上一場戰報</button><button data-action="reset-combat">重置統計</button></div>
       <textarea data-role="combat-report" rows="4" style="display:none;width:100%;box-sizing:border-box;font:11px monospace"></textarea>
+      <details style="margin-top:6px"><summary><b>📖 技能圖鑑</b>（每個角色出過的招、每招做了什麼）</summary>
+        <div data-role="skill-dex"></div>
+        <div class="row"><button data-action="reset-skill-dex">清空技能圖鑑</button></div>
+        <div class="hint">次數＝這招出了幾次（/場＝平均每場幾次）。效果括號是「出這招時有這個效果」的比例，◯＝人名、N＝數字。滑鼠移到那一列看一次完整的戰報範例</div>
+      </details>
       <div class="hint">控制＝讓敵人陷入異常（燒傷、害怕降攻…）的次數；擊殺＝補最後一刀的人；爆擊＝命中要害的比例；回血／回體＝恢復生命值／體力的量，算在施放的人身上</div>
     </div>
 
@@ -8366,6 +8371,14 @@
     combatStats.lastSignature = signature;
     const { lines, indented, sides } = battleInputOfReport(report);
     recordBattle(lines, indented, () => JSON.stringify(report).slice(0, 20000), sides);
+    try {
+      if (recordSkillDex(report)) {
+        saveSkillDex();
+        renderSkillDex();
+      }
+    } catch {
+      // 圖鑑認不出來不影響戰鬥統計
+    }
   }
 
   function battleInputOfReport(report) {
@@ -8564,6 +8577,215 @@
     saveCombatStats();
     renderCombatStats();
     setStatus('已重置戰鬥統計');
+  }
+
+  // 技能圖鑑：從戰報看每個角色出過哪些招、每招做了什麼（傷害、回復、加增益、讓敵人陷入什麼狀態、解除異常）。
+  // 一次出手＝我方角色開頭、沒縮排的那行，加上底下縮排的子行（群體技能每一擊、附帶效果）和緊接著的目標狀態描述。
+  // 效果文字把人名換成◯、數字換成 N，同一種效果才合得起來
+  const SKILL_DEX_KEY = 'autoClickerV2SkillDex';
+  const SKILL_DEX_SEEN_LIMIT = 200;
+  const SKILL_DEX_EFFECT_LIMIT = 30;
+  let skillDex = loadSkillDex();
+
+  // 載入時 readJsonStorage 用到的常數還沒定義，跟戰鬥統計一樣直接讀
+  function loadSkillDex() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SKILL_DEX_KEY) || 'null');
+      if (saved && saved.heroes) return saved;
+    } catch {
+      // 讀不到就從頭記
+    }
+    return { since: Date.now(), heroes: {}, seen: [] };
+  }
+
+  function saveSkillDex() {
+    try {
+      localStorage.setItem(SKILL_DEX_KEY, JSON.stringify(skillDex));
+    } catch {
+      // 存不了只是重新整理後歸零
+    }
+  }
+
+  // 把一場戰報切成一次次出手：[{ actor, skill, entries: [{ line, index }] }]
+  function splitSkillUses(lines, indented, sides) {
+    const { party, leadingName, otherNames } = collectCombatants(lines, sides);
+    const uses = [];
+    let current = null;
+    const start = (actor, skill, line, index) => {
+      current = { actor, skill, entries: [{ line, index }], targets: new Set(otherNames(line, actor).filter((other) => !party.has(other))) };
+      uses.push(current);
+    };
+    lines.forEach((line, index) => {
+      if (indented && indented[index]) {
+        if (current) current.entries.push({ line, index });
+        return;
+      }
+      if (EXP_PATTERN.test(line) || REMAINING_PATTERN.test(line)) {
+        current = null;
+        return;
+      }
+      const hit = line.match(HIT_PATTERN);
+      if (hit || KILL_PATTERN.test(line)) {
+        if (current) {
+          current.entries.push({ line, index });
+          if (hit) current.targets.add(hit[1]);
+        }
+        return;
+      }
+      const borrowed = findBorrowedAttack(line);
+      if (borrowed) {
+        if (party.has(borrowed.name)) start(borrowed.name, borrowed.skill, line, index);
+        else current = null;
+        return;
+      }
+      const name = leadingName(line);
+      // 被打中的敵人緊接著的狀態（狐蝠3被燒傷了）、出手的人自己變強（X的攻擊力提升了）都算這次出手的效果
+      const isTargetStatus = current && name && current.targets.has(name) && isStatusLike(line, name, otherNames);
+      const isOwnBuff = current && name === current.actor && BUFF_PATTERN.test(line) && !ANY_DAMAGE_PATTERN.test(line);
+      if (isTargetStatus || isOwnBuff) {
+        current.entries.push({ line, index });
+        return;
+      }
+      // 吃喝東西、被別人治療不是自己出招
+      if (!name || !party.has(name) || FOOD_PATTERN.test(line) || /^[^，]*(?:吃|喝)了/.test(line.slice(name.length))) {
+        current = null;
+        return;
+      }
+      const rest = line.slice(name.length);
+      start(name, rest.startsWith('的') ? '（自身狀態變化）' : skillName(line, name, otherNames(line, name)), line, index);
+    });
+    return { uses, otherNames, damaged: sides ? sides.damaged : [] };
+  }
+
+  function skillEffectTag(clause, otherNames) {
+    let text = clause;
+    otherNames(clause, '').forEach((name) => (text = text.split(name).join('◯')));
+    text = text.replace(/\d[\d,.]*/g, 'N').replace(/\s+/g, '').trim();
+    return text && text !== '◯' ? text : '';
+  }
+
+  // 一次出手的效果：第一行去掉出手那段，其他行整行看，逗號分開一段一段認
+  function skillUseEffects(use, otherNames, damaged) {
+    const result = { damage: 0, hits: 0, crits: 0, kills: 0, hpHeal: 0, spHeal: 0, tags: new Set() };
+    use.entries.forEach(({ line, index }, order) => {
+      const clauses = line.split('，');
+      (order === 0 ? clauses.slice(1) : clauses).forEach((clause) => {
+        if (KILL_PATTERN.test(clause)) {
+          result.kills++;
+          return;
+        }
+        if (clause.includes('命中要害')) {
+          result.crits++;
+          return;
+        }
+        const damage = clause.match(ANY_DAMAGE_PATTERN);
+        if (damage) {
+          // 標了我方受傷的是反噬或被反擊，不算這招的輸出
+          if (damaged[index] !== 'a') {
+            result.damage += toNumber(damage[1]);
+            result.hits++;
+          } else result.tags.add(skillEffectTag(clause, otherNames));
+          return;
+        }
+        const heal = clause.split('恢復了')[1];
+        if (heal !== undefined) {
+          for (const amount of heal.matchAll(HEAL_AMOUNT_PATTERN)) result[amount[2] === '體力' ? 'spHeal' : 'hpHeal'] += toNumber(amount[1]);
+          return;
+        }
+        if (/^(?:第\s*\d+\s*擊)?擊中/.test(clause)) return;
+        result.tags.add(skillEffectTag(clause, otherNames));
+      });
+    });
+    result.tags.delete('');
+    return result;
+  }
+
+  function recordSkillDex(report) {
+    if (!report || !Array.isArray(report.messages)) return false;
+    const id = report.id === undefined ? null : String(report.id);
+    if (id !== null && skillDex.seen.includes(id)) return false;
+    const { lines, indented, sides } = battleInputOfReport(report);
+    const { uses, otherNames, damaged } = splitSkillUses(lines, indented, sides);
+    const present = new Set([...sides.party, ...uses.map((use) => use.actor)]);
+    present.forEach((name) => {
+      const hero = skillDex.heroes[name] || (skillDex.heroes[name] = { battles: 0, skills: {} });
+      hero.battles++;
+    });
+    uses.forEach((use) => {
+      const effects = skillUseEffects(use, otherNames, damaged);
+      const hero = skillDex.heroes[use.actor];
+      const entry =
+        hero.skills[use.skill] ||
+        (hero.skills[use.skill] = { casts: 0, damage: 0, hits: 0, crits: 0, kills: 0, maxDamage: 0, hpHeal: 0, spHeal: 0, effects: {}, sample: [] });
+      entry.casts++;
+      ['damage', 'hits', 'crits', 'kills', 'hpHeal', 'spHeal'].forEach((field) => (entry[field] += effects[field]));
+      entry.maxDamage = Math.max(entry.maxDamage, effects.damage);
+      effects.tags.forEach((tag) => {
+        if (tag in entry.effects || Object.keys(entry.effects).length < SKILL_DEX_EFFECT_LIMIT) entry.effects[tag] = (entry.effects[tag] || 0) + 1;
+      });
+      // 範例留行數最多的那次，看得出這招完整會做什麼
+      if (use.entries.length >= entry.sample.length) entry.sample = use.entries.slice(0, 8).map(({ line, index }) => `${indented && indented[index] ? '　' : ''}${line}`);
+    });
+    if (id !== null) skillDex.seen = [id, ...skillDex.seen].slice(0, SKILL_DEX_SEEN_LIMIT);
+    return true;
+  }
+
+  // 剛裝好時用遊戲自己存的最近 5 場先建一點資料
+  function seedSkillDex() {
+    const saved = readJsonStorage(GAME_HUNT_REPORTS_KEY, null);
+    if (!Array.isArray(saved)) return;
+    let added = false;
+    [...saved].reverse().forEach((report) => {
+      try {
+        if (recordSkillDex(report)) added = true;
+      } catch {
+        // 格式不對的那場跳過
+      }
+    });
+    if (added) saveSkillDex();
+  }
+
+  function renderSkillDex() {
+    const container = panel.querySelector('[data-role="skill-dex"]');
+    if (!container) return;
+    const heroes = Object.entries(skillDex.heroes).filter(([, hero]) => Object.keys(hero.skills).length);
+    if (!heroes.length) {
+      container.innerHTML = '<div class="hint">還沒有資料：打幾場（要勾「讀取戰鬥紀錄並統計」）就會出現</div>';
+      return;
+    }
+    const open = new Set(Array.from(container.querySelectorAll('details[open]')).map((details) => details.dataset.skillDexHero));
+    container.innerHTML = heroes
+      .sort(([first], [second]) => first.localeCompare(second, 'zh-Hant'))
+      .map(([name, hero]) => {
+        const rows = Object.entries(hero.skills)
+          .sort(([, first], [, second]) => second.casts - first.casts)
+          .map(([skill, entry]) => {
+            const effects = Object.entries(entry.effects)
+              .sort(([, first], [, second]) => second - first)
+              .slice(0, 6)
+              .map(([tag, count]) => `${escapeHtml(tag)}<span style="color:#888">（${percentText(count, entry.casts)}）</span>`);
+            const numbers = [
+              entry.damage
+                ? `傷害 平均 ${formatAmount(entry.damage / entry.casts)}・最高 ${formatAmount(entry.maxDamage)}${entry.hits > entry.casts ? `・每次 ${(entry.hits / entry.casts).toFixed(1)} 擊` : ''}${entry.crits ? `・爆擊 ${percentText(entry.crits, entry.hits)}` : ''}`
+                : '',
+              entry.hpHeal ? `回血 平均 ${formatAmount(entry.hpHeal / entry.casts)}` : '',
+              entry.spHeal ? `回體 平均 ${formatAmount(entry.spHeal / entry.casts)}` : '',
+            ].filter(Boolean);
+            return `<tr title="${escapeHtml(entry.sample.join('\n'))}"><td><b>${escapeHtml(skill)}</b></td><td>${entry.casts}<br><span style="color:#888">${(entry.casts / Math.max(1, hero.battles)).toFixed(1)}/場</span></td>
+              <td>${[...numbers.map(escapeHtml), ...effects].join('<br>') || '<span style="color:#888">沒看到效果</span>'}</td></tr>`;
+          })
+          .join('');
+        return `<details data-skill-dex-hero="${escapeHtml(name)}" ${open.has(name) ? 'open' : ''}><summary><b>${escapeHtml(name)}</b>（${Object.keys(hero.skills).length} 招，${hero.battles} 場）</summary>
+          <table class="combat"><tr><th>技能</th><th>次數</th><th>效果</th></tr>${rows}</table></details>`;
+      })
+      .join('');
+  }
+
+  function resetSkillDex() {
+    if (!window.confirm('要清空技能圖鑑嗎？')) return;
+    skillDex = { since: Date.now(), heroes: {}, seen: skillDex.seen };
+    saveSkillDex();
+    renderSkillDex();
   }
 
   function formatPercents(percents) {
@@ -10934,6 +11156,8 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       importSettings(panel.querySelector('[data-role="import-text"]').value);
     } else if (action === 'reset-combat') {
       resetCombatStats();
+    } else if (action === 'reset-skill-dex') {
+      resetSkillDex();
     } else if (action === 'copy-last-report') {
       copyCombatText(combatStats.lastReport, '上一場戰報');
     } else if (action === 'copy-anomalies') {
@@ -20372,6 +20596,8 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   installPageReport();
   refreshAreaList();
   renderCombatStats();
+  seedSkillDex();
+  renderSkillDex();
   renderCardBuyStatus();
   renderCardAlertHistory();
   renderTrainStatus();
