@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.79
+// @version      4.80
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -5222,7 +5222,7 @@
     const parts = {};
     EQUIP_PARTS.forEach((part) => {
       const saved = (plan.parts || {})[part.id] || {};
-      parts[part.id] = { on: saved.on !== false, types: saved.types || [], names: saved.names || [], needEnchant: Boolean(saved.needEnchant), enchants: saved.enchants || '' };
+      parts[part.id] = { on: saved.on !== false, types: saved.types || [], names: saved.names || [], needEnchant: Boolean(saved.needEnchant), enchants: saved.enchants || '', minStats: saved.minStats || {}, maxWgt: Number(saved.maxWgt) || 0 };
     });
     return { minDur: Number(plan.minDur) || 0, grip: plan.grip || '', fill: Boolean(plan.fill), parts };
   }
@@ -5261,7 +5261,7 @@
     const normalized = { ...plan, parts: Object.fromEntries(EQUIP_PARTS.map((part) => [part.id, { on: ((plan.parts || {})[part.id] || {}).on !== false }])) };
     const grip = EQUIP_GRIPS.find(([value]) => value === (plan.grip || ''));
     const parts = EQUIP_PARTS.filter((part) => normalized.parts[part.id].on).map((part) => part.name);
-    return [grip && plan.grip ? grip[1].replace(/（.*$/, '') : '', parts.length ? `換 ${parts.join('、')}` : '都不換', Number(plan.minDur) > 0 ? `耐久<${plan.minDur}` : '', plan.fill ? '空著補' : '', EQUIP_PARTS.some((part) => ((plan.parts || {})[part.id] || {}).needEnchant) ? '要附魔' : '']
+    return [grip && plan.grip ? grip[1].replace(/（.*$/, '') : '', parts.length ? `換 ${parts.join('、')}` : '都不換', Number(plan.minDur) > 0 ? `耐久<${plan.minDur}` : '', plan.fill ? '空著補' : '', EQUIP_PARTS.some((part) => ((plan.parts || {})[part.id] || {}).needEnchant) ? '要附魔' : '', EQUIP_PARTS.some((part) => partHasStatRule((plan.parts || {})[part.id] || {})) ? '有數值門檻' : '']
       .filter(Boolean)
       .join('・');
   }
@@ -5307,6 +5307,8 @@
         <label style="display:block">${checkbox(`part:${part.id}`, partPlan.on !== false)} <b>${part.name}</b>（${part.types.join('、')}）</label>
         ${typeChips}
         <details style="margin-left:18px"><summary>指定裝備（已勾 ${names.length} 種；不勾＝照共用清單）</summary>${nameList}</details>
+        <div style="margin-left:18px">換上的數值：${EQUIP_RULE_STATS.map(([, stat, label]) => `${label} ≥ <input type="number" min="0" ${input(`min:${part.id}:${stat}`)} value="${Number((partPlan.minStats || {})[stat]) > 0 ? Number(partPlan.minStats[stat]) : ''}" style="flex:none;width:52px">`).join(' ')}
+          重量 ≤ <input type="number" min="0" ${input(`maxWgt:${part.id}`)} value="${Number(partPlan.maxWgt) > 0 ? Number(partPlan.maxWgt) : ''}" style="flex:none;width:52px"><span class="hint" style="margin:0">空白＝不限</span></div>
         <div style="margin-left:18px"><label style="display:block">${checkbox(`needEnchant:${part.id}`, partPlan.needEnchant)} 換上的一定要有附魔</label>
           <input type="text" ${input(`enchants:${part.id}`)} value="${escapeHtml(partPlan.enchants || '')}" list="autoClickerEnchantNames" placeholder="指定附魔（任一個就行），例如 物理減傷、火焰傷害≥20；留空＝任何附魔" style="width:100%;box-sizing:border-box"></div>
       </div>`;
@@ -5343,6 +5345,10 @@
             names: checkedValues(`name:${part.id}`),
             needEnchant: value(`needEnchant:${part.id}`).checked,
             enchants: value(`enchants:${part.id}`).value.trim(),
+            minStats: Object.fromEntries(
+              EQUIP_RULE_STATS.map(([, stat]) => [stat, Math.max(0, Number(value(`min:${part.id}:${stat}`).value) || 0)]).filter(([, minimum]) => minimum > 0)
+            ),
+            maxWgt: Math.max(0, Number(value(`maxWgt:${part.id}`).value) || 0),
           },
         ])
       ),
@@ -6197,8 +6203,24 @@
     });
   }
 
+  function partHasStatRule(partPlan) {
+    return Number(partPlan.maxWgt) > 0 || Object.values(partPlan.minStats || {}).some((minimum) => Number(minimum) > 0);
+  }
+
+  // 個別設定的部位數值門檻：攻防智幸下限、重量上限；回傳沒過的那一項（空字串＝都過）
+  function partStatShortfall(partPlan, equipment) {
+    for (const [, stat, label] of EQUIP_RULE_STATS) {
+      const minimum = Number((partPlan.minStats || {})[stat]) || 0;
+      if (minimum > 0 && (Number(equipment[stat]) || 0) < minimum) return `${label} ${Number(equipment[stat]) || 0} < ${minimum}`;
+    }
+    const maxWeight = Number(partPlan.maxWgt) || 0;
+    if (maxWeight > 0 && (Number(equipment.wgt) || 0) > maxWeight) return `重量 ${Number(equipment.wgt) || 0} > ${maxWeight}`;
+    return '';
+  }
+
   // 部位指定了裝備就只看那些，沒指定照共用的條件或勾選清單
   function isAllowedForPart(settings, plan, part, equipment) {
+    if (partStatShortfall(plan.parts[part.id], equipment)) return false;
     if (!hasRequiredEnchant(plan.parts[part.id], equipment)) return false;
     const names = plan.parts[part.id].names;
     if (names.length) return isAllowedEquipment(names, equipment);
@@ -6243,6 +6265,8 @@
       if (blocked.has(equipment.id)) return '標了不自動穿';
       if (!types.includes(equipment.type)) return `持法／勾的類型不含${equipment.type}`;
       if (plan && part) {
+        const shortfall = partStatShortfall(plan.parts[part.id], equipment);
+        if (shortfall) return `數值不夠（${shortfall}）`;
         if (!hasRequiredEnchant(plan.parts[part.id], equipment)) return plan.parts[part.id].enchants ? `沒有指定的附魔（${plan.parts[part.id].enchants}）` : '沒有附魔';
         if (!isAllowedForPart(settings, plan, part, equipment)) return plan.parts[part.id].names.length ? '不在這個部位勾的裝備裡' : settings.equipRuleEnabled ? '不符合換裝條件（屬性／重量／附魔）' : '不在勾選清單裡';
       } else {
