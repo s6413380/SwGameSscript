@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.81
+// @version      4.82
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -8585,13 +8585,25 @@
   const SKILL_DEX_KEY = 'autoClickerV2SkillDex';
   const SKILL_DEX_SEEN_LIMIT = 200;
   const SKILL_DEX_EFFECT_LIMIT = 30;
+  // 角色名字後面接這些是「被怎樣」：中了持續傷害（因疫病受到了 8 點傷害）、被敵人弄的狀態（被叮的地方很癢），不是自己出招
+  const SKILL_DEX_PASSIVE_PATTERN = /^(?:因|被|受到|遭)/;
+  // 打完順便回血（吸取了 223 點生命值）算上一招的效果
+  const SKILL_DEX_DRAIN_PATTERN = /^(?:吸取|吸收|恢復)了/;
   let skillDex = loadSkillDex();
 
   // 載入時 readJsonStorage 用到的常數還沒定義，跟戰鬥統計一樣直接讀
   function loadSkillDex() {
     try {
       const saved = JSON.parse(localStorage.getItem(SKILL_DEX_KEY) || 'null');
-      if (saved && saved.heroes) return saved;
+      if (saved && saved.heroes) {
+        // 4.81 把「因疫病受到了…」「被叮的…」「吸取了…」當成招式記進來，清掉
+        Object.values(saved.heroes).forEach((hero) =>
+          Object.keys(hero.skills || {}).forEach((skill) => {
+            if (SKILL_DEX_PASSIVE_PATTERN.test(skill) || SKILL_DEX_DRAIN_PATTERN.test(skill)) delete hero.skills[skill];
+          })
+        );
+        return saved;
+      }
     } catch {
       // 讀不到就從頭記
     }
@@ -8640,7 +8652,8 @@
       }
       const name = leadingName(line);
       // 被打中的敵人緊接著的狀態（狐蝠3被燒傷了）、出手的人自己變強（X的攻擊力提升了）都算這次出手的效果
-      const isTargetStatus = current && name && current.targets.has(name) && isStatusLike(line, name, otherNames);
+      // 持續傷害（狐蝠3因中毒受到…）是之前那招留下的，不算進這招
+      const isTargetStatus = current && name && current.targets.has(name) && isStatusLike(line, name, otherNames) && !ANY_DAMAGE_PATTERN.test(line);
       const isOwnBuff = current && name === current.actor && BUFF_PATTERN.test(line) && !ANY_DAMAGE_PATTERN.test(line);
       if (isTargetStatus || isOwnBuff) {
         current.entries.push({ line, index });
@@ -8652,6 +8665,14 @@
         return;
       }
       const rest = line.slice(name.length);
+      if (SKILL_DEX_DRAIN_PATTERN.test(rest)) {
+        if (current && current.actor === name) current.entries.push({ line, index });
+        return;
+      }
+      if (SKILL_DEX_PASSIVE_PATTERN.test(rest)) {
+        current = null;
+        return;
+      }
       start(name, rest.startsWith('的') ? '（自身狀態變化）' : skillName(line, name, otherNames(line, name)), line, index);
     });
     return { uses, otherNames, damaged: sides ? sides.damaged : [] };
@@ -8684,10 +8705,10 @@
           if (damaged[index] !== 'a') {
             result.damage += toNumber(damage[1]);
             result.hits++;
-          } else result.tags.add(skillEffectTag(clause, otherNames));
+          }
           return;
         }
-        const heal = clause.split('恢復了')[1];
+        const heal = clause.split(/恢復了|吸取了|吸收了/)[1];
         if (heal !== undefined) {
           for (const amount of heal.matchAll(HEAL_AMOUNT_PATTERN)) result[amount[2] === '體力' ? 'spHeal' : 'hpHeal'] += toNumber(amount[1]);
           return;
