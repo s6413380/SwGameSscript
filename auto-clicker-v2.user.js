@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.82
+// @version      4.83
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -8370,6 +8370,11 @@
     if (signature === combatStats.lastSignature) return;
     combatStats.lastSignature = signature;
     const { lines, indented, sides } = battleInputOfReport(report);
+    try {
+      addBattleEffects(battleEffectsOf(lines, indented, sides));
+    } catch {
+      // 效果認不出來不影響其他統計
+    }
     recordBattle(lines, indented, () => JSON.stringify(report).slice(0, 20000), sides);
     try {
       if (recordSkillDex(report)) {
@@ -8555,14 +8560,53 @@
     const battles = combatStats.battles;
     const minutes = Math.max(1, Math.round((Date.now() - combatStats.since) / 60000));
     container.innerHTML = `
-      <div><b>上一場</b></div>${combatTableHtml(combatStats.last)}${skillDetailsHtml(combatStats.last, 'last')}
+      <div><b>上一場</b></div>${combatTableHtml(combatStats.last)}${skillDetailsHtml(combatStats.last, 'last')}${battleEffectsHtml(combatStats.lastEffects, 'last-effects')}
       <div style="margin-top:6px"><b>累計 ${battles} 場</b>（${new Date(combatStats.since).toLocaleString('zh-TW', { hour12: false })} 起，約 ${minutes} 分鐘）</div>
-      ${combatTableHtml(combatStats.members)}${skillDetailsHtml(combatStats.members, 'total')}
+      ${combatTableHtml(combatStats.members)}${skillDetailsHtml(combatStats.members, 'total')}${battleEffectsHtml(combatStats.effects, 'total-effects', battles)}
       <div>平均每場：傷害 ${formatAmount(total.damage / battles)}、回血 ${formatAmount(total.healthHealing / battles)}、
         回體 ${formatAmount(total.staminaHealing / battles)}、控制 ${(total.controls / battles).toFixed(1)}、增益 ${(total.buffs / battles).toFixed(1)}、解除 ${(total.cleanses / battles).toFixed(1)}、擊殺 ${(total.kills / battles).toFixed(1)}、
         承受傷害 ${formatAmount(total.damageTaken / battles)}</div>
       <div>每分鐘傷害 ${formatAmount(total.damage / minutes)}</div>`;
     openDetails.forEach((key) => container.querySelector(`[data-skill-details="${key}"]`)?.setAttribute('open', ''));
+  }
+
+  // 每個人放了哪些效果（加增益、讓敵人陷入的狀態、解除異常…），用技能圖鑑同一套切法：{ 名字: { 效果: 次數 } }
+  function battleEffectsOf(lines, indented, sides) {
+    const { uses, otherNames, damaged } = splitSkillUses(lines, indented, sides);
+    const effects = {};
+    uses.forEach((use) => {
+      skillUseEffects(use, otherNames, damaged).tags.forEach((tag) => {
+        const own = effects[use.actor] || (effects[use.actor] = {});
+        own[tag] = (own[tag] || 0) + 1;
+      });
+    });
+    return effects;
+  }
+
+  function addBattleEffects(effects) {
+    combatStats.lastEffects = effects;
+    const total = combatStats.effects || (combatStats.effects = {});
+    Object.entries(effects).forEach(([name, tags]) => {
+      const own = total[name] || (total[name] = {});
+      Object.entries(tags).forEach(([tag, count]) => {
+        if (tag in own || Object.keys(own).length < SKILL_DEX_EFFECT_LIMIT * 2) own[tag] = (own[tag] || 0) + count;
+      });
+    });
+  }
+
+  // battles 有給（累計）就多顯示平均每場幾次
+  function battleEffectsHtml(effects, key, battles = 0) {
+    const rows = Object.entries(effects || {})
+      .filter(([, tags]) => Object.keys(tags).length)
+      .map(([name, tags]) => {
+        const list = Object.entries(tags)
+          .sort(([, first], [, second]) => second - first)
+          .map(([tag, count]) => `${escapeHtml(tag)} ×${count}${battles ? `<span style="color:#888">（${(count / battles).toFixed(1)}/場）</span>` : ''}`)
+          .join('、');
+        return `<div style="margin-top:3px"><b>${escapeHtml(name)}</b>：${list}</div>`;
+      })
+      .join('');
+    return `<details data-skill-details="${key}"><summary>放了哪些效果</summary>${rows || '<div class="hint">沒有看到效果</div>'}<div class="hint">◯＝人名、N＝數字</div></details>`;
   }
 
   function resetCombatStats() {
