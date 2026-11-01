@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.84
+// @version      4.85
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -348,9 +348,6 @@
     partyWaitAlertMinutes: 5,
     // 打怪中自動暫停（死人、血低、異常、稀有掉落…）就順便解除組隊，隊友那邊不會被拖著打或一直等
     partyLeaveOnPause: true,
-    // 隊友有角色身上裝備少於幾件（1＝完全沒穿）就離開隊伍，免得被拖著打；看每場戰報裡隊友角色的裝備
-    partyLeaveBareEnabled: false,
-    partyLeaveBareMin: 1,
     // 雲端組隊：等待組隊時，雲端有人邀請自己就自動把對方設成隊友（只收名單裡的人；空白＝誰都收）
     partyInviteWait: false,
     partyInviteFrom: '',
@@ -394,6 +391,8 @@
     equipApiMinDurability: 10,
     equipApiSameName: false,
     equipApiPauseWhenEmpty: true,
+    // 組隊時沒有可替換的裝備就離開隊伍：隊友打怪時自己的腳本沒在掛機（不會暫停），沒裝備還被拖著打會壞光
+    equipEmptyLeaveParty: true,
     // 沒有可替換的裝備時改去別的關卡掛機（勾了就不暫停）
     equipEmptyMoveEnabled: false,
     equipEmptyArea: '',
@@ -1114,8 +1113,6 @@
       <div class="row">等超過 ${numberInput('partyWaitAlertMinutes', 'min="1"')} 分鐘就提醒</div>
       <label class="row"><input data-field="partyLeaveOnPause" type="checkbox" style="flex:none;width:auto"> 打怪中自動暫停時順便<b>離開隊伍</b></label>
       <div class="hint">把隊友暱稱清空（跟遊戲裡設成空白一樣）。活人驗證、同帳號另一個分頁在打的暫停不離隊；自己按停止也不會。要再組隊得重新設定隊友</div>
-      <label class="row"><input data-field="partyLeaveBareEnabled" type="checkbox" style="flex:none;width:auto"> 隊友有角色身上裝備少於 ${numberInput('partyLeaveBareMin', 'min="1" max="10"')} 件就<b>離開隊伍</b></label>
-      <div class="hint">1＝完全沒穿才離開。看每場戰報裡隊友角色身上的裝備（自己打、隊友打的都看），離開後照常自己打。腳本沒開或戰報沒帶裝備資料時不會判斷</div>
       <div class="row"><b>雲端組隊</b> 邀請<input data-role="party-invite-to" placeholder="對方暱稱" style="flex:1;min-width:0"><button data-action="party-invite" style="flex:none">邀請</button></div>
       <label class="row"><input data-field="partyInviteWait" type="checkbox" style="flex:none;width:auto"> <b>等待組隊</b>：有人邀請就自動設成隊友</label>
       <div class="row">只收<input data-field="partyInviteFrom" placeholder="暱稱或 id，用、分開；空白＝誰都收" style="flex:1;min-width:0">的邀請</div>
@@ -1235,6 +1232,7 @@
           <div class="row">耐久低於 ${numberInput('equipApiMinDurability', 'min="0"')} 就換</div>
           <label class="row"><input data-field="equipApiSameName" type="checkbox" style="flex:none;width:auto"> 只換同名裝備（不勾＝同類型都可以）</label>
           <label class="row"><input data-field="equipApiPauseWhenEmpty" type="checkbox" style="flex:none;width:auto"> 沒有可替換的裝備就暫停</label>
+          <label class="row"><input data-field="equipEmptyLeaveParty" type="checkbox" style="flex:none;width:auto"> 組隊中沒有可替換的裝備就<b>離開隊伍</b>（隊友在打、自己沒開掛機也會）</label>
           <label class="row"><input data-field="equipEmptyMoveEnabled" type="checkbox" style="flex:none;width:auto"> 沒有可替換的裝備就改去（勾了就不暫停）</label>
           <div class="row">${escapeTargetHtml('equipEmpty')}</div>
           <div class="subhead">要換裝的角色</div>
@@ -6103,7 +6101,6 @@
             .join('\n');
           const detail = (parseJsonText(dataText) || {}).reportDetail;
           if (detail && firstTimeReport(detail.report)) {
-            leavePartyIfTeammateBare(detail.report);
             applyEquipmentChanges(detail.equipmentChanges);
             if (state.equipments.length) state.equipmentsAt = Date.now();
           }
@@ -6142,7 +6139,6 @@
       countConditionBattles(heroes, data.report);
       checkHeroConditions(heroes, settings);
     }
-    leavePartyIfTeammateBare(data.report);
     if (settings.combatEnabled) recordBattleFromApi(data.report);
     recordLootLedger('hunt', data.report);
     if (data.report) {
@@ -6385,6 +6381,7 @@
       equipSkipReasons.set(worn.id, `沒有可替換的閒置裝備（${detail}）`);
       logItemUse(`${who} ✗ 沒有可替換的閒置裝備：${detail}`);
       const reason = `${hero ? hero.name : heroId} 的${worn.type}耐久 ${worn.dur}，沒有可替換的閒置裝備`;
+      if (settings.equipEmptyLeaveParty && inPartyNow()) await leaveParty(reason);
       // 改去設定的關卡（通常是比較好打、不太耗耐久的地方），自動移動會接手走過去
       if (!manual && settings.equipEmptyMoveEnabled && settings.equipEmptyArea) {
         if (!isEscapeTarget(settings, 'equipEmpty')) escapeTo(settings, 'equipEmpty', reason);
@@ -7196,34 +7193,6 @@
   async function leavePartyOnPause() {
     if (!readSettingsFromPanel().partyLeaveOnPause) return;
     await leaveParty('暫停了');
-  }
-
-  // 戰報 a 是我方（含隊友）的角色，ownerId 不是自己的就是隊友的；召喚物不在 /api/teammate 的角色裡，有那份名單就只看名單裡的
-  function bareTeammateHeroes(settings, report) {
-    const ownId = dashboard.profile && Number(dashboard.profile.id);
-    if (!ownId || !report || !Array.isArray(report.a)) return [];
-    const minimum = Math.max(1, Number(settings.partyLeaveBareMin) || 1);
-    const known = partyWait.data && Array.isArray(partyWait.data.heroes) ? new Set(partyWait.data.heroes.map((hero) => hero.name)) : null;
-    return report.a.filter(
-      (fighter) =>
-        fighter &&
-        fighter.ownerId !== undefined &&
-        Number(fighter.ownerId) !== ownId &&
-        Array.isArray(fighter.equipments) &&
-        fighter.equipments.length < minimum &&
-        (known ? known.has(fighter.name) : fighter.type || fighter.typeId)
-    );
-  }
-
-  let partyBareLeaving = false;
-  function leavePartyIfTeammateBare(report) {
-    const settings = readSettingsFromPanel();
-    if (!settings.partyLeaveBareEnabled || partyBareLeaving || !inPartyNow()) return;
-    const bare = bareTeammateHeroes(settings, report);
-    if (!bare.length) return;
-    partyBareLeaving = true;
-    const detail = bare.map((fighter) => `${fighter.name}（${fighter.equipments.length} 件）`).join('、');
-    leaveParty(`隊友角色裝備不夠：${detail}`).finally(() => (partyBareLeaving = false));
   }
 
   async function leaveParty(reason) {
