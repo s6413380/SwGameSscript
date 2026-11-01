@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         器靈（載入器）
 // @namespace    local.auto-clicker
-// @version      2.2
+// @version      2.3
 // @description  每次開頁面載入最新的器靈：本機中繼站和 GitHub 都抓，用版本比較新的；都失敗才用上次的版本
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -19,6 +19,8 @@
     { label: 'GitHub 最新版', url: () => `https://raw.githubusercontent.com/s6413380/SwGameSscript/main/auto-clicker-v2.user.js?t=${Date.now()}`, timeout: 15000 },
   ];
   const CACHE_STORAGE_KEY = 'autoClickerV2LoaderCache';
+  // 快取是整份主程式（快 1MB），放 localStorage 會跟遊戲搶那 5MB；改放 IndexedDB，跟主程式的資料庫分開，免得版本號互相影響
+  const CACHE_DB_NAME = 'autoClickerV2Loader';
   // 共用的雲端試算表網址放在載入器裡（私下傳給朋友），GitHub 上的公開主程式就不用帶著它
   // 公開版不附網址：要用共用試算表就把 Apps Script 網址填在這裡，或在面板「其他 → 雲端」填
   const CLOUD_URL = '';
@@ -62,6 +64,52 @@
     return false;
   }
 
+  function openCacheDb() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(CACHE_DB_NAME, 1);
+      request.onupgradeneeded = () => request.result.createObjectStore('kv');
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async function saveCache(code) {
+    try {
+      const db = await openCacheDb();
+      await new Promise((resolve, reject) => {
+        const transaction = db.transaction('kv', 'readwrite');
+        transaction.objectStore('kv').put(code, CACHE_STORAGE_KEY);
+        transaction.oncomplete = resolve;
+        transaction.onerror = () => reject(transaction.error);
+      });
+      db.close();
+      // 資料庫存好了才刪舊版留在 localStorage 的那份
+      localStorage.removeItem(CACHE_STORAGE_KEY);
+    } catch {
+      // 存不了快取只影響之後全部連不上時的備援
+    }
+  }
+
+  async function readCache() {
+    try {
+      const db = await openCacheDb();
+      const code = await new Promise((resolve, reject) => {
+        const get = db.transaction('kv').objectStore('kv').get(CACHE_STORAGE_KEY);
+        get.onsuccess = () => resolve(get.result);
+        get.onerror = () => reject(get.error);
+      });
+      db.close();
+      if (typeof code === 'string') return code;
+    } catch {
+      // 資料庫打不開就看舊版的 localStorage
+    }
+    try {
+      return localStorage.getItem(CACHE_STORAGE_KEY);
+    } catch {
+      return null;
+    }
+  }
+
   (async () => {
     const failures = [];
     const results = await Promise.all(
@@ -78,20 +126,11 @@
     // 版本一樣時用前面的（中繼站）
     const best = results.filter(Boolean).reduce((chosen, result) => (!chosen || isNewer(versionOf(result.code), versionOf(chosen.code)) ? result : chosen), null);
     if (best) {
-      try {
-        localStorage.setItem(CACHE_STORAGE_KEY, best.code);
-      } catch {
-        // 存不了快取只影響之後全部連不上時的備援
-      }
       run(best.code, best.source.label);
+      saveCache(best.code);
       return;
     }
-    let cached = null;
-    try {
-      cached = localStorage.getItem(CACHE_STORAGE_KEY);
-    } catch {
-      // 讀不到快取就只能提示
-    }
+    const cached = await readCache();
     if (cached) run(cached, `連不上（${failures.join('；')}），用上次的版本`);
     else console.error('[器靈 載入器] 中繼站和 GitHub 都連不上，也沒有上次的版本', failures);
   })();
