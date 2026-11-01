@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.88
+// @version      4.89
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -2620,6 +2620,8 @@
   const HUNT_INFO_API = '/api/huntInfo';
   const HEROES_API = '/api/heroes';
   const PROFILE_API = '/api/profile';
+  const PROFILE_RESPONSE_PATTERN = /\/api\/profile(?:[?#]|$)/;
+  const TEAMMATE_RESPONSE_PATTERN = /\/api\/teammate(?:[?#]|$)/;
 
   // 不同設定檔的分頁彼此不通，改由本機的 monitor-server.ps1 收集各分頁回報，總覽頁再一起顯示
   const DASHBOARD_REPORT_MILLISECONDS = 5000;
@@ -3006,6 +3008,7 @@
   // 開好幾個帳號時，面板標題和提醒都要看得出是哪個帳號
   function rememberProfile(profile) {
     dashboard.profile = { id: profile.id, nickname: profile.nickname, money: profile.money };
+    noticeProfileTeammate(profile);
     renderAppName();
     renderLowProfilePersonality();
     renderLowModeButtons();
@@ -3040,7 +3043,7 @@
     if (Date.now() - Math.max(dashboard.teamAt, dashboard.teamTriedAt) > DASHBOARD_TEAM_FRESH_MILLISECONDS) {
       dashboard.teamTriedAt = Date.now();
       const huntInfo = await requestGameApi(HUNT_INFO_API, { background: true });
-      partyPoll.teammate = Boolean(huntInfo.teammate);
+      if ('teammate' in huntInfo) partyPoll.teammate = Boolean(huntInfo.teammate);
       rememberHuntTeam(huntInfo.heroes || []);
     }
   }
@@ -6038,7 +6041,7 @@
     state.heroStats = new Map(huntInfo.heroes.map((hero) => [hero.id, hero]));
     state.huntTeamIds = huntInfo.heroes.map((hero) => hero.id);
     state.heroStatsAt = Date.now();
-    partyPoll.teammate = Boolean(huntInfo.teammate);
+    if ('teammate' in huntInfo) partyPoll.teammate = Boolean(huntInfo.teammate);
     writeJsonStorage(PARTY_HUNT_INFO_SEEN_KEY, Date.now());
     renderHuntTeam(huntInfo.heroes);
   }
@@ -6046,7 +6049,17 @@
   // 遊戲只在「狩獵」頁開著時才連組隊推播；切到別頁就收不到隊友打完的通知，遊戲也不會重讀血量，
   // 這時自己每 30～60 秒讀一次。同帳號多個分頁共用「最近一次讀到的時間」，免得兩個分頁一起吃藥
   const PARTY_HUNT_INFO_SEEN_KEY = 'autoClickerV2PartyHuntInfoAt';
-  const partyPoll = { teammate: undefined, inFlight: false, gap: 0 };
+  // teammate：有沒有設隊友（undefined＝還不知道）；name：隊友暱稱
+  const partyPoll = { teammate: undefined, name: '', inFlight: false, gap: 0 };
+
+  // 隊友暱稱記在個人資料（profile.teammate）裡，huntInfo 沒有這欄；以前只看 huntInfo，一讀到就當成沒組隊，
+  // 不在狩獵頁時就不再自己讀血量、不補血。POST /api/teammate 的回應是 { profile, teammate }
+  function noticeProfileTeammate(data) {
+    const profile = data && data.profile ? data.profile : data;
+    if (!profile || typeof profile !== 'object' || !('teammate' in profile)) return;
+    partyPoll.teammate = Boolean(profile.teammate);
+    partyPoll.name = profile.teammate || '';
+  }
 
   function pollPartyHuntInfo(settings) {
     if (!settings.manualSupplyEnabled || tabShutDown || scriptHuntingActive() || partyPoll.inFlight || tabRole() === 'forge') return;
@@ -7103,7 +7116,8 @@
       body: JSON.stringify({ teammate: nickname }),
     });
     if (state.huntInfo) state.huntInfo = { ...state.huntInfo, teammate: nickname || null };
-    partyPoll.teammate = nickname ? undefined : false;
+    partyPoll.teammate = Boolean(nickname);
+    partyPoll.name = nickname || '';
     partyWait.data = null;
     partyWait.soloUntil = 0;
     refreshGameView([['profile'], ['teammate'], ['heroes']]);
@@ -7209,8 +7223,8 @@
   }
 
   async function leaveParty(reason) {
-    if (state.huntInfo ? !state.huntInfo.teammate : partyPoll.teammate !== true) return;
-    const who = state.huntInfo && state.huntInfo.teammate;
+    if (!inPartyNow()) return;
+    const who = (state.huntInfo && state.huntInfo.teammate) || partyPoll.name;
     try {
       await requestGameApi(TEAMMATE_API, {
         method: 'POST',
@@ -7219,6 +7233,7 @@
       });
       if (state.huntInfo) state.huntInfo = { ...state.huntInfo, teammate: null };
       partyPoll.teammate = false;
+      partyPoll.name = '';
       partyWait.data = null;
       refreshGameView([['profile'], ['teammate'], ['heroes']]);
       logItemUse(`［組隊］${reason}，已離開隊伍${who ? `（原本隊友 ${who}）` : ''}`);
@@ -9342,7 +9357,7 @@
       state.timerId = planTick(() => tick(settings), randomGap(10000, 20000));
       return;
     }
-    if (/CD|冷卻/.test(String(error && error.message)) && state.huntInfo && state.huntInfo.teammate && (state.apiPartyCooldownErrors = (state.apiPartyCooldownErrors || 0) + 1) < 20) {
+    if (/CD|冷卻/.test(String(error && error.message)) && inPartyNow() && (state.apiPartyCooldownErrors = (state.apiPartyCooldownErrors || 0) + 1) < 20) {
       state.huntInfo = null;
       partyWait.data = null;
       setStatus('組隊：隊友剛打過，冷卻中，重讀後再打');
@@ -9388,7 +9403,7 @@
   const PARTY_SOLO_RECHECK_MILLISECONDS = 60000;
 
   function inPartyNow() {
-    if (state.huntInfo) return Boolean(state.huntInfo.teammate);
+    if (state.huntInfo && 'teammate' in state.huntInfo) return Boolean(state.huntInfo.teammate);
     return partyPoll.teammate !== false;
   }
 
@@ -11598,6 +11613,10 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
               }
             }
             if (response.ok && isPlace) learnPlace(parseJsonText(responseText));
+            // 遊戲自己讀個人資料、或在遊戲裡設定／清空隊友
+            if (response.ok && ((method === 'GET' && PROFILE_RESPONSE_PATTERN.test(url)) || (method === 'POST' && TEAMMATE_RESPONSE_PATTERN.test(url)))) {
+              noticeProfileTeammate(parseJsonText(responseText));
+            }
             if (growthOnly) return;
             if (response.ok && isMoney && readSettingsFromPanel().incomeEnabled) {
               const data = parseJsonText(responseText);
