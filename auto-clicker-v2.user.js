@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.85
+// @version      4.86
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -78,7 +78,11 @@
   } catch {
     // 瀏覽器不支援長任務就只看腳本自己的數字
   }
-  const BIG_STORAGE_KEYS = new Set(['autoClickerV2CloudEquipments', 'autoClickerV2CloudScratch', 'autoClickerV2CloudDraws', 'autoClickerV2Scratch', 'autoClickerV2ForgedEquipments', 'autoClickerV2ForgeMaterials']);
+  // 統計類（收入、抽卡、測名表、打怪、耐久、挖礦、市場、雲端同步紀錄）每個幾十到幾百 KB，加起來又把 localStorage 擠滿，也搬過去
+  const STATS_BIG_STORAGE_KEYS = ['autoClickerV2Cloud', 'autoClickerV2Income', 'autoClickerV2Draws', 'autoClickerV2NameWeights', 'autoClickerV2HuntStats', 'autoClickerV2DurTrack', 'autoClickerV2Mining', 'autoClickerV2MarketSales'];
+  const BIG_STORAGE_KEYS = new Set(['autoClickerV2CloudEquipments', 'autoClickerV2CloudScratch', 'autoClickerV2CloudDraws', 'autoClickerV2Scratch', 'autoClickerV2ForgedEquipments', 'autoClickerV2ForgeMaterials', ...STATS_BIG_STORAGE_KEYS]);
+  // 這些是累加的：資料庫開好之前讀到的是空的，那時寫的是「空的＋一筆」，資料庫裡已經有就以資料庫的為準（頂多少記那一筆）
+  const KEEP_STORED_BIG_STORAGE_KEYS = new Set(STATS_BIG_STORAGE_KEYS);
   // 自己的鍛造紀錄沒辦法重抓：資料庫開好之前讀到的是空的，這段時間寫進來的只有新的幾件，開好時要跟資料庫裡的合併（同一件以新的為準）
   const MERGED_BIG_STORAGE_KEYS = new Set(['autoClickerV2ForgedEquipments', 'autoClickerV2ForgeMaterials']);
   const bigStorage = {
@@ -2906,6 +2910,8 @@
     } catch {
       storage = 'localStorage 讀不到';
     }
+    const bigSizes = [...bigStorage.values.entries()].map(([key, raw]) => [key, (raw || '').length]).sort((first, second) => second[1] - first[1]);
+    if (bigSizes.length) storage += `\nIndexedDB（不佔 localStorage）：\n${bigSizes.map(([key, size]) => `  ${round(size / 1024)} KB ${key}`).join('\n')}`;
     return [
       `v${SCRIPT_VERSION} ${location.pathname} 統計 ${Math.round(seconds)} 秒（${time(perfProbe.since)} 起）`,
       `腳本自己佔用：${round(perfProbe.ownTotal)}ms（每秒 ${round(perfProbe.ownTotal / seconds)}ms）`,
@@ -13888,6 +13894,8 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
             if (!bigStorage.values.has(key)) {
               const value = typeof get.result === 'string' ? get.result : localStorage.getItem(key);
               if (value !== null) bigStorage.values.set(key, value);
+            } else if (KEEP_STORED_BIG_STORAGE_KEYS.has(key) && typeof get.result === 'string') {
+              bigStorage.values.set(key, get.result);
             } else if (MERGED_BIG_STORAGE_KEYS.has(key) && typeof get.result === 'string') {
               try {
                 bigStorage.values.set(key, JSON.stringify({ ...JSON.parse(get.result), ...JSON.parse(bigStorage.values.get(key)) }));
@@ -14883,11 +14891,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   }
 
   function saveCloudState(saved) {
-    try {
-      localStorage.setItem(CLOUD_STATE_KEY, JSON.stringify(saved));
-    } catch {
-      // 存不進去頂多下次重傳，試算表那端會擋重複
-    }
+    writeJsonStorage(CLOUD_STATE_KEY, saved);
   }
 
   function cloudGrowthRows() {
