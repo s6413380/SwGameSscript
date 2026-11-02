@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.09
+// @version      5.10
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -299,6 +299,12 @@
     // 躲開危險玩家後，幾分鐘沒再遇到就走回原本掛機的關卡
     playerReturnEnabled: false,
     playerReturnMinutes: 10,
+    // 連續這麼多場沒出稀有道具（英雄券這類）就去別的關卡刷一段時間，再走回原本的關卡
+    rareDetourEnabled: false,
+    rareDetourBattles: 50,
+    rareDetourArea: '',
+    rareDetourNumber: 1,
+    rareDetourMinutes: 30,
     // 這些關卡的危險玩家不理（前幾層常有小號紅名），例如「1-2」「大草原1-2」「老鼠洞」
     playerIgnoreStages: PLAYER_IGNORE_DEFAULT,
     resourcePausePercent: 20,
@@ -1338,6 +1344,13 @@
         <div class="row"><label style="flex:none"><input data-field="playerReturnEnabled" type="checkbox" style="width:auto"> 躲開後</label> ${numberInput('playerReturnMinutes', 'min="1"')} 分鐘沒再遇到危險玩家，就走回原本掛機的關卡</div>
         <div class="hint">不理會的關卡寫法：「大草原1-3」＝大草原第 1～3 關；「1-2」＝每個區域的第 1、2 關；「老鼠洞」＝整個老鼠洞；多個用逗號或頓號分開</div>
         <div class="hint">觸發時把「移動」頁的目標改成這裡並打開自動移動，走過去後照常掛機。血量：到了避難關卡血量還是低才暫停（死亡照樣馬上暫停）。玩家：每 15 秒看一次同地圖的玩家（城鎮不看）；移動途中路過的關卡不管，到了目標關卡才看；分支退到入口之前會回到母區域；退到第 1 關還有就只提醒</div>
+      </fieldset>
+      <fieldset class="group">
+        <legend>沒出稀有道具就換地方刷</legend>
+        <label class="row"><input data-field="rareDetourEnabled" type="checkbox" style="flex:none;width:auto"> 連續 ${numberInput('rareDetourBattles', 'min="1"')} 場沒出稀有道具，就去</label>
+        <div class="row">${escapeTargetHtml('rareDetour')}</div>
+        <div class="row">到了以後刷 ${numberInput('rareDetourMinutes', 'min="1"')} 分鐘，再走回原本的關卡</div>
+        <div class="hint">稀有道具＝上面「撿到稀有道具提醒」的名稱，加上英雄券、英雄卷、寵物券、寵物卷。只算打怪的戰報，出了就從 0 重新數；去刷的那段不算場數。中途自己改了目標（或被避難帶走）就不會拉回去。要開「移動」頁的自動移動才走得過去（觸發時會自動打開）</div>
       </fieldset>
       <label class="row"><input data-field="verifyEnabled" type="checkbox" style="flex:none;width:auto"> 畫面出現驗證框就暫停</label>
       <div class="row">關鍵字<input data-field="verifyKeyword" placeholder="驗證框上的文字"></div>
@@ -6832,6 +6845,82 @@
     return true;
   }
 
+  // 連續很多場沒出稀有道具：去別的關卡刷一段時間再回來。場數、原本的關卡、什麼時候到的都存起來，重新整理後接得上
+  const RARE_DETOUR_KEY = 'autoClickerV2RareDetour';
+
+  function readRareDetour() {
+    return readJsonStorage(RARE_DETOUR_KEY, null) || { count: 0 };
+  }
+
+  function noteRareDrought(loot) {
+    const settings = readSettingsFromPanel();
+    if (!settings.rareDetourEnabled) return;
+    const detour = readRareDetour();
+    // 去刷的那段不算
+    if (detour.since) return;
+    const rareNames = rareLootNames(settings);
+    detour.count = loot.some(([name]) => isRareLoot(name, rareNames)) ? 0 : (detour.count || 0) + 1;
+    writeJsonStorage(RARE_DETOUR_KEY, detour);
+  }
+
+  function rareDetourMinutes(settings) {
+    return Math.max(1, Number(settings.rareDetourMinutes) || 0);
+  }
+
+  // 回傳 true＝換了目標，這一步先不做別的
+  function rareDetourStep(settings) {
+    if (!settings.rareDetourEnabled || !settings.rareDetourArea) return false;
+    const detour = readRareDetour();
+    if (detour.since) {
+      // 中間自己改了目標、或被避難帶走：不拉回去，重新數
+      if (targetLabel(settings) !== detour.detourTo) {
+        writeJsonStorage(RARE_DETOUR_KEY, { count: 0 });
+        return false;
+      }
+      // 從走到那裡開始算時間，路上走的不算
+      if (!detour.arrivedAt) {
+        if (arrivedAtTarget(settings)) writeJsonStorage(RARE_DETOUR_KEY, { ...detour, arrivedAt: Date.now() });
+        return false;
+      }
+      if (Date.now() - detour.arrivedAt < rareDetourMinutes(settings) * 60000) return false;
+      writeJsonStorage(RARE_DETOUR_KEY, { count: 0 });
+      setPanelField('stageEnabled', true);
+      setPanelField('stageTargetArea', detour.area);
+      setPanelField('stageTargetNumber', detour.number);
+      const message = `在 ${detour.detourTo} 刷了 ${rareDetourMinutes(settings)} 分鐘，走回原本的 ${targetLabel({ stageTargetArea: detour.area, stageTargetNumber: detour.number })}`;
+      setStatus(message);
+      showToast(message);
+      return true;
+    }
+    if ((detour.count || 0) < Math.max(1, Number(settings.rareDetourBattles) || 0)) return false;
+    const label = targetLabel({ stageTargetArea: settings.rareDetourArea, stageTargetNumber: settings.rareDetourNumber });
+    // 沒開自動移動時「目標」不一定是現在的位置，用現在所在的關卡當原本的
+    const place = settings.stageEnabled ? null : currentPlace(settings);
+    const original = place ? { area: place.area, number: place.stage } : { area: settings.stageTargetArea, number: settings.stageTargetNumber };
+    if (!original.area || targetLabel({ stageTargetArea: original.area, stageTargetNumber: original.number }) === label) {
+      writeJsonStorage(RARE_DETOUR_KEY, { count: 0 });
+      return false;
+    }
+    writeJsonStorage(RARE_DETOUR_KEY, { count: detour.count, since: Date.now(), area: original.area, number: original.number, detourTo: label });
+    setPanelField('stageEnabled', true);
+    setPanelField('stageTargetArea', settings.rareDetourArea);
+    setPanelField('stageTargetNumber', settings.rareDetourNumber);
+    const message = `連續 ${detour.count} 場沒出稀有道具，去 ${label} 刷 ${rareDetourMinutes(settings)} 分鐘`;
+    setStatus(message);
+    showToast(message);
+    return true;
+  }
+
+  function rareDetourText(settings) {
+    if (!settings.rareDetourEnabled) return '';
+    const detour = readRareDetour();
+    if (!detour.since) return `稀有道具：連續 ${detour.count || 0}/${Math.max(1, Number(settings.rareDetourBattles) || 0)} 場沒出`;
+    const back = targetLabel({ stageTargetArea: detour.area, stageTargetNumber: detour.number });
+    if (!detour.arrivedAt) return `稀有道具：走去 ${detour.detourTo} 刷，之後回 ${back}`;
+    const left = Math.max(0, rareDetourMinutes(settings) - (Date.now() - detour.arrivedAt) / 60000);
+    return `稀有道具：在 ${detour.detourTo} 刷，約 ${Math.ceil(left)} 分鐘後回 ${back}`;
+  }
+
   // 回傳 true＝換了目標，這一步先不做別的
   function escapeFromPlayers(settings) {
     // 城鎮不管（沒有關卡可以退，紅名在城裡很常見）；還在往目標走（路過的關卡，或剛換目標正在走）也不管，到了目標才看
@@ -8978,6 +9067,8 @@
     if (settings.equipApiEnabled) lines.push(equipMonitorText(settings));
     const partyLine = partyMonitorText(settings);
     if (partyLine) lines.push(partyLine);
+    const rareLine = rareDetourText(settings);
+    if (rareLine) lines.push(rareLine);
     if (forgeRunner.running) lines.push(`API 鍛造：執行中（已開 ${forgeRunner.started} 爐${forgeRunner.failures ? `，重試中 ${forgeRunner.failures}/${FORGE_RETRY_LIMIT}` : ''}${forgeRunner.captchaWaiting ? '，等驗證' : ''}${forgeRunner.nameWaiting ? `，暫停開爐等好名稱：${forgeRunner.nameWaiting}` : ''}）`);
     else if (forgeRunner.stoppedReason) lines.push(`API 鍛造已停：${forgeRunner.stoppedReason}`);
     if (miningRunner.running) lines.push(`挖礦：執行中（已收 ${miningRunner.collected} 次${miningRunner.failures ? `，重試中 ${miningRunner.failures}/${FORGE_RETRY_LIMIT}` : ''}）`);
@@ -9659,13 +9750,21 @@ table.combat{width:100%;border-collapse:collapse;font:12px monospace;margin:4px 
 table.combat th,table.combat td{padding:1px 3px;text-align:right;border-bottom:1px solid #44403c}
 table.combat th:first-child,table.combat td:first-child{text-align:left}
 select{padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px;font-size:12px}
+button{margin-left:auto;padding:2px 8px;border:1px solid #57534e;border-radius:5px;background:#3f3f46;color:#fafaf9;font-size:12px;cursor:pointer}
 </style></head><body><div id="stats-root">
-<div class="card"><h3>耐久預測</h3><div id="stats-dur-type"></div><div id="stats-dur"></div></div>
-<div class="card"><h3>掉落 <select id="stats-loot-period">${periods}</select></h3><div id="stats-loot"></div></div>
+<div class="card"><h3>耐久預測 <button data-clear="dur" title="清掉耐久的每場紀錄，從現在重新算">清除紀錄</button></h3><div id="stats-dur-type"></div><div id="stats-dur"></div></div>
+<div class="card"><h3>掉落 <select id="stats-loot-period">${periods}</select><button data-clear="loot" title="從現在開始另外算一段（期間切到「按清空後」），每天的紀錄不受影響">清空重算</button></h3><div id="stats-rare" class="hint"></div><div id="stats-loot"></div></div>
 </div>
 <script>
 document.getElementById('stats-loot-period').addEventListener('change', function (event) {
   try { opener.__aijijiStatsPeriod(event.target.value); } catch (error) {}
+});
+document.addEventListener('click', function (event) {
+  var button = event.target.closest('[data-clear]');
+  if (!button) return;
+  var question = button.dataset.clear === 'dur' ? '要清除耐久的每場紀錄嗎？清掉後要再打幾場才算得出來' : '要從現在開始重新算掉落嗎？（每天的紀錄不受影響）';
+  if (!confirm(question)) return;
+  try { opener.__aijijiStatsClear(button.dataset.clear); } catch (error) {}
 });
 setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (error) {} }, 2000);
 <\/script></body></html>`);
@@ -9683,6 +9782,15 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     if (statsWindow.win === win) return;
     statsWindow.win = win;
     statsWindow.parts = {};
+    renderStatsWindow(true);
+  };
+  window.__aijijiStatsClear = (kind) => {
+    if (kind === 'dur') {
+      writeJsonStorage(DUR_TRACK_KEY, {});
+      writeJsonStorage(DUR_STATS_KEY, { battles: [], days: {} });
+      durWarned.clear();
+      durTypeWarned.clear();
+    } else if (kind === 'loot') startLootSession(true);
     renderStatsWindow(true);
   };
   window.__aijijiStatsPeriod = (period) => {
@@ -9718,6 +9826,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     setStatsPart('stats-dur-type', panel.querySelector('[data-role="dur-type-forecast"]').innerHTML);
     setStatsPart('stats-dur', panel.querySelector('[data-role="dur-forecast"]').innerHTML);
     setStatsPart('stats-loot', panel.querySelector('[data-role="loot-ledger"]').innerHTML);
+    setStatsPart('stats-rare', escapeHtml(rareDetourText(readSettingsFromPanel())));
     const period = statsWindow.win.document.getElementById('stats-loot-period');
     const panelPeriod = panel.querySelector('[data-role="loot-period"]').value;
     if (period && period.value !== panelPeriod) period.value = panelPeriod;
@@ -10381,6 +10490,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       return;
     }
     if (!moving && returnAfterPlayerEscape(settings)) {
+      state.timerId = planTick(() => tick(settings), 0);
+      return;
+    }
+    if (!moving && rareDetourStep(settings)) {
       state.timerId = planTick(() => tick(settings), 0);
       return;
     }
@@ -16559,9 +16672,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     bucket.count++;
   }
 
-  function startLootSession() {
+  function startLootSession(confirmed = false) {
     const session = readJsonStorage(LOOT_SESSION_KEY, null);
-    if (session && Object.keys(session.sources).length && !window.confirm('要把「按清空後」這段歸零、從現在重新算嗎？每天的紀錄不受影響')) return;
+    if (!confirmed && session && Object.keys(session.sources).length && !window.confirm('要把「按清空後」這段歸零、從現在重新算嗎？每天的紀錄不受影響')) return;
     writeJsonStorage(LOOT_SESSION_KEY, { since: Date.now(), sources: {} });
     panel.querySelector('[data-role="loot-period"]').value = 'session';
     renderLootLedger();
@@ -16578,6 +16691,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     if (key && reportLootSeen.has(key)) return;
     if (key) reportLootSeen.add(key);
     const loot = parseLoot(report.messages);
+    if (source === 'hunt') noteRareDrought(loot);
     const money = Object.values(huntMessageMoney(report.messages)).reduce((sum, amount) => sum + amount, 0);
     if (!loot.length && !money) return;
     const ledger = readJsonStorage(LOOT_LEDGER_KEY, {});
