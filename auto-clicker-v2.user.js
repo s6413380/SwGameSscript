@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.01
+// @version      5.02
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -79,7 +79,7 @@
     // 瀏覽器不支援長任務就只看腳本自己的數字
   }
   // 統計類（收入、抽卡、測名表、打怪、耐久、挖礦、市場、雲端同步紀錄）每個幾十到幾百 KB，加起來又把 localStorage 擠滿，也搬過去
-  const STATS_BIG_STORAGE_KEYS = ['autoClickerV2Cloud', 'autoClickerV2Income', 'autoClickerV2Draws', 'autoClickerV2NameWeights', 'autoClickerV2HuntStats', 'autoClickerV2DurTrack', 'autoClickerV2Mining', 'autoClickerV2MarketSales'];
+  const STATS_BIG_STORAGE_KEYS = ['autoClickerV2Cloud', 'autoClickerV2Income', 'autoClickerV2Draws', 'autoClickerV2NameWeights', 'autoClickerV2HuntStats', 'autoClickerV2DurTrack', 'autoClickerV2DurStats', 'autoClickerV2Mining', 'autoClickerV2MarketSales'];
   const BIG_STORAGE_KEYS = new Set(['autoClickerV2CloudEquipments', 'autoClickerV2CloudScratch', 'autoClickerV2CloudDraws', 'autoClickerV2Scratch', 'autoClickerV2ForgedEquipments', 'autoClickerV2ForgeMaterials', ...STATS_BIG_STORAGE_KEYS]);
   // 這些是累加的：資料庫開好之前讀到的是空的，那時寫的是「空的＋一筆」，資料庫裡已經有就以資料庫的為準（頂多少記那一筆）
   const KEEP_STORED_BIG_STORAGE_KEYS = new Set(STATS_BIG_STORAGE_KEYS);
@@ -1279,6 +1279,8 @@
         <legend>耐久預測</legend>
         <div class="row">預測還能打少於 ${numberInput('durWarnBattles', 'min="0"')} 場就提醒（0＝不提醒）</div>
         <div class="hint">記每件穿著的裝備每場掉多少耐久（最近 30 場平均），算出還能撐幾場；打過幾場才算得出來</div>
+        <div class="hint">「依類型」把同類型的裝備合在一起算（不同角色拿同一類武器也算一起）：每場合計掉多少、今天用掉多少，加上閒置的備用裝備還能打幾場、照最近打怪的速度大約多久用完。有開 API 換裝的話，低於換裝門檻的部分不算（到那裡就會被換掉）</div>
+        <div data-role="dur-type-forecast" style="font-size:12px;margin-bottom:6px"></div>
         <div data-role="dur-forecast" style="font-size:12px"></div>
       </fieldset>
     </div>
@@ -2006,7 +2008,11 @@
     if (tabId === 'income') renderIncome();
     if (tabId === 'draw') renderDrawStats();
     if (tabId === 'loot') renderLootLedger();
-    if (tabId === 'equip') renderDurabilityForecast();
+    if (tabId === 'equip') {
+      renderDurabilityForecast();
+      // 沒開 API 換裝時不會自己讀裝備清單，備用的算不到；打開這頁才補讀一次
+      if (Date.now() - state.equipmentsAt > DUR_EQUIPMENTS_STALE_MILLISECONDS) refreshEquipments().then(renderDurabilityForecast).catch(() => {});
+    }
     if (tabId === 'scratch') renderScratchStats();
     if (tabId === 'sales') renderSalesStats();
     if (tabId === 'forge') {
@@ -15948,6 +15954,13 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   const DUR_TRACK_KEY = 'autoClickerV2DurTrack';
   const DUR_HISTORY = 30;
   const durWarned = new Set();
+  // 依類型的統計：最近幾場的時間（算打怪速度）、每天每類型掉了多少耐久
+  const DUR_STATS_KEY = 'autoClickerV2DurStats';
+  const DUR_STATS_DAYS = 14;
+  // 兩場隔超過這麼久＝中間停過（暫停、睡覺），不拿來算速度
+  const DUR_PACE_GAP_MILLISECONDS = 10 * 60000;
+  const DUR_EQUIPMENTS_STALE_MILLISECONDS = 5 * 60000;
+  const durTypeWarned = new Set();
 
   function recordDurabilityChanges(...args) {
     return perfTimed('recordDurabilityChanges', () => recordDurabilityChangesUntimed(...args));
@@ -15955,6 +15968,11 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
 
   function recordDurabilityChangesUntimed(changes) {
     const track = readJsonStorage(DUR_TRACK_KEY, {});
+    const stats = readJsonStorage(DUR_STATS_KEY, { battles: [], days: {} });
+    const now = Date.now();
+    const today = localDayKey(now);
+    stats.battles = [...stats.battles, now].slice(-DUR_HISTORY - 1);
+    const todayUsage = (stats.days[today] = stats.days[today] || {});
     const updated = new Map((Array.isArray(changes.updated) ? changes.updated : []).map((equipment) => [String(equipment.id), equipment]));
     (changes.deletedIds || []).forEach((id) => delete track[id]);
     // 沒變的穿著裝備這場掉 0
@@ -15966,8 +15984,11 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       const entry = track[id] || { losses: [] };
       const dur = Number(equipment.dur);
       // 修好、換新的耐久會變多：重新算
-      if (entry.dur !== undefined && dur <= entry.dur) entry.losses = [...entry.losses, entry.dur - dur].slice(-DUR_HISTORY);
-      else if (entry.dur !== undefined) entry.losses = [];
+      if (entry.dur !== undefined && dur <= entry.dur) {
+        entry.losses = [...entry.losses, entry.dur - dur].slice(-DUR_HISTORY);
+        const type = equipment.type || entry.type || '?';
+        todayUsage[type] = (todayUsage[type] || 0) + entry.dur - dur;
+      } else if (entry.dur !== undefined) entry.losses = [];
       Object.assign(entry, {
         name: equipment.name || entry.name,
         type: equipment.type || entry.type,
@@ -15979,8 +16000,111 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       track[id] = entry;
     });
     writeJsonStorage(DUR_TRACK_KEY, track);
+    Object.keys(stats.days)
+      .sort()
+      .slice(0, -DUR_STATS_DAYS)
+      .forEach((day) => delete stats.days[day]);
+    writeJsonStorage(DUR_STATS_KEY, stats);
     warnDurability(track);
+    warnTypeDurability(track);
     if (activeTab === 'equip') renderDurabilityForecast();
+  }
+
+  // 最近幾場之間隔的中位數＝連續打的時候一場多久；中間停過的間隔不算
+  function durBattleMilliseconds(stats) {
+    const gaps = stats.battles
+      .slice(1)
+      .map((time, index) => time - stats.battles[index])
+      .filter((gap) => gap > 0 && gap < DUR_PACE_GAP_MILLISECONDS)
+      .sort((first, second) => first - second);
+    return gaps.length >= 3 ? gaps[Math.floor(gaps.length / 2)] : null;
+  }
+
+  // 同類型的裝備合起來算：不同角色拿同一類武器時，備用的是共用的，誰先用完都會去拿
+  function durabilityByType(track, settings) {
+    const swapping = Boolean(settings.equipApiEnabled);
+    const blocked = noAutoEquipIds();
+    const known = state.equipments.length > 0;
+    const worn = known
+      ? state.equipments.filter((equipment) => equipment.equipped !== null && equipment.equipped !== undefined).map((equipment) => ({ ...equipment, id: String(equipment.id) }))
+      : Object.entries(track)
+          .filter(([, entry]) => entry.equipped)
+          .map(([id, entry]) => ({ ...entry, id }));
+    const groups = new Map();
+    const groupOf = (type) => {
+      if (!groups.has(type)) groups.set(type, { type, worn: [], spares: [], usable: 0 });
+      return groups.get(type);
+    };
+    worn.forEach((equipment) => {
+      const group = groupOf(equipment.type || '?');
+      const forecast = track[equipment.id] ? durabilityForecast(track[equipment.id]) : null;
+      group.worn.push({ equipment, average: forecast ? forecast.average : null });
+      const minimum = swapping ? heroMinDurability(settings, equipment.equipped) : 0;
+      group.usable += Math.max(0, Number(equipment.dur) - minimum);
+    });
+    if (known) {
+      state.equipments
+        .filter((equipment) => equipment.equipped === null && equipment.state === 0 && !blocked.has(equipment.id) && groups.has(equipment.type))
+        .forEach((equipment) => {
+          const minimum = swapping ? settings.equipApiMinDurability : 0;
+          if (Number(equipment.dur) <= minimum) return;
+          const group = groups.get(equipment.type);
+          group.spares.push(equipment);
+          group.usable += Number(equipment.dur) - minimum;
+        });
+    }
+    return [...groups.values()].map((group) => {
+      // 剛換上、還沒紀錄的那件用同類型其他件的平均補
+      const measured = group.worn.filter((piece) => piece.average !== null);
+      const typeAverage = measured.length ? measured.reduce((sum, piece) => sum + piece.average, 0) / measured.length : null;
+      const perBattle = typeAverage === null ? null : group.worn.reduce((sum, piece) => sum + (piece.average ?? typeAverage), 0);
+      const left = perBattle === null ? null : perBattle > 0 ? Math.floor(group.usable / perBattle) : Infinity;
+      return { ...group, perBattle, left, sparesKnown: known };
+    });
+  }
+
+  function warnTypeDurability(track) {
+    const settings = readSettingsFromPanel();
+    const limit = Number(settings.durWarnBattles) || 0;
+    if (!limit || !state.equipments.length) return;
+    durabilityByType(track, settings).forEach((group) => {
+      if (group.left === null || group.left > limit) {
+        durTypeWarned.delete(group.type);
+        return;
+      }
+      if (durTypeWarned.has(group.type)) return;
+      durTypeWarned.add(group.type);
+      showToast(`耐久：${group.type}（${group.worn.length} 人穿、備用 ${group.spares.length} 件）合計大約再 ${group.left} 場就全部用完`);
+    });
+  }
+
+  function renderTypeDurabilityForecast(track, settings) {
+    const box = panel.querySelector('[data-role="dur-type-forecast"]');
+    if (!box) return;
+    const groups = durabilityByType(track, settings).sort((first, second) => (first.left ?? Infinity) - (second.left ?? Infinity));
+    if (!groups.length) {
+      box.innerHTML = '';
+      return;
+    }
+    const stats = readJsonStorage(DUR_STATS_KEY, { battles: [], days: {} });
+    const todayUsage = stats.days[localDayKey(Date.now())] || {};
+    const battleMilliseconds = durBattleMilliseconds(stats);
+    const limit = Number(settings.durWarnBattles) || 0;
+    const timeText = (left) => (left === null || left === Infinity || !battleMilliseconds ? '' : `<div style="color:#a0a0aa">約 ${durationText((left * battleMilliseconds) / 60000)}</div>`);
+    box.innerHTML = `<div style="color:#a0a0aa;margin-bottom:2px">依類型（含備用）${battleMilliseconds ? `・最近一場約 ${Math.round(battleMilliseconds / 1000)} 秒` : ''}${sparesNote(groups)}</div>
+      <table class="combat"><tr><th style="text-align:left">類型</th><th>穿著／備用</th><th>每場</th><th>今天用掉</th><th>可用耐久</th><th>還能打</th></tr>${groups
+        .map((group) => {
+          const left = group.left === null ? '算不出' : group.left === Infinity ? '不會掉' : `${group.left} 場`;
+          const danger = group.left !== null && limit && group.left <= limit;
+          return `<tr><td style="text-align:left">${escapeHtml(group.type)}</td><td>${group.worn.length}／${group.sparesKnown ? group.spares.length : '?'}</td>
+            <td>${group.perBattle === null ? '-' : group.perBattle.toFixed(2)}</td><td>${(todayUsage[group.type] || 0).toLocaleString()}</td>
+            <td>${group.usable.toLocaleString()}</td><td style="color:${danger ? '#f87171' : '#4ade80'}">${left}${timeText(group.left)}</td></tr>`;
+        })
+        .join('')}</table>`;
+  }
+
+  function sparesNote(groups) {
+    return groups.length && !groups[0].sparesKnown ? '・還沒讀到裝備清單，備用的沒算進去' : '';
   }
 
   function durabilityForecast(entry) {
@@ -16008,7 +16132,9 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   function renderDurabilityForecast() {
     const box = panel.querySelector('[data-role="dur-forecast"]');
     if (!box) return;
-    const rows = Object.values(readJsonStorage(DUR_TRACK_KEY, {}))
+    const track = readJsonStorage(DUR_TRACK_KEY, {});
+    renderTypeDurabilityForecast(track, readSettingsFromPanel());
+    const rows = Object.values(track)
       .filter((entry) => entry.equipped)
       .map((entry) => ({ entry, forecast: durabilityForecast(entry) }))
       .sort((first, second) => (first.forecast ? first.forecast.left : Infinity) - (second.forecast ? second.forecast.left : Infinity));
