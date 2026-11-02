@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.97
+// @version      4.98
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1356,7 +1356,7 @@
       <label class="row"><input data-field="cinnamonTheme" type="checkbox" style="flex:none;width:auto"> 風格2</label>
       <fieldset class="group">
         <legend>角色頭像</legend>
-        <div class="hint">把遊戲畫面上的角色圖換成自己的圖，只有這台電腦的瀏覽器看得到（伺服器、別人看不到）。粗體那行是<b>整種卡共用</b>（別人的同種卡也會換），底下每隻角色可以<b>另外設</b>，單獨的優先。單獨的是看圖旁邊的名字認的，名字、等級都一樣的分不出來</div>
+        <div class="hint">把遊戲畫面上的角色圖換成自己的圖，只有這台電腦的瀏覽器看得到（伺服器、別人看不到）。粗體那行是<b>整種卡共用</b>（別人的同種卡也會換），底下每隻角色可以<b>另外設</b>頭像和卡片背景，單獨的優先（卡片背景沒單獨設就用下面「背景」的統一角色卡背景）。單獨的是看圖旁邊的名字認的，名字、等級都一樣的分不出來</div>
         <div data-role="hero-avatar-list"></div>
         <input data-role="hero-avatar-file" type="file" accept="image/*" style="display:none">
       </fieldset>
@@ -16668,16 +16668,27 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     return cachedAvatarStore(BACKGROUNDS_KEY);
   }
 
-  function backgroundImageCss(part) {
-    const record = backgrounds()[part];
-    if (!record || !record.image) return '';
-    const dim = Math.min(90, Math.max(0, Number(record.dim) || 0)) / 100;
-    const url = `url("${String(record.image).replace(/["\\\n]/g, encodeURIComponent)}")`;
+  function imageCss(image, dimPercent) {
+    if (!image) return '';
+    const dim = Math.min(90, Math.max(0, Number(dimPercent) || 0)) / 100;
+    const url = `url("${String(image).replace(/["\\\n]/g, encodeURIComponent)}")`;
     return dim ? `linear-gradient(rgba(0,0,0,${dim}),rgba(0,0,0,${dim})), ${url}` : url;
   }
 
+  function backgroundImageCss(part) {
+    const record = backgrounds()[part];
+    return record ? imageCss(record.image, record.dim) : '';
+  }
+
+  // 單獨設的角色卡背景用統一那行的遮暗（沒設統一的就用預設）
+  function heroCardCss(hero) {
+    if (!hero || !hero.cardImage) return backgroundImageCss('card');
+    const record = backgrounds().card;
+    return imageCss(hero.cardImage, record ? record.dim : (BACKGROUND_PARTS.find(([id]) => id === 'card') || [])[2]);
+  }
+
   // 遊戲的底色在 body（漸層）；換成圖片，捲動時固定不動
-  // 有裝獨立的「愛吉吉換圖」就交給它，兩邊一起改同一張圖會互相蓋掉
+  // 有裝獨立的「角色換圖」就交給它，兩邊一起改同一張圖會互相蓋掉
   function heroSkinPluginActive() {
     return Boolean(window.__heroSkinActive);
   }
@@ -16699,9 +16710,9 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   }
 
   // 角色卡＝頭像的上一層（圖＋名字＋血條那塊）；頭像底圖墊在 img 自己的 background，只有透明處看得到
-  function styleHeroCard(img) {
+  function styleHeroCard(img, hero) {
     const card = img.parentElement;
-    const cardImage = backgroundImageCss('card');
+    const cardImage = heroCardCss(hero);
     if (card && !panel.contains(card)) {
       if (cardImage) {
         if (card.dataset.avatarCardBg !== cardImage) {
@@ -16739,10 +16750,11 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   function heroAvatarCandidates() {
     const avatars = heroAvatars();
     const candidates = new Map();
-    forgeHeroes.forEach((hero) => candidates.set(String(hero.id), { name: hero.name, type: hero.type, lv: hero.lv, image: '' }));
+    forgeHeroes.forEach((hero) => candidates.set(String(hero.id), { name: hero.name, type: hero.type, lv: hero.lv, image: '', cardImage: '' }));
     Object.entries(avatars).forEach(([heroId, record]) => {
       const known = candidates.get(heroId);
-      candidates.set(heroId, known ? { ...known, image: record.image } : { name: record.name, type: record.type, image: record.image });
+      const images = { image: record.image || '', cardImage: record.cardImage || '' };
+      candidates.set(heroId, known ? { ...known, ...images } : { name: record.name, type: record.type, ...images });
     });
     return [...candidates.values()].filter((candidate) => candidate.name).sort((first, second) => second.name.length - first.name.length);
   }
@@ -16811,7 +16823,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       delete img.dataset.originalAvatar;
       if (src !== original) img.setAttribute('src', original);
     }
-    styleHeroCard(img);
+    styleHeroCard(img, hero);
   }
 
   function applyHeroAvatars() {
@@ -16837,11 +16849,12 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] });
   }
 
-  function setHeroAvatar(heroId, image) {
+  function setHeroAvatar(heroId, changes) {
     const avatars = { ...heroAvatars() };
     const hero = forgeHeroes.find((candidate) => String(candidate.id) === String(heroId));
     const old = avatars[heroId] || {};
-    if (image) avatars[heroId] = { name: hero ? hero.name : old.name, type: hero ? hero.type : old.type, typeId: hero ? hero.typeId : old.typeId, image };
+    const record = { ...old, name: hero ? hero.name : old.name, type: hero ? hero.type : old.type, typeId: hero ? hero.typeId : old.typeId, ...changes };
+    if (record.image || record.cardImage) avatars[heroId] = record;
     else delete avatars[heroId];
     writeJsonStorage(HERO_AVATARS_KEY, avatars);
     applyHeroAvatars();
@@ -16872,7 +16885,8 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   function setAvatarByScope(scope, key, image) {
     if (scope === 'type') setHeroTypeAvatar(key, image);
     else if (scope === 'background') setBackground(key, { image });
-    else setHeroAvatar(key, image);
+    else if (scope === 'heroCard') setHeroAvatar(key, { cardImage: image });
+    else setHeroAvatar(key, { image });
   }
 
   // 動圖（GIF、WebP）經過 canvas 會變成只剩第一格，所以原檔照存；檔案太大會拖慢每次重畫，設上限
@@ -16961,7 +16975,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     const gameImages = [...document.querySelectorAll(HERO_AVATAR_IMAGES)].filter((img) => !panel.contains(img));
     const swapped = gameImages.filter((img) => img.dataset.originalAvatar).length;
     const status = heroSkinPluginActive()
-      ? '<div class="hint" style="color:#f59e0b">已裝「愛吉吉換圖」插件，換圖交給它（左下角 🎨），這裡的設定不會生效</div>'
+      ? '<div class="hint" style="color:#f59e0b">已裝「角色換圖」插件，換圖交給它（左下角 🎨），這裡的設定不會生效</div>'
       : `<div class="hint">目前遊戲畫面上：角色圖 ${gameImages.length} 張、已換成自訂的 ${swapped} 張</div>`;
     const thumb = (src, size = 40) => `<img src="${escapeHtml(src)}" data-keep-avatar width="${size}" height="${size}" style="flex:none;width:${size}px;height:${size}px;border-radius:4px;object-fit:cover">`;
     const buttons = (scope, key, custom) =>
@@ -16974,15 +16988,24 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
         .sort(([first], [second]) => first.localeCompare(second))
         .map(([type, group]) => {
           const shared = typeAvatars[type] && typeAvatars[type].image;
+          const cardBackgroundSet = Boolean(backgrounds().card && backgrounds().card.image);
           const original = group.typeId !== undefined ? `/hero-avatars/${group.typeId}.png` : '';
           const heroRows = group.heroes
             .sort((first, second) => first.name.localeCompare(second.name))
             .map((hero) => {
-              const own = avatars[hero.heroId] && avatars[hero.heroId].image;
+              const record = avatars[hero.heroId] || {};
+              const own = record.image;
+              const card = record.cardImage;
+              const placeholder = (text) => `<span style="flex:none;width:28px;color:#888;font-size:11px;text-align:center">${text}</span>`;
               return `<div class="row" style="align-items:center;gap:4px;padding-left:22px">
-              ${own ? thumb(own, 28) : `<span style="flex:none;width:28px;color:#888;font-size:11px;text-align:center">${shared ? '共用' : '原圖'}</span>`}
+              ${own ? thumb(own, 28) : placeholder(shared ? '共用' : '原圖')}
               <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(hero.name)}</span>
               ${buttons('hero', hero.heroId, own)}
+            </div>
+            <div class="row" style="align-items:center;gap:4px;padding-left:50px">
+              ${card ? thumb(card, 28) : placeholder(cardBackgroundSet ? '統一' : '沒設')}
+              <span style="flex:1;min-width:0;color:#888">卡片背景</span>
+              ${buttons('heroCard', hero.heroId, card)}
             </div>`;
             })
             .join('');
@@ -17027,7 +17050,8 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       const chosen = picker.files && picker.files[0];
       if (!pickingScope || !chosen) return;
       try {
-        const options = pickingScope === 'background' ? { square: false, maxSide: BACKGROUND_MAX_SIDE[pickingKey] || 1920 } : { square: true, maxSide: HERO_AVATAR_SIZE };
+        const options =
+          pickingScope === 'background' ? { square: false, maxSide: BACKGROUND_MAX_SIDE[pickingKey] || 1920 } : pickingScope === 'heroCard' ? { square: false, maxSide: BACKGROUND_MAX_SIDE.card } : { square: true, maxSide: HERO_AVATAR_SIZE };
         setAvatarByScope(pickingScope, pickingKey, await prepareImage(chosen, options));
       } catch (error) {
         showToast(`圖片讀不了（${error.message}）`);

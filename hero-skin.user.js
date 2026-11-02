@@ -1,19 +1,17 @@
 // ==UserScript==
-// @name         愛吉吉換圖
-// @namespace    local.auto-clicker
-// @version      1.0
-// @description  只換圖：角色頭像（整種卡共用或單獨角色）、遊戲網頁／角色卡／頭像底圖背景，可用動圖。只有自己看得到
+// @name         角色換圖
+// @namespace    hero-skin
+// @version      1.1
+// @description  只換圖：角色頭像（整種卡共用或單獨角色）、遊戲網頁／角色卡（統一或每隻角色）／頭像底圖背景，可用動圖。只有自己看得到
 // @match        https://myteam.swordgale.online/*
 // @grant        none
-// @updateURL    https://raw.githubusercontent.com/s6413380/SwGameSscript/main/hero-skin.user.js
-// @downloadURL  https://raw.githubusercontent.com/s6413380/SwGameSscript/main/hero-skin.user.js
 // ==/UserScript==
 
 (function () {
   'use strict';
 
   if (window.__heroSkinActive) return;
-  // 愛吉吉主程式看到這個就不自己換圖，免得兩邊搶著改同一張圖
+  // 同時裝了別的換圖程式時讓它們知道，免得兩邊搶著改同一張圖
   window.__heroSkinActive = true;
 
   // 遊戲的角色圖是 /hero-avatars/{typeId}.png（同種卡同一張，typeId 是英文名稱），alt 是種類名稱，畫面上沒有角色 id。
@@ -34,11 +32,8 @@
   const BACKGROUND_MAX_SIDE = { page: 1920, card: 800, avatar: HERO_AVATAR_SIZE };
   const PAGE_BACKGROUND_STYLE_ID = 'hero-skin-page-background';
   const HEROES_FRESH_MILLISECONDS = 5 * 60000;
-  // 舊版愛吉吉存在它自己的資料庫，第一次用這支時搬過來
-  const MAIN_SCRIPT_DB = 'autoClickerV2';
-  const MAIN_SCRIPT_KEYS = { heroes: 'autoClickerV2HeroAvatarsByHero', types: 'autoClickerV2HeroAvatarsByType', backgrounds: 'autoClickerV2Backgrounds' };
 
-  // 圖片可能好幾 MB，放 IndexedDB；記憶體留一份給同步讀取。heroes { heroId: { name, type, typeId, image } }、
+  // 圖片可能好幾 MB，放 IndexedDB；記憶體留一份給同步讀取。heroes { heroId: { name, type, typeId, image（頭像）, cardImage（卡片背景）} }、
   // types { 種類名稱: { typeId, image } }、backgrounds { page|card|avatar: { image, dim } }
   const store = { db: null, values: { heroes: {}, types: {}, backgrounds: {} } };
   const channel = 'BroadcastChannel' in window ? new BroadcastChannel('heroSkin') : null;
@@ -85,34 +80,6 @@
     Object.keys(store.values).forEach((key) => {
       if (saved[key] && typeof saved[key] === 'object') store.values[key] = saved[key];
     });
-    if (!Object.values(store.values).some((value) => Object.keys(value).length)) await importFromMainScript();
-  }
-
-  // 只在資料庫已經存在時才開：直接 open 一個不存在的會建出空的，愛吉吉主程式之後就建不了它要的表
-  async function importFromMainScript() {
-    try {
-      const list = indexedDB.databases ? await indexedDB.databases() : [];
-      if (!list.some((database) => database.name === MAIN_SCRIPT_DB)) return;
-      const db = await new Promise((resolve, reject) => {
-        const request = indexedDB.open(MAIN_SCRIPT_DB);
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      });
-      const saved = await readDbKeys(db, 'kv', Object.values(MAIN_SCRIPT_KEYS));
-      db.close();
-      let imported = false;
-      Object.entries(MAIN_SCRIPT_KEYS).forEach(([key, mainKey]) => {
-        const value = typeof saved[mainKey] === 'string' ? JSON.parse(saved[mainKey]) : null;
-        if (value && Object.keys(value).length) {
-          store.values[key] = value;
-          save(key);
-          imported = true;
-        }
-      });
-      if (imported) toast('已把愛吉吉裡設好的頭像和背景搬過來');
-    } catch {
-      // 搬不了就從頭設
-    }
   }
 
   function save(key) {
@@ -162,10 +129,11 @@
   // 認名字用的候選：自己全部角色（沒換圖的也要，免得「瘟疫醫生2」的卡被認成「瘟疫醫生」）
   function candidates() {
     const result = new Map();
-    heroList.forEach((hero) => result.set(String(hero.id), { name: hero.name, type: hero.type, lv: hero.lv, image: '' }));
+    heroList.forEach((hero) => result.set(String(hero.id), { name: hero.name, type: hero.type, lv: hero.lv, image: '', cardImage: '' }));
     Object.entries(store.values.heroes).forEach(([heroId, record]) => {
       const known = result.get(heroId);
-      result.set(heroId, known ? { ...known, image: record.image } : { name: record.name, type: record.type, image: record.image });
+      const images = { image: record.image || '', cardImage: record.cardImage || '' };
+      result.set(heroId, known ? { ...known, ...images } : { name: record.name, type: record.type, ...images });
     });
     return [...result.values()].filter((candidate) => candidate.name).sort((first, second) => second.name.length - first.name.length);
   }
@@ -217,12 +185,23 @@
     return record ? record.image : '';
   }
 
+  function imageCss(image, dimPercent) {
+    if (!image) return '';
+    const dim = Math.min(90, Math.max(0, Number(dimPercent) || 0)) / 100;
+    const url = `url("${String(image).replace(/["\\\n]/g, encodeURIComponent)}")`;
+    return dim ? `linear-gradient(rgba(0,0,0,${dim}),rgba(0,0,0,${dim})), ${url}` : url;
+  }
+
   function backgroundCss(part) {
     const record = store.values.backgrounds[part];
-    if (!record || !record.image) return '';
-    const dim = Math.min(90, Math.max(0, Number(record.dim) || 0)) / 100;
-    const url = `url("${String(record.image).replace(/["\\\n]/g, encodeURIComponent)}")`;
-    return dim ? `linear-gradient(rgba(0,0,0,${dim}),rgba(0,0,0,${dim})), ${url}` : url;
+    return record ? imageCss(record.image, record.dim) : '';
+  }
+
+  // 單獨設的角色卡背景用統一那行的遮暗（沒設統一的就用預設）
+  function heroCardCss(hero) {
+    if (!hero || !hero.cardImage) return backgroundCss('card');
+    const record = store.values.backgrounds.card;
+    return imageCss(hero.cardImage, record ? record.dim : (BACKGROUND_PARTS.find(([id]) => id === 'card') || [])[2]);
   }
 
   function setInlineBackground(element, marker, css) {
@@ -254,7 +233,7 @@
       if (src !== original) img.setAttribute('src', original);
     }
     // 角色卡＝頭像的上一層（圖＋名字＋血條那塊）；頭像底圖墊在 img 自己的 background，只有透明處看得到
-    if (img.parentElement) setInlineBackground(img.parentElement, 'heroSkinCard', backgroundCss('card'));
+    if (img.parentElement) setInlineBackground(img.parentElement, 'heroSkinCard', heroCardCss(hero));
     setInlineBackground(img, 'heroSkinAvatar', backgroundCss('avatar'));
   }
 
@@ -292,10 +271,12 @@
 
   // ---- 設定 ----
 
-  function setHeroImage(heroId, image) {
+  // 頭像（image）和卡片背景（cardImage）存在同一筆，兩個都沒有才刪
+  function setHeroImage(heroId, changes) {
     const hero = heroList.find((candidate) => String(candidate.id) === String(heroId));
     const old = store.values.heroes[heroId] || {};
-    if (image) store.values.heroes[heroId] = { name: hero ? hero.name : old.name, type: hero ? hero.type : old.type, typeId: hero ? hero.typeId : old.typeId, image };
+    const record = { ...old, name: hero ? hero.name : old.name, type: hero ? hero.type : old.type, typeId: hero ? hero.typeId : old.typeId, ...changes };
+    if (record.image || record.cardImage) store.values.heroes[heroId] = record;
     else delete store.values.heroes[heroId];
     save('heroes');
   }
@@ -318,7 +299,8 @@
   function setByScope(scope, key, image) {
     if (scope === 'type') setTypeImage(key, image);
     else if (scope === 'background') setBackground(key, { image });
-    else setHeroImage(key, image);
+    else if (scope === 'heroCard') setHeroImage(key, { cardImage: image });
+    else setHeroImage(key, { image });
     applyAll();
     render();
   }
@@ -374,15 +356,15 @@
       [data-hero-skin-ui] .thumb { flex:none; object-fit:cover; border-radius:4px; }
       [data-hero-skin-ui] .none { flex:none; color:#78716c; font-size:11px; text-align:center; }
     </style>
-    <button class="toggle" title="愛吉吉換圖">🎨</button>
+    <button class="toggle" title="角色換圖">🎨</button>
     <div class="panel">
-      <b>愛吉吉換圖</b>
+      <b>角色換圖</b>
       <div class="hint">只有這台電腦的瀏覽器看得到。動圖（GIF／WebP）上傳要小於 4 MB，用網址不限</div>
       <h3>背景</h3>
       <div class="hint">遮暗是在圖上蓋一層黑，數字越大字越清楚。角色卡背景會套到畫面上所有角色卡</div>
       <div data-list="backgrounds"></div>
       <h3>角色頭像</h3>
-      <div class="hint">粗體那行是整種卡共用（別人的同種卡也會換），底下每隻可以另外設，單獨的優先。名字、等級都一樣的分不出來</div>
+      <div class="hint">粗體那行是整種卡共用（別人的同種卡也會換），底下每隻可以另外設頭像和卡片背景，單獨的優先（卡片背景沒單獨設就用上面統一的角色卡背景）。名字、等級都一樣的分不出來</div>
       <div data-list="heroes"></div>
       <input type="file" accept="image/*" style="display:none">
     </div>`;
@@ -435,14 +417,21 @@
       .sort(([first], [second]) => first.localeCompare(second))
       .map(([type, group]) => {
         const shared = store.values.types[type] && store.values.types[type].image;
+        const cardBackgroundSet = Boolean(store.values.backgrounds.card && store.values.backgrounds.card.image);
         const heroRows = group.heroes
           .sort((first, second) => first.name.localeCompare(second.name))
           .map((hero) => {
-            const own = store.values.heroes[hero.heroId] && store.values.heroes[hero.heroId].image;
+            const record = store.values.heroes[hero.heroId] || {};
+            const placeholder = (text) => `<span class="none" style="width:28px">${text}</span>`;
             return `<div class="row sub">
-              ${own ? thumb(own, 28) : `<span class="none" style="width:28px">${shared ? '共用' : '原圖'}</span>`}
+              ${record.image ? thumb(record.image, 28) : placeholder(shared ? '共用' : '原圖')}
               <span class="grow">${escapeHtml(hero.name)}</span>
-              ${buttons('hero', hero.heroId, own)}
+              ${buttons('hero', hero.heroId, record.image)}
+            </div>
+            <div class="row sub" style="padding-left:50px">
+              ${record.cardImage ? thumb(record.cardImage, 28) : placeholder(cardBackgroundSet ? '統一' : '沒設')}
+              <span class="grow" style="color:#a8a29e">卡片背景</span>
+              ${buttons('heroCard', hero.heroId, record.cardImage)}
             </div>`;
           })
           .join('');
@@ -504,7 +493,12 @@
   picker.addEventListener('change', async () => {
     const chosen = picker.files && picker.files[0];
     if (!view.pickingScope || !chosen) return;
-    const options = view.pickingScope === 'background' ? { square: false, maxSide: BACKGROUND_MAX_SIDE[view.pickingKey] || 1920 } : { square: true, maxSide: HERO_AVATAR_SIZE };
+    const options =
+      view.pickingScope === 'background'
+        ? { square: false, maxSide: BACKGROUND_MAX_SIDE[view.pickingKey] || 1920 }
+        : view.pickingScope === 'heroCard'
+          ? { square: false, maxSide: BACKGROUND_MAX_SIDE.card }
+          : { square: true, maxSide: HERO_AVATAR_SIZE };
     try {
       setByScope(view.pickingScope, view.pickingKey, await prepareImage(chosen, options));
     } catch (error) {
