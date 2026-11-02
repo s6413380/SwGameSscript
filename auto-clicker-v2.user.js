@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.93
+// @version      4.94
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -16639,10 +16639,10 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   function heroAvatarCandidates() {
     const avatars = heroAvatars();
     const candidates = new Map();
-    forgeHeroes.forEach((hero) => candidates.set(String(hero.id), { name: hero.name, type: hero.type, image: '' }));
+    forgeHeroes.forEach((hero) => candidates.set(String(hero.id), { name: hero.name, type: hero.type, lv: hero.lv, image: '' }));
     Object.entries(avatars).forEach(([heroId, record]) => {
       const known = candidates.get(heroId);
-      candidates.set(heroId, { name: known ? known.name : record.name, type: known ? known.type : record.type, image: record.image });
+      candidates.set(heroId, known ? { ...known, image: record.image } : { name: record.name, type: record.type, image: record.image });
     });
     return [...candidates.values()].filter((candidate) => candidate.name).sort((first, second) => second.name.length - first.name.length);
   }
@@ -16657,22 +16657,31 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     return pieces;
   }
 
-  // 名字剛好等於卡片種類（alt）的，可能只是卡上印的種類，有別的名字對得上就用別的
+  // 卡上同時印名字和種類：名字等於種類的角色（例如沒改名的「瘟疫醫生」），同種卡每張都印著種類，
+  // 只比對文字的話整種卡都會被認成它（4.93）。遊戲的角色卡把名字放在粗體（font-semibold）那格，有就只看那格；
+  // 同名的再用「Lv N」分
   function heroOfAvatarImage(img, candidates) {
     const type = img.getAttribute('alt') || '';
+    const fits = (candidate) => !type || !candidate.type || candidate.type === type;
     let box = img.parentElement;
     for (let level = 0; box && level < HERO_AVATAR_CLIMB; level++, box = box.parentElement) {
       if (box.querySelectorAll(HERO_AVATAR_IMAGES).length > 1) return null;
       const pieces = textPieces(box);
       if (!pieces.length) continue;
-      const fits = (candidate) => !type || !candidate.type || candidate.type === type;
-      const exact = candidates.filter((candidate) => fits(candidate) && pieces.includes(candidate.name));
-      const found = exact.find((candidate) => candidate.name !== type) || exact[0];
-      if (found) return found;
+      const levelText = /Lv\.?\s*(\d+)/.exec(pieces.join(' '));
+      const pickByLevel = (matches) => (levelText && matches.find((candidate) => Number(candidate.lv) === Number(levelText[1]))) || matches[0] || null;
+      const nameCell = box.querySelector('.font-semibold');
+      if (nameCell) {
+        const name = nameCell.textContent.trim();
+        return pickByLevel(candidates.filter((candidate) => fits(candidate) && candidate.name === name));
+      }
+      // 沒有名字格的頁面（例如角色詳細頁）：名字等於種類的，要出現兩次（名字＋種類）才算
+      const count = (name) => pieces.filter((piece) => piece === name).length;
+      const exact = candidates.filter((candidate) => fits(candidate) && count(candidate.name) >= (candidate.name === type ? 2 : 1));
+      if (exact.length) return pickByLevel(exact.filter((candidate) => candidate.name === exact[0].name));
       const text = pieces.join(' ');
-      const loose = candidates.filter((candidate) => fits(candidate) && text.includes(candidate.name));
-      const looseFound = loose.find((candidate) => candidate.name !== type) || loose[0];
-      if (looseFound) return looseFound;
+      const loose = candidates.filter((candidate) => fits(candidate) && candidate.name !== type && text.includes(candidate.name));
+      if (loose.length) return pickByLevel(loose.filter((candidate) => candidate.name === loose[0].name));
     }
     return null;
   }
