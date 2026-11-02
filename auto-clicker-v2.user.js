@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.07
+// @version      5.08
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -6298,7 +6298,7 @@
   }
 
   // 找不到替換時說清楚同類型的每一件為什麼不能用（紀錄裡只寫「沒有」查不出是哪個條件擋掉）
-  function explainNoReplacement(settings, worn) {
+  function noReplacementReasons(settings, worn) {
     const heroId = worn.equipped;
     const plan = equipHeroPlan(settings, heroId);
     const part = equipPartOf(worn.type);
@@ -6323,6 +6323,16 @@
       return '看起來可以用（請回報）';
     };
     const sameType = state.equipments.filter((equipment) => equipment.type === worn.type && equipment.id !== worn.id && equipment.equipped !== heroId);
+    return { sameType, reasonOf };
+  }
+
+  function explainEachNoReplacement(settings, worn) {
+    const { sameType, reasonOf } = noReplacementReasons(settings, worn);
+    return new Map(sameType.map((equipment) => [equipment.id, reasonOf(equipment)]));
+  }
+
+  function explainNoReplacement(settings, worn) {
+    const { sameType, reasonOf } = noReplacementReasons(settings, worn);
     const age = state.equipmentsAt ? Math.round((Date.now() - state.equipmentsAt) / 60000) : null;
     if (!sameType.length) return `裝備清單裡沒有其他${worn.type}（清單 ${age === null ? '沒讀過' : `${age} 分鐘前讀的`}）`;
     return sameType
@@ -16100,11 +16110,13 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
         .filter((equipment) => equipment.equipped === null && equipment.state === 0)
         .forEach((equipment) => {
           let target = null;
-          const wearer = swappable.find((piece) => isReplacementCandidate(settings, piece, equipment, blocked));
+          // 先給穿同類型的人；個別設定允許別類型（例如雙持的副手）的排後面，不然同類型的會被別類搶走
+          const canUse = (piece) => isReplacementCandidate(settings, piece, equipment, blocked);
+          const wearer = swappable.find((piece) => piece.type === equipment.type && canUse(piece)) || swappable.find(canUse);
           if (wearer) target = { group: groups.get(wearer.type || '?'), minimum: heroMinDurability(settings, wearer.equipped) };
           else if (manualTypes.has(equipment.type)) target = { group: groups.get(equipment.type), minimum: 0 };
           if (!target || Number(equipment.dur) <= target.minimum) {
-            if (groups.has(equipment.type)) groups.get(equipment.type).skipped.push(equipment);
+            if (groups.has(equipment.type)) groups.get(equipment.type).skipped.push({ equipment, reason: target ? `耐久 ${equipment.dur} 不到門檻 ${target.minimum}` : '' });
             return;
           }
           target.group.spares.push(equipment);
@@ -16166,9 +16178,11 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       .filter((group) => !group.spares.length && group.skipped.length)
       .map((group) => {
         const piece = group.worn.find(({ equipment }) => settings.equipApiEnabled && isMonitoredEquipment(settings, { ...equipment, equipped: Number(equipment.equipped) }));
-        const why = piece
-          ? explainNoReplacement(settings, { ...piece.equipment, id: Number(piece.equipment.id), equipped: Number(piece.equipment.equipped) })
-          : group.skipped.map((equipment) => `「${equipment.name}」${equipment.dur}`).join('、');
+        const reasons = piece ? explainEachNoReplacement(settings, { ...piece.equipment, id: Number(piece.equipment.id), equipped: Number(piece.equipment.equipped) }) : new Map();
+        const why = group.skipped
+          .slice(0, 6)
+          .map(({ equipment, reason }) => `「${equipment.name}」${equipment.dur}：${reason || reasons.get(equipment.id) || '換裝限制不符'}`)
+          .join('；');
         return `<div class="hint" style="color:#fbbf24">${escapeHtml(group.type)}：倉庫有 ${group.skipped.length} 件沒算進備用（${escapeHtml(why)}）</div>`;
       })
       .join('')}`;
