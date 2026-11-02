@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.90
+// @version      4.91
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -8932,6 +8932,8 @@
     checkCardMarket(settings);
     pollPartyHuntInfo(settings);
     checkPartyInvites(settings);
+    // 監看漏掉的（例如遊戲用別的方式換圖）每秒補一次；沒換過圖就不掃
+    if (Object.keys(heroAvatars()).length) applyHeroAvatars();
     checkOwnTrades(settings);
     keepRunLock();
     keepMiningLock();
@@ -13993,6 +13995,11 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
         const get = bigStorage.db.transaction('kv').objectStore('kv').get(key);
         get.onsuccess = () => {
           if (typeof get.result === 'string') bigStorage.values.set(key, get.result);
+          // 別的分頁換了卡圖：畫面上已經顯示的也要馬上換
+          if (key === HERO_AVATARS_KEY) {
+            applyHeroAvatars();
+            if (activeTab === 'alert') renderHeroAvatarList();
+          }
         };
       };
     }
@@ -16701,8 +16708,11 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       list.innerHTML = '<div class="hint">讀取角色中…（讀不到的話先到遊戲的英雄頁）</div>';
       return;
     }
+    const onScreen = document.querySelectorAll('img[src*="/hero-avatars/"]:not([data-keep-avatar])').length;
+    const swapped = document.querySelectorAll('img[data-original-avatar]:not([data-keep-avatar])').length;
+    const status = `<div class="hint">目前遊戲畫面上：原本的卡圖 ${onScreen} 張、已換成自訂的 ${swapped} 張</div>`;
     const thumb = (src, keep) => `<img src="${escapeHtml(src)}" ${keep ? 'data-keep-avatar' : ''} width="40" height="40" style="flex:none;width:40px;height:40px;border-radius:4px;object-fit:cover">`;
-    list.innerHTML = [...types.entries()]
+    list.innerHTML = status + [...types.entries()]
       .sort(([, first], [, second]) => first.type.localeCompare(second.type))
       .map(([typeId, entry]) => {
         const custom = avatars[typeId];
