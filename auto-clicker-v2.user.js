@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.99
+// @version      5.00
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -16769,7 +16769,10 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   function heroAvatarCandidates() {
     const avatars = heroAvatars();
     const candidates = new Map();
-    forgeHeroes.forEach((hero) => candidates.set(String(hero.id), { name: hero.name, type: hero.type, typeId: hero.typeId, lv: hero.lv, image: '', cardImage: '' }));
+    forgeHeroes.forEach((hero) => {
+      const fresh = state.heroStats.get(hero.id);
+      candidates.set(String(hero.id), { name: hero.name, type: hero.type, typeId: hero.typeId, lv: fresh && fresh.lv !== undefined ? fresh.lv : hero.lv, image: '', cardImage: '' });
+    });
     Object.entries(avatars).forEach(([heroId, record]) => {
       const known = candidates.get(heroId);
       const images = { image: record.image || '', cardImage: record.cardImage || '' };
@@ -16791,6 +16794,20 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   // 卡上同時印名字和種類：名字等於種類的角色（例如沒改名的「瘟疫醫生」），同種卡每張都印著種類，
   // 只比對文字的話整種卡都會被認成它（4.93）。遊戲的角色卡把名字放在粗體（font-semibold）那格，有就只看那格；
   // 同名的再用「Lv N」分
+  // 拍賣場、排行榜顯示的是別人的角色：不套單獨角色的圖（只套整種卡共用的）
+  const OTHERS_HEROES_PAGE = /^\/(?:market|rankings)(?:\/|$)/;
+  function onOthersHeroesPage() {
+    return OTHERS_HEROES_PAGE.test(location.pathname);
+  }
+
+  // 名字對到但等級不對：多半是升級了、角色清單還是舊的，過一陣子重讀
+  let levelMismatchAt = 0;
+  function noteLevelMismatch() {
+    if (Date.now() - levelMismatchAt < 60000) return;
+    levelMismatchAt = Date.now();
+    refreshForgeHeroes(true).then(applyHeroAvatars).catch(() => {});
+  }
+
   function heroOfAvatarImage(img, candidates, typeId) {
     const type = img.getAttribute('alt') || '';
     // 是不是這種卡看卡片編號；角色沒存編號（舊資料）才比名稱
@@ -16802,7 +16819,14 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       const pieces = textPieces(box);
       if (!pieces.length) continue;
       const levelText = /Lv\.?\s*(\d+)/.exec(pieces.join(' '));
-      const pickByLevel = (matches) => (levelText && matches.find((candidate) => Number(candidate.lv) === Number(levelText[1]))) || matches[0] || null;
+      // 卡上有 Lv 就一定要對得上（拍賣場上別人沒改名的同種卡，名字跟自己沒改名的一樣）；不知道等級的舊資料才放行
+      const pickByLevel = (matches) => {
+        if (!levelText) return matches[0] || null;
+        const level = Number(levelText[1]);
+        const found = matches.find((candidate) => Number(candidate.lv) === level) || matches.find((candidate) => candidate.lv === undefined || candidate.lv === null);
+        if (!found && matches.length) noteLevelMismatch();
+        return found || null;
+      };
       const nameCell = box.querySelector('.font-semibold');
       if (nameCell) {
         const name = nameCell.textContent.trim();
@@ -16835,7 +16859,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     const src = img.getAttribute('src') || '';
     const original = HERO_AVATAR_PATTERN.test(src) ? src : img.dataset.originalAvatar;
     if (!original || !HERO_AVATAR_PATTERN.test(original)) return;
-    const hero = Object.keys(heroAvatars()).length ? heroOfAvatarImage(img, candidates, avatarTypeIdOf(original)) : null;
+    const hero = Object.keys(heroAvatars()).length && !onOthersHeroesPage() ? heroOfAvatarImage(img, candidates, avatarTypeIdOf(original)) : null;
     const custom = (hero && hero.image) || typeAvatarOf(img, original);
     if (custom) {
       img.dataset.originalAvatar = original;
