@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.98
+// @version      4.99
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -16651,8 +16651,27 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     return cachedAvatarStore(HERO_AVATARS_KEY);
   }
 
+  // 共用圖以卡片編號（圖片網址 /hero-avatars/{typeId}.png 那段）為準：不同卡可能同名。
+  // 4.95～4.98 存的是 { 種類名稱: { typeId, image } }，讀的時候換成 { typeId: { typeId, type, image } }；不知道編號的舊資料用「name:種類名稱」
   function heroTypeAvatars() {
-    return cachedAvatarStore(HERO_TYPE_AVATARS_KEY);
+    const result = {};
+    Object.entries(cachedAvatarStore(HERO_TYPE_AVATARS_KEY)).forEach(([key, record]) => {
+      if (!record) return;
+      const known = record.typeId !== undefined && record.typeId !== null && record.typeId !== '';
+      const type = record.type || (known && key !== String(record.typeId) ? key : record.type) || '';
+      result[known ? String(record.typeId) : key.startsWith('name:') ? key : `name:${key}`] = { ...record, type };
+    });
+    return result;
+  }
+
+  function avatarTypeIdOf(src) {
+    const match = HERO_AVATAR_PATTERN.exec(src || '');
+    if (!match) return '';
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
   }
 
   // 背景：page＝整個遊戲網頁、card＝每張角色卡、avatar＝頭像圖透明的地方；{ image, dim（遮暗 %，讓字看得清楚）}
@@ -16750,11 +16769,11 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   function heroAvatarCandidates() {
     const avatars = heroAvatars();
     const candidates = new Map();
-    forgeHeroes.forEach((hero) => candidates.set(String(hero.id), { name: hero.name, type: hero.type, lv: hero.lv, image: '', cardImage: '' }));
+    forgeHeroes.forEach((hero) => candidates.set(String(hero.id), { name: hero.name, type: hero.type, typeId: hero.typeId, lv: hero.lv, image: '', cardImage: '' }));
     Object.entries(avatars).forEach(([heroId, record]) => {
       const known = candidates.get(heroId);
       const images = { image: record.image || '', cardImage: record.cardImage || '' };
-      candidates.set(heroId, known ? { ...known, ...images } : { name: record.name, type: record.type, ...images });
+      candidates.set(heroId, known ? { ...known, ...images } : { name: record.name, type: record.type, typeId: record.typeId, ...images });
     });
     return [...candidates.values()].filter((candidate) => candidate.name).sort((first, second) => second.name.length - first.name.length);
   }
@@ -16772,9 +16791,11 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   // 卡上同時印名字和種類：名字等於種類的角色（例如沒改名的「瘟疫醫生」），同種卡每張都印著種類，
   // 只比對文字的話整種卡都會被認成它（4.93）。遊戲的角色卡把名字放在粗體（font-semibold）那格，有就只看那格；
   // 同名的再用「Lv N」分
-  function heroOfAvatarImage(img, candidates) {
+  function heroOfAvatarImage(img, candidates, typeId) {
     const type = img.getAttribute('alt') || '';
-    const fits = (candidate) => !type || !candidate.type || candidate.type === type;
+    // 是不是這種卡看卡片編號；角色沒存編號（舊資料）才比名稱
+    const fits = (candidate) =>
+      typeId && candidate.typeId !== undefined && candidate.typeId !== null ? String(candidate.typeId) === typeId : !type || !candidate.type || candidate.type === type;
     let box = img.parentElement;
     for (let level = 0; box && level < HERO_AVATAR_CLIMB; level++, box = box.parentElement) {
       if (box.querySelectorAll(HERO_AVATAR_IMAGES).length > 1) return null;
@@ -16801,11 +16822,11 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   // 共用圖先看 alt 的種類名稱，沒有 alt 才用網址裡的編號
   function typeAvatarOf(img, original) {
     const typeAvatars = heroTypeAvatars();
-    const type = img.getAttribute('alt') || '';
-    if (type && typeAvatars[type]) return typeAvatars[type].image;
-    const match = HERO_AVATAR_PATTERN.exec(original);
-    const record = match && Object.values(typeAvatars).find((candidate) => String(candidate.typeId) === match[1]);
-    return record ? record.image : '';
+    const typeId = avatarTypeIdOf(original);
+    if (typeId && typeAvatars[typeId]) return typeAvatars[typeId].image;
+    // 還不知道編號的舊設定才看名稱
+    const legacy = typeAvatars[`name:${img.getAttribute('alt') || ''}`];
+    return legacy ? legacy.image : '';
   }
 
   // 遊戲重畫時會把 src 改回原圖網址（換角色、重排），所以每次都以目前 src 為準；面板裡的不動
@@ -16814,7 +16835,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     const src = img.getAttribute('src') || '';
     const original = HERO_AVATAR_PATTERN.test(src) ? src : img.dataset.originalAvatar;
     if (!original || !HERO_AVATAR_PATTERN.test(original)) return;
-    const hero = Object.keys(heroAvatars()).length ? heroOfAvatarImage(img, candidates) : null;
+    const hero = Object.keys(heroAvatars()).length ? heroOfAvatarImage(img, candidates, avatarTypeIdOf(original)) : null;
     const custom = (hero && hero.image) || typeAvatarOf(img, original);
     if (custom) {
       img.dataset.originalAvatar = original;
@@ -16861,11 +16882,13 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     renderHeroAvatarList();
   }
 
-  function setHeroTypeAvatar(type, image) {
+  // key 是卡片編號（舊資料是「name:種類名稱」）
+  function setHeroTypeAvatar(key, image) {
     const typeAvatars = { ...heroTypeAvatars() };
-    const hero = forgeHeroes.find((candidate) => candidate.type === type);
-    if (image) typeAvatars[type] = { typeId: hero ? hero.typeId : (typeAvatars[type] || {}).typeId, image };
-    else delete typeAvatars[type];
+    const old = typeAvatars[key] || {};
+    const hero = forgeHeroes.find((candidate) => String(candidate.typeId) === key);
+    if (image) typeAvatars[key] = { ...old, typeId: key.startsWith('name:') ? old.typeId : key, type: hero ? hero.type : old.type, image };
+    else delete typeAvatars[key];
     writeJsonStorage(HERO_TYPE_AVATARS_KEY, typeAvatars);
     applyHeroAvatars();
     renderHeroAvatarList();
@@ -16954,20 +16977,22 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     if (!list) return;
     const avatars = heroAvatars();
     const typeAvatars = heroTypeAvatars();
+    // 依卡片編號分組（不同卡可能同名）；不知道編號的舊資料用「name:種類名稱」
     const groups = new Map();
-    const groupOf = (type, typeId) => {
-      if (!groups.has(type)) groups.set(type, { typeId, heroes: [] });
-      const group = groups.get(type);
-      if (group.typeId === undefined) group.typeId = typeId;
+    const groupOf = (typeId, type) => {
+      const key = typeId !== undefined && typeId !== null && typeId !== '' ? String(typeId) : `name:${type || ''}`;
+      if (!groups.has(key)) groups.set(key, { typeId: key.startsWith('name:') ? undefined : key, type: type || '', heroes: [] });
+      const group = groups.get(key);
+      if (!group.type && type) group.type = type;
       return group;
     };
-    forgeHeroes.forEach((hero) => groupOf(hero.type || '', hero.typeId).heroes.push({ heroId: String(hero.id), name: hero.name }));
+    forgeHeroes.forEach((hero) => groupOf(hero.typeId, hero.type).heroes.push({ heroId: String(hero.id), name: hero.name }));
     // 換過圖但現在沒有的（賣掉了）也列出來，才還原得了
     Object.entries(avatars).forEach(([heroId, record]) => {
-      const group = groupOf(record.type || '', record.typeId);
+      const group = groupOf(record.typeId, record.type);
       if (!group.heroes.some((hero) => hero.heroId === heroId)) group.heroes.push({ heroId, name: record.name || `#${heroId}` });
     });
-    Object.entries(typeAvatars).forEach(([type, record]) => groupOf(type, record.typeId));
+    Object.entries(typeAvatars).forEach(([key, record]) => (key.startsWith('name:') ? groupOf(undefined, record.type || key.slice(5)) : groupOf(key, record.type)));
     if (!groups.size) {
       list.innerHTML = '<div class="hint">讀取角色中…（讀不到的話先到遊戲的英雄頁）</div>';
       return;
@@ -16985,9 +17010,9 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     list.innerHTML =
       status +
       [...groups.entries()]
-        .sort(([first], [second]) => first.localeCompare(second))
-        .map(([type, group]) => {
-          const shared = typeAvatars[type] && typeAvatars[type].image;
+        .sort(([, first], [, second]) => first.type.localeCompare(second.type))
+        .map(([key, group]) => {
+          const shared = typeAvatars[key] && typeAvatars[key].image;
           const cardBackgroundSet = Boolean(backgrounds().card && backgrounds().card.image);
           const original = group.typeId !== undefined ? `/hero-avatars/${group.typeId}.png` : '';
           const heroRows = group.heroes
@@ -17011,8 +17036,8 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
             .join('');
           return `<div class="row" style="align-items:center;gap:4px;margin-top:6px">
             ${original ? thumb(original) : ''}${shared ? `→${thumb(shared)}` : ''}
-            <b style="flex:1;min-width:0">${escapeHtml(type || '（不明種類）')}<span style="color:#888;font-weight:normal"> 共用</span></b>
-            ${buttons('type', type, shared)}
+            <b style="flex:1;min-width:0">${escapeHtml(group.type || '（不明種類）')}<span style="color:#888;font-weight:normal"> 共用（編號 ${escapeHtml(group.typeId || '不明')}）</span></b>
+            ${buttons('type', key, shared)}
           </div>${heroRows}`;
         })
         .join('');

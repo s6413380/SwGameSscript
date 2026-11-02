@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         角色換圖
 // @namespace    hero-skin
-// @version      1.1
+// @version      1.2
 // @description  只換圖：角色頭像（整種卡共用或單獨角色）、遊戲網頁／角色卡（統一或每隻角色）／頭像底圖背景，可用動圖。只有自己看得到
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -80,6 +80,7 @@
     Object.keys(store.values).forEach((key) => {
       if (saved[key] && typeof saved[key] === 'object') store.values[key] = saved[key];
     });
+    normalizeTypes();
   }
 
   function save(key) {
@@ -99,6 +100,7 @@
       if (!store.db || !(key in store.values)) return;
       const saved = await readDbKeys(store.db, 'kv', [key]);
       if (saved[key] && typeof saved[key] === 'object') store.values[key] = saved[key];
+      if (key === 'types') normalizeTypes();
       applyAll();
       if (view.open) render();
     };
@@ -129,11 +131,11 @@
   // 認名字用的候選：自己全部角色（沒換圖的也要，免得「瘟疫醫生2」的卡被認成「瘟疫醫生」）
   function candidates() {
     const result = new Map();
-    heroList.forEach((hero) => result.set(String(hero.id), { name: hero.name, type: hero.type, lv: hero.lv, image: '', cardImage: '' }));
+    heroList.forEach((hero) => result.set(String(hero.id), { name: hero.name, type: hero.type, typeId: hero.typeId, lv: hero.lv, image: '', cardImage: '' }));
     Object.entries(store.values.heroes).forEach(([heroId, record]) => {
       const known = result.get(heroId);
       const images = { image: record.image || '', cardImage: record.cardImage || '' };
-      result.set(heroId, known ? { ...known, ...images } : { name: record.name, type: record.type, ...images });
+      result.set(heroId, known ? { ...known, ...images } : { name: record.name, type: record.type, typeId: record.typeId, ...images });
     });
     return [...result.values()].filter((candidate) => candidate.name).sort((first, second) => second.name.length - first.name.length);
   }
@@ -150,9 +152,11 @@
 
   // 卡上同時印名字和種類：沒改名的角色（名字＝種類）只比對文字的話，整種卡都會被認成它。
   // 遊戲的角色卡把名字放在粗體（font-semibold）那格，有就只看那格；同名的再用「Lv N」分
-  function heroOfImage(img, list) {
+  function heroOfImage(img, list, typeId) {
     const type = img.getAttribute('alt') || '';
-    const fits = (candidate) => !type || !candidate.type || candidate.type === type;
+    // 是不是這種卡看卡片編號；角色沒存編號（舊資料）才比名稱
+    const fits = (candidate) =>
+      typeId && candidate.typeId !== undefined && candidate.typeId !== null ? String(candidate.typeId) === typeId : !type || !candidate.type || candidate.type === type;
     let box = img.parentElement;
     for (let level = 0; box && level < HERO_AVATAR_CLIMB; level++, box = box.parentElement) {
       if (box.querySelectorAll(HERO_AVATAR_IMAGES).length > 1) return null;
@@ -177,12 +181,38 @@
   }
 
   // 共用圖先看 alt 的種類名稱，沒有 alt 才用網址裡的編號
+  function typeIdOf(src) {
+    const match = HERO_AVATAR_PATTERN.exec(src || '');
+    if (!match) return '';
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  }
+
+  // 共用圖以卡片編號為準（不同卡可能同名）；還不知道編號的舊設定才看名稱
   function typeImageOf(img, original) {
-    const type = img.getAttribute('alt') || '';
-    if (type && store.values.types[type]) return store.values.types[type].image;
-    const match = HERO_AVATAR_PATTERN.exec(original);
-    const record = match && Object.values(store.values.types).find((candidate) => String(candidate.typeId) === match[1]);
-    return record ? record.image : '';
+    const typeId = typeIdOf(original);
+    if (typeId && store.values.types[typeId]) return store.values.types[typeId].image;
+    const legacy = store.values.types[`name:${img.getAttribute('alt') || ''}`];
+    return legacy ? legacy.image : '';
+  }
+
+  // 1.1 以前存的是 { 種類名稱: { typeId, image } }，換成 { typeId: { typeId, type, image } }；不知道編號的用「name:種類名稱」
+  function normalizeTypes() {
+    let changed = false;
+    const result = {};
+    Object.entries(store.values.types).forEach(([key, record]) => {
+      if (!record) return;
+      const known = record.typeId !== undefined && record.typeId !== null && record.typeId !== '';
+      const id = known ? String(record.typeId) : key.startsWith('name:') ? key : `name:${key}`;
+      const type = record.type || (known && key !== id ? key : '') || (key.startsWith('name:') ? key.slice(5) : '');
+      if (id !== key || type !== record.type) changed = true;
+      result[id] = { ...record, type };
+    });
+    store.values.types = result;
+    if (changed) save('types');
   }
 
   function imageCss(image, dimPercent) {
@@ -223,7 +253,7 @@
     const src = img.getAttribute('src') || '';
     const original = HERO_AVATAR_PATTERN.test(src) ? src : img.dataset.originalAvatar;
     if (!original || !HERO_AVATAR_PATTERN.test(original)) return;
-    const hero = Object.keys(store.values.heroes).length ? heroOfImage(img, list) : null;
+    const hero = Object.keys(store.values.heroes).length ? heroOfImage(img, list, typeIdOf(original)) : null;
     const custom = (hero && hero.image) || typeImageOf(img, original);
     if (custom) {
       img.dataset.originalAvatar = original;
@@ -281,10 +311,12 @@
     save('heroes');
   }
 
-  function setTypeImage(type, image) {
-    const hero = heroList.find((candidate) => candidate.type === type);
-    if (image) store.values.types[type] = { typeId: hero ? hero.typeId : (store.values.types[type] || {}).typeId, image };
-    else delete store.values.types[type];
+  // key 是卡片編號（舊資料是「name:種類名稱」）
+  function setTypeImage(key, image) {
+    const old = store.values.types[key] || {};
+    const hero = heroList.find((candidate) => String(candidate.typeId) === key);
+    if (image) store.values.types[key] = { ...old, typeId: key.startsWith('name:') ? old.typeId : key, type: hero ? hero.type : old.type, image };
+    else delete store.values.types[key];
     save('types');
   }
 
@@ -395,28 +427,30 @@
   // 依種類分組：種類那行設共用圖，底下每隻角色可以另外設
   function renderHeroes() {
     const list = ui.querySelector('[data-list="heroes"]');
+    // 依卡片編號分組（不同卡可能同名）；不知道編號的舊資料用「name:種類名稱」
     const groups = new Map();
-    const groupOf = (type, typeId) => {
-      if (!groups.has(type)) groups.set(type, { typeId, heroes: [] });
-      const group = groups.get(type);
-      if (group.typeId === undefined) group.typeId = typeId;
+    const groupOf = (typeId, type) => {
+      const key = typeId !== undefined && typeId !== null && typeId !== '' ? String(typeId) : `name:${type || ''}`;
+      if (!groups.has(key)) groups.set(key, { typeId: key.startsWith('name:') ? undefined : key, type: type || '', heroes: [] });
+      const group = groups.get(key);
+      if (!group.type && type) group.type = type;
       return group;
     };
-    heroList.forEach((hero) => groupOf(hero.type || '', hero.typeId).heroes.push({ heroId: String(hero.id), name: hero.name }));
+    heroList.forEach((hero) => groupOf(hero.typeId, hero.type).heroes.push({ heroId: String(hero.id), name: hero.name }));
     // 換過圖但現在沒有的（賣掉了）也列出來，才還原得了
     Object.entries(store.values.heroes).forEach(([heroId, record]) => {
-      const group = groupOf(record.type || '', record.typeId);
+      const group = groupOf(record.typeId, record.type);
       if (!group.heroes.some((hero) => hero.heroId === heroId)) group.heroes.push({ heroId, name: record.name || `#${heroId}` });
     });
-    Object.entries(store.values.types).forEach(([type, record]) => groupOf(type, record.typeId));
+    Object.entries(store.values.types).forEach(([key, record]) => (key.startsWith('name:') ? groupOf(undefined, record.type || key.slice(5)) : groupOf(key, record.type)));
     if (!groups.size) {
       list.innerHTML = '<div class="hint">讀取角色中…</div>';
       return;
     }
     list.innerHTML = [...groups.entries()]
-      .sort(([first], [second]) => first.localeCompare(second))
-      .map(([type, group]) => {
-        const shared = store.values.types[type] && store.values.types[type].image;
+      .sort(([, first], [, second]) => first.type.localeCompare(second.type))
+      .map(([key, group]) => {
+        const shared = store.values.types[key] && store.values.types[key].image;
         const cardBackgroundSet = Boolean(store.values.backgrounds.card && store.values.backgrounds.card.image);
         const heroRows = group.heroes
           .sort((first, second) => first.name.localeCompare(second.name))
@@ -437,8 +471,8 @@
           .join('');
         return `<div class="row" style="margin-top:8px">
           ${group.typeId !== undefined ? thumb(`/hero-avatars/${group.typeId}.png`, 40) : ''}${shared ? `→${thumb(shared, 40)}` : ''}
-          <b class="grow">${escapeHtml(type || '（不明種類）')}<span style="color:#a8a29e;font-weight:normal"> 共用</span></b>
-          ${buttons('type', type, shared)}
+          <b class="grow">${escapeHtml(group.type || '（不明種類）')}<span style="color:#a8a29e;font-weight:normal"> 共用（編號 ${escapeHtml(group.typeId || '不明')}）</span></b>
+          ${buttons('type', key, shared)}
         </div>${heroRows}`;
       })
       .join('');
