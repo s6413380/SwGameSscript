@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.96
+// @version      4.97
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -16677,7 +16677,13 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   }
 
   // 遊戲的底色在 body（漸層）；換成圖片，捲動時固定不動
+  // 有裝獨立的「愛吉吉換圖」就交給它，兩邊一起改同一張圖會互相蓋掉
+  function heroSkinPluginActive() {
+    return Boolean(window.__heroSkinActive);
+  }
+
   function applyPageBackground() {
+    if (heroSkinPluginActive()) return;
     const image = backgroundImageCss('page');
     let style = document.getElementById(PAGE_BACKGROUND_STYLE_ID);
     if (!image) {
@@ -16809,6 +16815,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   }
 
   function applyHeroAvatars() {
+    if (heroSkinPluginActive()) return;
     if (!anyHeroAvatar() && !document.querySelector('img[data-original-avatar], [data-avatar-card-bg], img[data-avatar-bg]')) return;
     const candidates = heroAvatarCandidates();
     document.querySelectorAll(HERO_AVATAR_IMAGES).forEach((img) => swapHeroAvatar(img, candidates));
@@ -16953,7 +16960,9 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     }
     const gameImages = [...document.querySelectorAll(HERO_AVATAR_IMAGES)].filter((img) => !panel.contains(img));
     const swapped = gameImages.filter((img) => img.dataset.originalAvatar).length;
-    const status = `<div class="hint">目前遊戲畫面上：角色圖 ${gameImages.length} 張、已換成自訂的 ${swapped} 張</div>`;
+    const status = heroSkinPluginActive()
+      ? '<div class="hint" style="color:#f59e0b">已裝「愛吉吉換圖」插件，換圖交給它（左下角 🎨），這裡的設定不會生效</div>'
+      : `<div class="hint">目前遊戲畫面上：角色圖 ${gameImages.length} 張、已換成自訂的 ${swapped} 張</div>`;
     const thumb = (src, size = 40) => `<img src="${escapeHtml(src)}" data-keep-avatar width="${size}" height="${size}" style="flex:none;width:${size}px;height:${size}px;border-radius:4px;object-fit:cover">`;
     const buttons = (scope, key, custom) =>
       `<button data-avatar-pick data-scope="${scope}" data-key="${escapeHtml(key)}" style="flex:none">選圖</button>` +
