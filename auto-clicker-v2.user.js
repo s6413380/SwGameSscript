@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.04
+// @version      5.05
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1280,7 +1280,7 @@
         <legend>耐久預測</legend>
         <div class="row">預測還能打少於 ${numberInput('durWarnBattles', 'min="0"')} 場就提醒（0＝不提醒）</div>
         <div class="hint">記每件穿著的裝備每場掉多少耐久（最近 30 場平均），算出還能撐幾場；打過幾場才算得出來</div>
-        <div class="hint">「依類型」把出戰隊伍裡同類型的裝備合在一起算（不同角色拿同一類武器也算一起，沒出戰的角色不算）：每場合計掉多少、今天用掉多少，加上閒置的備用裝備還能打幾場、照最近打怪的速度大約多久用完。有開 API 換裝的話，低於換裝門檻的部分不算（到那裡就會被換掉）</div>
+        <div class="hint">「依類型」把出戰隊伍裡同類型的裝備合在一起算（不同角色拿同一類武器也算一起，沒出戰的角色不算）：每場合計掉多少、今天用掉多少，加上閒置的備用裝備還能打幾場、照最近打怪的速度大約多久用完。有開 API 換裝的話，備用裝備要符合那個角色的換裝限制（個別設定的持法、類型、指定裝備、數值、附魔，或共用的同名、勾選清單）才算，低於換裝門檻的部分不算（到那裡就會被換掉）；沒勾自動換裝的角色算穿到壞</div>
         <div class="row">依類型的每場消耗看同陣容最近 ${numberInput('durRecentBattles', 'min="3"')} 場（換陣容後打不到 3 場時先看所有陣容的最近幾場）</div>
         <div data-role="dur-type-forecast" style="font-size:12px;margin-bottom:6px"></div>
         <div data-role="dur-forecast" style="font-size:12px"></div>
@@ -6276,20 +6276,25 @@
     const part = plan && equipPartOf(worn.type);
     const minimum = heroMinDurability(settings, heroId);
     if (part) return pickIdleEquipment(settings, plan, part, minimum, worn.type);
-    const allowed = equipAllowedNames(settings);
     const blocked = noAutoEquipIds();
     return state.equipments
-      .filter(
-        (equipment) =>
-          equipment.equipped === null &&
-          equipment.state === 0 &&
-          !blocked.has(equipment.id) &&
-          equipment.type === worn.type &&
-          (!settings.equipApiSameName || equipment.name === worn.name) &&
-          (settings.equipRuleEnabled ? matchesEquipRule(settings, equipment) : isAllowedEquipment(allowed, equipment)) &&
-          equipment.dur >= minimum
-      )
+      .filter((equipment) => isReplacementCandidate(settings, worn, equipment, blocked))
       .reduce((best, equipment) => (!best || equipment.dur > best.dur ? equipment : best), null);
+  }
+
+  // 這件閒置裝備能不能拿來換掉 worn：跟上面換裝挑選的條件一樣（個別設定的持法、類型、指定裝備、數值、附魔，共用的同名、勾選清單、耐久門檻）
+  function isReplacementCandidate(settings, worn, equipment, blocked = noAutoEquipIds()) {
+    const heroId = worn.equipped;
+    if (equipment.equipped !== null || equipment.state !== 0 || blocked.has(equipment.id)) return false;
+    if (equipment.dur < heroMinDurability(settings, heroId)) return false;
+    const plan = equipHeroPlan(settings, heroId);
+    const part = plan && equipPartOf(worn.type);
+    if (part) return equipPartTypes(plan, part, worn.type).includes(equipment.type) && isAllowedForPart(settings, plan, part, equipment);
+    return (
+      equipment.type === worn.type &&
+      (!settings.equipApiSameName || equipment.name === worn.name) &&
+      (settings.equipRuleEnabled ? matchesEquipRule(settings, equipment) : isAllowedEquipment(equipAllowedNames(settings), equipment))
+    );
   }
 
   // 找不到替換時說清楚同類型的每一件為什麼不能用（紀錄裡只寫「沒有」查不出是哪個條件擋掉）
@@ -16067,22 +16072,30 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       if (!groups.has(type)) groups.set(type, { type, worn: [], spares: [], usable: 0 });
       return groups.get(type);
     };
+    // 有勾自動換裝的角色才會被換下來；沒勾的會一直穿到壞
+    const autoSwapped = (equipment) => swapping && isMonitoredEquipment(settings, { ...equipment, equipped: Number(equipment.equipped) });
     worn.forEach((equipment) => {
       const group = groupOf(equipment.type || '?');
       const forecast = track[equipment.id] ? durabilityForecast(track[equipment.id]) : null;
       group.worn.push({ equipment, average: forecast ? forecast.average : null });
-      const minimum = swapping ? heroMinDurability(settings, equipment.equipped) : 0;
+      const minimum = autoSwapped(equipment) ? heroMinDurability(settings, Number(equipment.equipped)) : 0;
       group.usable += Math.max(0, Number(equipment.dur) - minimum);
     });
     if (known) {
+      // 開了自動換裝：備用的要照那個角色的換裝限制換得上去才算，算進第一個換得上的那類（不重複算）；
+      // 沒開：自己手動換，同類型的閒置裝備都算
+      const swappable = worn.filter(autoSwapped).map((equipment) => ({ ...equipment, id: Number(equipment.id), equipped: Number(equipment.equipped) }));
       state.equipments
-        .filter((equipment) => equipment.equipped === null && equipment.state === 0 && !blocked.has(equipment.id) && groups.has(equipment.type))
+        .filter((equipment) => equipment.equipped === null && equipment.state === 0 && !blocked.has(equipment.id))
         .forEach((equipment) => {
-          const minimum = swapping ? settings.equipApiMinDurability : 0;
-          if (Number(equipment.dur) <= minimum) return;
-          const group = groups.get(equipment.type);
-          group.spares.push(equipment);
-          group.usable += Number(equipment.dur) - minimum;
+          let target = null;
+          if (swapping) {
+            const wearer = swappable.find((piece) => isReplacementCandidate(settings, piece, equipment, blocked));
+            if (wearer) target = { group: groups.get(wearer.type || '?'), minimum: heroMinDurability(settings, wearer.equipped) };
+          } else if (groups.has(equipment.type)) target = { group: groups.get(equipment.type), minimum: 0 };
+          if (!target || Number(equipment.dur) <= target.minimum) return;
+          target.group.spares.push(equipment);
+          target.group.usable += Number(equipment.dur) - target.minimum;
         });
     }
     const recent = recentTypeLoss(settings);
