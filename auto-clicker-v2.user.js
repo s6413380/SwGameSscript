@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.10
+// @version      5.11
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -9753,7 +9753,7 @@ select{padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border
 button{margin-left:auto;padding:2px 8px;border:1px solid #57534e;border-radius:5px;background:#3f3f46;color:#fafaf9;font-size:12px;cursor:pointer}
 </style></head><body><div id="stats-root">
 <div class="card"><h3>耐久預測 <button data-clear="dur" title="清掉耐久的每場紀錄，從現在重新算">清除紀錄</button></h3><div id="stats-dur-type"></div><div id="stats-dur"></div></div>
-<div class="card"><h3>掉落 <select id="stats-loot-period">${periods}</select><button data-clear="loot" title="從現在開始另外算一段（期間切到「按清空後」），每天的紀錄不受影響">清空重算</button></h3><div id="stats-rare" class="hint"></div><div id="stats-loot"></div></div>
+<div class="card"><h3>掉落 <select id="stats-loot-period">${periods}</select><button data-clear="loot" title="從現在開始另外算一段（期間切到「按清空後」），每天的紀錄不受影響">清空重算</button><button data-clear="lootAll" style="margin-left:0;border-color:#b91c1c;background:#7f1d1d" title="把掉落紀錄全部刪掉（每天的和「按清空後」的），找不回來">清除全部</button></h3><div id="stats-rare" class="hint"></div><div id="stats-loot"></div></div>
 </div>
 <script>
 document.getElementById('stats-loot-period').addEventListener('change', function (event) {
@@ -9762,7 +9762,11 @@ document.getElementById('stats-loot-period').addEventListener('change', function
 document.addEventListener('click', function (event) {
   var button = event.target.closest('[data-clear]');
   if (!button) return;
-  var question = button.dataset.clear === 'dur' ? '要清除耐久的每場紀錄嗎？清掉後要再打幾場才算得出來' : '要從現在開始重新算掉落嗎？（每天的紀錄不受影響）';
+  var question = {
+    dur: '要清除耐久的每場紀錄嗎？清掉後要再打幾場才算得出來',
+    loot: '要從現在開始重新算掉落嗎？（每天的紀錄不受影響）',
+    lootAll: '要把掉落紀錄全部刪掉嗎？每天的紀錄也會一起刪掉，找不回來'
+  }[button.dataset.clear];
   if (!confirm(question)) return;
   try { opener.__aijijiStatsClear(button.dataset.clear); } catch (error) {}
 });
@@ -9791,6 +9795,13 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       durWarned.clear();
       durTypeWarned.clear();
     } else if (kind === 'loot') startLootSession(true);
+    else if (kind === 'lootAll') {
+      writeJsonStorage(LOOT_LEDGER_KEY, {});
+      writeJsonStorage(LOOT_SESSION_KEY, null);
+      // 「按清空後」沒有了，切回今天
+      panel.querySelector('[data-role="loot-period"]').value = '1';
+      if (activeTab === 'loot') renderLootLedger();
+    }
     renderStatsWindow(true);
   };
   window.__aijijiStatsPeriod = (period) => {
