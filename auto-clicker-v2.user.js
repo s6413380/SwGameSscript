@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.11
+// @version      5.12
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1170,6 +1170,13 @@
       <label>移動時間到了再等 ${numberInput('finishMoveMinSeconds', 'min="0" step="0.5"')} ～ ${numberInput('finishMoveMaxSeconds', 'min="0" step="0.5"')} 秒（隨機）才完成移動</label>
       <div class="hint">畫面上出現可按的「完成移動」時一律先按，不管有沒有開自動移動</div>
       <fieldset class="group">
+        <legend>沒出稀有道具就換地方刷</legend>
+        <label class="row"><input data-field="rareDetourEnabled" type="checkbox" style="flex:none;width:auto"> 連續 ${numberInput('rareDetourBattles', 'min="1"')} 場沒出稀有道具，就去</label>
+        <div class="row">${escapeTargetHtml('rareDetour')}</div>
+        <div class="row">到了以後刷 ${numberInput('rareDetourMinutes', 'min="1"')} 分鐘，再走回原本的關卡</div>
+        <div class="hint">稀有道具＝「暫停」頁「撿到稀有道具提醒」的名稱，加上英雄券、英雄卷、寵物券、寵物卷。只算打怪的戰報，出了就從 0 重新數；去刷的那段不算場數。中途自己改了目標（或被避難帶走）就不會拉回去。要開「移動」頁的自動移動才走得過去（觸發時會自動打開）</div>
+      </fieldset>
+      <fieldset class="group">
         <legend>區域表</legend>
         <div class="hint">名稱要和關卡欄位上的文字一樣。「從…第…關進入」留空＝大區（用進入按鈕切換大區）；有填＝分支地圖（在那一關按進入，用返回按鈕回大區）；母區域也可以是分支</div>
         ${Array.from({ length: AREA_COUNT }, (_, index) => areaRowHtml(index)).join('')}
@@ -1344,13 +1351,6 @@
         <div class="row"><label style="flex:none"><input data-field="playerReturnEnabled" type="checkbox" style="width:auto"> 躲開後</label> ${numberInput('playerReturnMinutes', 'min="1"')} 分鐘沒再遇到危險玩家，就走回原本掛機的關卡</div>
         <div class="hint">不理會的關卡寫法：「大草原1-3」＝大草原第 1～3 關；「1-2」＝每個區域的第 1、2 關；「老鼠洞」＝整個老鼠洞；多個用逗號或頓號分開</div>
         <div class="hint">觸發時把「移動」頁的目標改成這裡並打開自動移動，走過去後照常掛機。血量：到了避難關卡血量還是低才暫停（死亡照樣馬上暫停）。玩家：每 15 秒看一次同地圖的玩家（城鎮不看）；移動途中路過的關卡不管，到了目標關卡才看；分支退到入口之前會回到母區域；退到第 1 關還有就只提醒</div>
-      </fieldset>
-      <fieldset class="group">
-        <legend>沒出稀有道具就換地方刷</legend>
-        <label class="row"><input data-field="rareDetourEnabled" type="checkbox" style="flex:none;width:auto"> 連續 ${numberInput('rareDetourBattles', 'min="1"')} 場沒出稀有道具，就去</label>
-        <div class="row">${escapeTargetHtml('rareDetour')}</div>
-        <div class="row">到了以後刷 ${numberInput('rareDetourMinutes', 'min="1"')} 分鐘，再走回原本的關卡</div>
-        <div class="hint">稀有道具＝上面「撿到稀有道具提醒」的名稱，加上英雄券、英雄卷、寵物券、寵物卷。只算打怪的戰報，出了就從 0 重新數；去刷的那段不算場數。中途自己改了目標（或被避難帶走）就不會拉回去。要開「移動」頁的自動移動才走得過去（觸發時會自動打開）</div>
       </fieldset>
       <label class="row"><input data-field="verifyEnabled" type="checkbox" style="flex:none;width:auto"> 畫面出現驗證框就暫停</label>
       <div class="row">關鍵字<input data-field="verifyKeyword" placeholder="驗證框上的文字"></div>
