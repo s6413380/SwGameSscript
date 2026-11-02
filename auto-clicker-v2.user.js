@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.05
+// @version      5.06
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -15981,6 +15981,9 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     stats.battles = [...stats.battles, now].slice(-DUR_HISTORY - 1);
     const todayUsage = (stats.days[today] = stats.days[today] || {});
     const battleLoss = {};
+    let unknownType = false;
+    // 打怪回傳的 updated 只有 id 和 dur（遊戲自己也只拿這兩個），類型、名稱、誰穿著要從裝備清單查
+    const listed = new Map(state.equipments.map((equipment) => [String(equipment.id), equipment]));
     const updated = new Map((Array.isArray(changes.updated) ? changes.updated : []).map((equipment) => [String(equipment.id), equipment]));
     (changes.deletedIds || []).forEach((id) => delete track[id]);
     // 沒變的穿著裝備這場掉 0
@@ -15990,27 +15993,34 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     updated.forEach((equipment, id) => {
       if (equipment.dur === undefined) return;
       const entry = track[id] || { losses: [] };
+      const known = listed.get(id) || {};
       const dur = Number(equipment.dur);
+      const type = equipment.type || known.type || entry.type;
       // 修好、換新的耐久會變多：重新算
       if (entry.dur !== undefined && dur <= entry.dur) {
         entry.losses = [...entry.losses, entry.dur - dur].slice(-DUR_HISTORY);
-        const type = equipment.type || entry.type || '?';
-        todayUsage[type] = (todayUsage[type] || 0) + entry.dur - dur;
-        battleLoss[type] = (battleLoss[type] || 0) + entry.dur - dur;
+        if (type) {
+          todayUsage[type] = (todayUsage[type] || 0) + entry.dur - dur;
+          battleLoss[type] = (battleLoss[type] || 0) + entry.dur - dur;
+        } else if (entry.dur > dur) unknownType = true;
       } else if (entry.dur !== undefined) entry.losses = [];
+      const equipped = 'equipped' in equipment ? equipment.equipped : 'equipped' in known ? known.equipped : entry.equipped;
       Object.assign(entry, {
-        name: equipment.name || entry.name,
-        type: equipment.type || entry.type,
+        name: equipment.name || known.name || entry.name,
+        type,
         dur,
-        fullDur: Number(equipment.fullDur) || entry.fullDur,
-        equipped: equipment.equipped || 0,
+        fullDur: Number(equipment.fullDur) || Number(known.fullDur) || entry.fullDur,
+        equipped: equipped || 0,
         at: Date.now(),
       });
       track[id] = entry;
     });
     writeJsonStorage(DUR_TRACK_KEY, track);
     // 每場記下當時的陣容，換陣容後消耗不同，只拿同陣容的來算
-    stats.recent = [...(stats.recent || []), { at: now, team: durTeamKey(), loss: battleLoss }].slice(-DUR_HISTORY);
+    // 查不到類型的那場不記（記了會被當成那類這場沒掉）；去讀裝備清單，下一場就查得到
+    if (unknownType) {
+      if (Date.now() - state.equipmentsAt > DUR_EQUIPMENTS_STALE_MILLISECONDS) refreshEquipments().catch(() => {});
+    } else stats.recent = [...(stats.recent || []), { at: now, team: durTeamKey(), loss: battleLoss, typed: true }].slice(-DUR_HISTORY);
     Object.keys(stats.days)
       .sort()
       .slice(0, -DUR_STATS_DAYS)
@@ -16040,7 +16050,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
 
   // 同陣容最近幾場每類型平均掉多少；同陣容不到 3 場就先用所有陣容的最近幾場
   function recentTypeLoss(settings) {
-    const recent = readJsonStorage(DUR_STATS_KEY, { battles: [], days: {} }).recent || [];
+    const recent = (readJsonStorage(DUR_STATS_KEY, { battles: [], days: {} }).recent || []).filter((battle) => battle.typed);
     const count = Math.max(3, Number(settings.durRecentBattles) || 10);
     const team = durTeamKey();
     const sameTeam = recent.filter((battle) => battle.team === team);
