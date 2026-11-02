@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.91
+// @version      4.92
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -16615,7 +16615,8 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
 
   // 角色卡頭像：遊戲的卡圖是 /hero-avatars/{typeId}.png，同種卡同一張。圖存在 IndexedDB（{ typeId: 圖片網址或 data URL }）
   const HERO_AVATARS_KEY = 'autoClickerV2HeroAvatars';
-  const HERO_AVATAR_PATTERN = /\/hero-avatars\/(\d+)\.png/;
+  // typeId 不一定是數字（4.90 只認數字，畫面上 61 張一張都沒換），網址也可能帶參數或被編碼
+  const HERO_AVATAR_PATTERN = /\/hero-avatars\/([^/?#]+)\.png/;
   // 遊戲最大顯示 168px，存成這個大小就夠，免得一張原圖好幾 MB
   const HERO_AVATAR_SIZE = 168;
   const heroAvatarView = { pickingTypeId: '' };
@@ -16638,7 +16639,13 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     const original = HERO_AVATAR_PATTERN.test(src) ? src : img.dataset.originalAvatar;
     const match = original && HERO_AVATAR_PATTERN.exec(original);
     if (!match) return;
-    const custom = avatars[match[1]];
+    let typeId = match[1];
+    try {
+      typeId = decodeURIComponent(typeId);
+    } catch {
+      // 不是編碼過的就用原字串
+    }
+    const custom = avatars[typeId] || avatars[match[1]];
     if (custom) {
       img.dataset.originalAvatar = original;
       if (src !== custom) img.setAttribute('src', custom);
@@ -16710,7 +16717,10 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     }
     const onScreen = document.querySelectorAll('img[src*="/hero-avatars/"]:not([data-keep-avatar])').length;
     const swapped = document.querySelectorAll('img[data-original-avatar]:not([data-keep-avatar])').length;
-    const status = `<div class="hint">目前遊戲畫面上：原本的卡圖 ${onScreen} 張、已換成自訂的 ${swapped} 張</div>`;
+    // 一張都沒換時列出兩邊的編號，對不起來一眼就看得出
+    const screenIds = [...new Set([...document.querySelectorAll('img[src*="/hero-avatars/"]:not([data-keep-avatar])')].map((img) => (HERO_AVATAR_PATTERN.exec(img.getAttribute('src') || '') || [])[1]))].slice(0, 5);
+    const idHint = onScreen && !swapped && Object.keys(avatars).length ? `（畫面上的編號：${screenIds.join('、')}；換過的編號：${Object.keys(avatars).join('、')}）` : '';
+    const status = `<div class="hint">目前遊戲畫面上：原本的卡圖 ${onScreen} 張、已換成自訂的 ${swapped} 張${escapeHtml(idHint)}</div>`;
     const thumb = (src, keep) => `<img src="${escapeHtml(src)}" ${keep ? 'data-keep-avatar' : ''} width="40" height="40" style="flex:none;width:40px;height:40px;border-radius:4px;object-fit:cover">`;
     list.innerHTML = status + [...types.entries()]
       .sort(([, first], [, second]) => first.type.localeCompare(second.type))
