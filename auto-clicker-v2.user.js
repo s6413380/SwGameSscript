@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.08
+// @version      5.09
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1068,6 +1068,7 @@
     <div class="row" style="font-weight:bold;margin:0 0 6px;cursor:move" data-role="header">
       <span style="flex:1"><span data-role="app-name">愛吉吉</span> <span style="font-weight:normal;opacity:.7">v${SCRIPT_VERSION}</span> ⠿ <span data-role="mini-status" data-assist-hide style="font-weight:normal;opacity:.85"></span></span>
       <button data-action="mini-window" title="開小視窗：隊伍狀態＋後退／原地狩獵／前行／回城">◱</button>
+      <button data-action="stats-window" title="開統計視窗：耐久預測＋掉落">📊</button>
       <button data-action="enlarge" title="拉大／縮回原狀">⤢</button>
       <button data-action="minimize" title="縮到最小／展開">–</button>
       <button data-action="close" title="關閉：這個分頁的腳本全部停止（重新整理頁面才會恢復）">×</button>
@@ -8932,6 +8933,7 @@
     // 面板縮小或分頁在背景時看不到監看欄，不用每秒重算（讀血條、算路線都要碰畫面）
     if (panelBody.style.display !== 'none' && !document.hidden) monitorElement.textContent = monitorLines(settings, actionLine).join('\n');
     renderMiniWindow(settings);
+    renderStatsWindow();
     reportToDashboard(settings);
     pollDashboardCommands(settings);
     checkForUpdate(settings);
@@ -9630,6 +9632,95 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     win.focus();
     if (!state.huntInfo) refreshHeroStats().catch((error) => (miniWindow.note = `讀取狩獵資訊失敗（${error.message}）`));
     renderMiniWindow(readSettingsFromPanel());
+  }
+
+  // 統計視窗：耐久預測和掉落另開一個視窗看，不用翻到面板的分頁。內容用面板那兩頁同一套畫法畫好再搬過去；
+  // 跟小視窗一樣，主頁重新整理後視窗會自己重新接上
+  const STATS_WINDOW_NAME = 'aijijiStatsWindow';
+  const STATS_WINDOW_REFRESH_MILLISECONDS = 3000;
+  const statsWindow = { win: null, parts: {}, renderedAt: 0 };
+
+  function openStatsWindow() {
+    const win = window.open('', STATS_WINDOW_NAME, 'popup,width=460,height=720');
+    if (!win) {
+      setStatus('統計視窗被瀏覽器擋了，請允許這個網站開彈出式視窗');
+      return;
+    }
+    if (!win.document.getElementById('stats-root')) {
+      const periods = panel.querySelector('[data-role="loot-period"]').innerHTML;
+      win.document.open();
+      win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(appName())} 統計</title>
+<style>
+body{margin:0;padding:8px;background:#1c1917;color:#e7e5e4;font:13px/1.4 system-ui,"Microsoft JhengHei",sans-serif}
+h3{margin:4px 0 6px;font-size:14px;color:#fbbf24;display:flex;align-items:center;gap:8px}
+.card{background:#292524;border:1px solid #44403c;border-radius:6px;padding:6px 8px;margin-bottom:8px}
+.hint{font-size:12px;color:#a0a0aa;margin:3px 0}
+table.combat{width:100%;border-collapse:collapse;font:12px monospace;margin:4px 0}
+table.combat th,table.combat td{padding:1px 3px;text-align:right;border-bottom:1px solid #44403c}
+table.combat th:first-child,table.combat td:first-child{text-align:left}
+select{padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px;font-size:12px}
+</style></head><body><div id="stats-root">
+<div class="card"><h3>耐久預測</h3><div id="stats-dur-type"></div><div id="stats-dur"></div></div>
+<div class="card"><h3>掉落 <select id="stats-loot-period">${periods}</select></h3><div id="stats-loot"></div></div>
+</div>
+<script>
+document.getElementById('stats-loot-period').addEventListener('change', function (event) {
+  try { opener.__aijijiStatsPeriod(event.target.value); } catch (error) {}
+});
+setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (error) {} }, 2000);
+<\/script></body></html>`);
+      win.document.close();
+    }
+    statsWindow.win = win;
+    statsWindow.parts = {};
+    win.focus();
+    // 沒開 API 換裝時不會自己讀裝備清單，備用的算不到
+    if (Date.now() - state.equipmentsAt > DUR_EQUIPMENTS_STALE_MILLISECONDS) refreshEquipments().then(() => renderStatsWindow(true)).catch(() => {});
+    renderStatsWindow(true);
+  }
+
+  window.__aijijiStatsAttach = (win) => {
+    if (statsWindow.win === win) return;
+    statsWindow.win = win;
+    statsWindow.parts = {};
+    renderStatsWindow(true);
+  };
+  window.__aijijiStatsPeriod = (period) => {
+    const select = panel.querySelector('[data-role="loot-period"]');
+    select.value = period;
+    renderStatsWindow(true);
+  };
+
+  // 內容沒變就不重寫，免得捲到一半被拉回最上面
+  function setStatsPart(id, html) {
+    if (statsWindow.parts[id] === html) return;
+    const element = statsWindow.win.document.getElementById(id);
+    if (!element) return;
+    statsWindow.parts[id] = html;
+    element.innerHTML = html;
+  }
+
+  function renderStatsWindow(force = false) {
+    if (!statsWindow.win) return;
+    try {
+      if (statsWindow.win.closed || !statsWindow.win.document.getElementById('stats-root')) {
+        statsWindow.win = null;
+        return;
+      }
+    } catch {
+      statsWindow.win = null;
+      return;
+    }
+    if (!force && Date.now() - statsWindow.renderedAt < STATS_WINDOW_REFRESH_MILLISECONDS) return;
+    statsWindow.renderedAt = Date.now();
+    renderDurabilityForecast();
+    renderLootLedger();
+    setStatsPart('stats-dur-type', panel.querySelector('[data-role="dur-type-forecast"]').innerHTML);
+    setStatsPart('stats-dur', panel.querySelector('[data-role="dur-forecast"]').innerHTML);
+    setStatsPart('stats-loot', panel.querySelector('[data-role="loot-ledger"]').innerHTML);
+    const period = statsWindow.win.document.getElementById('stats-loot-period');
+    const panelPeriod = panel.querySelector('[data-role="loot-period"]').value;
+    if (period && period.value !== panelPeriod) period.value = panelPeriod;
   }
 
   // 防誤觸：鎖定的按鈕第一下只「上膛」並提示，3 秒內再按一下才放行
@@ -11372,6 +11463,8 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       renderCrashLog();
     } else if (action === 'mini-window') {
       openMiniWindow();
+    } else if (action === 'stats-window') {
+      openStatsWindow();
     } else if (action === 'minimize') {
       setMinimized(panelBody.style.display !== 'none');
     } else if (action === 'enlarge') {
