@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.95
+// @version      4.96
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -79,7 +79,7 @@
     // 瀏覽器不支援長任務就只看腳本自己的數字
   }
   // 統計類（收入、抽卡、測名表、打怪、耐久、挖礦、市場、雲端同步紀錄）每個幾十到幾百 KB，加起來又把 localStorage 擠滿，也搬過去
-  const STATS_BIG_STORAGE_KEYS = ['autoClickerV2HeroAvatarsByHero', 'autoClickerV2HeroAvatarsByType', 'autoClickerV2Cloud', 'autoClickerV2Income', 'autoClickerV2Draws', 'autoClickerV2NameWeights', 'autoClickerV2HuntStats', 'autoClickerV2DurTrack', 'autoClickerV2Mining', 'autoClickerV2MarketSales'];
+  const STATS_BIG_STORAGE_KEYS = ['autoClickerV2HeroAvatarsByHero', 'autoClickerV2HeroAvatarsByType', 'autoClickerV2Backgrounds', 'autoClickerV2Cloud', 'autoClickerV2Income', 'autoClickerV2Draws', 'autoClickerV2NameWeights', 'autoClickerV2HuntStats', 'autoClickerV2DurTrack', 'autoClickerV2Mining', 'autoClickerV2MarketSales'];
   const BIG_STORAGE_KEYS = new Set(['autoClickerV2CloudEquipments', 'autoClickerV2CloudScratch', 'autoClickerV2CloudDraws', 'autoClickerV2Scratch', 'autoClickerV2ForgedEquipments', 'autoClickerV2ForgeMaterials', ...STATS_BIG_STORAGE_KEYS]);
   // 這些是累加的：資料庫開好之前讀到的是空的，那時寫的是「空的＋一筆」，資料庫裡已經有就以資料庫的為準（頂多少記那一筆）
   const KEEP_STORED_BIG_STORAGE_KEYS = new Set(STATS_BIG_STORAGE_KEYS);
@@ -1361,6 +1361,11 @@
         <input data-role="hero-avatar-file" type="file" accept="image/*" style="display:none">
       </fieldset>
       <fieldset class="group">
+        <legend>背景</legend>
+        <div class="hint">一樣只有自己看得到。遮暗是在圖上蓋一層黑，數字越大字越清楚。頭像底圖只在頭像透明的地方看得到。圖片和頭像都可以用動圖（GIF／WebP，4 MB 以內；用網址的話不限）</div>
+        <div data-role="background-list"></div>
+      </fieldset>
+      <fieldset class="group">
         <legend>多帳號總覽</legend>
         <label class="row"><input data-field="dashboardEnabled" type="checkbox" style="flex:none;width:auto"> 回報到總覽頁（每 5 秒）</label>
         <div class="row">位址<input data-field="dashboardUrl"></div>
@@ -2011,6 +2016,7 @@
     }
     if (tabId === 'alert') {
       renderHeroAvatarList();
+      renderBackgroundList();
       if (!forgeHeroes.length) refreshForgeHeroes().then(renderHeroAvatarList).catch(() => {});
     }
     if (tabId === 'income') renderIncome();
@@ -13996,9 +14002,13 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
         get.onsuccess = () => {
           if (typeof get.result === 'string') bigStorage.values.set(key, get.result);
           // 別的分頁換了卡圖：畫面上已經顯示的也要馬上換
-          if (key === HERO_AVATARS_KEY || key === HERO_TYPE_AVATARS_KEY) {
+          if (key === HERO_AVATARS_KEY || key === HERO_TYPE_AVATARS_KEY || key === BACKGROUNDS_KEY) {
+            applyPageBackground();
             applyHeroAvatars();
-            if (activeTab === 'alert') renderHeroAvatarList();
+            if (activeTab === 'alert') {
+              renderHeroAvatarList();
+              renderBackgroundList();
+            }
           }
         };
       };
@@ -16645,8 +16655,78 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     return cachedAvatarStore(HERO_TYPE_AVATARS_KEY);
   }
 
+  // 背景：page＝整個遊戲網頁、card＝每張角色卡、avatar＝頭像圖透明的地方；{ image, dim（遮暗 %，讓字看得清楚）}
+  const BACKGROUNDS_KEY = 'autoClickerV2Backgrounds';
+  const BACKGROUND_PARTS = [
+    ['page', '遊戲網頁', 40],
+    ['card', '角色卡', 55],
+    ['avatar', '頭像底圖', 0],
+  ];
+  const PAGE_BACKGROUND_STYLE_ID = 'auto-clicker-page-background';
+
+  function backgrounds() {
+    return cachedAvatarStore(BACKGROUNDS_KEY);
+  }
+
+  function backgroundImageCss(part) {
+    const record = backgrounds()[part];
+    if (!record || !record.image) return '';
+    const dim = Math.min(90, Math.max(0, Number(record.dim) || 0)) / 100;
+    const url = `url("${String(record.image).replace(/["\\\n]/g, encodeURIComponent)}")`;
+    return dim ? `linear-gradient(rgba(0,0,0,${dim}),rgba(0,0,0,${dim})), ${url}` : url;
+  }
+
+  // 遊戲的底色在 body（漸層）；換成圖片，捲動時固定不動
+  function applyPageBackground() {
+    const image = backgroundImageCss('page');
+    let style = document.getElementById(PAGE_BACKGROUND_STYLE_ID);
+    if (!image) {
+      if (style) style.remove();
+      return;
+    }
+    if (!style) {
+      style = document.createElement('style');
+      style.id = PAGE_BACKGROUND_STYLE_ID;
+      document.head.appendChild(style);
+    }
+    style.textContent = `body{background-image:${image} !important;background-size:cover !important;background-position:center !important;background-attachment:fixed !important;}`;
+  }
+
+  // 角色卡＝頭像的上一層（圖＋名字＋血條那塊）；頭像底圖墊在 img 自己的 background，只有透明處看得到
+  function styleHeroCard(img) {
+    const card = img.parentElement;
+    const cardImage = backgroundImageCss('card');
+    if (card && !panel.contains(card)) {
+      if (cardImage) {
+        if (card.dataset.avatarCardBg !== cardImage) {
+          card.dataset.avatarCardBg = cardImage;
+          card.style.backgroundImage = cardImage;
+          card.style.backgroundSize = 'cover';
+          card.style.backgroundPosition = 'center';
+          card.style.borderRadius = card.style.borderRadius || '6px';
+        }
+      } else if (card.dataset.avatarCardBg) {
+        delete card.dataset.avatarCardBg;
+        ['backgroundImage', 'backgroundSize', 'backgroundPosition'].forEach((property) => (card.style[property] = ''));
+      }
+    }
+    const avatarImage = backgroundImageCss('avatar');
+    if (avatarImage) {
+      if (img.dataset.avatarBg !== avatarImage) {
+        img.dataset.avatarBg = avatarImage;
+        img.style.backgroundImage = avatarImage;
+        img.style.backgroundSize = 'cover';
+        img.style.backgroundPosition = 'center';
+      }
+    } else if (img.dataset.avatarBg) {
+      delete img.dataset.avatarBg;
+      ['backgroundImage', 'backgroundSize', 'backgroundPosition'].forEach((property) => (img.style[property] = ''));
+    }
+  }
+
   function anyHeroAvatar() {
-    return Object.keys(heroAvatars()).length > 0 || Object.keys(heroTypeAvatars()).length > 0;
+    const parts = backgrounds();
+    return Object.keys(heroAvatars()).length > 0 || Object.keys(heroTypeAvatars()).length > 0 || Boolean((parts.card && parts.card.image) || (parts.avatar && parts.avatar.image));
   }
 
   // 認名字用的候選：自己全部角色（沒換圖的也要，免得「瘟疫醫生2」的卡被認成「瘟疫醫生」），名字長的先比
@@ -16725,10 +16805,11 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       delete img.dataset.originalAvatar;
       if (src !== original) img.setAttribute('src', original);
     }
+    styleHeroCard(img);
   }
 
   function applyHeroAvatars() {
-    if (!anyHeroAvatar() && !document.querySelector('img[data-original-avatar]')) return;
+    if (!anyHeroAvatar() && !document.querySelector('img[data-original-avatar], [data-avatar-card-bg], img[data-avatar-bg]')) return;
     const candidates = heroAvatarCandidates();
     document.querySelectorAll(HERO_AVATAR_IMAGES).forEach((img) => swapHeroAvatar(img, candidates));
   }
@@ -16770,20 +16851,80 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     renderHeroAvatarList();
   }
 
+  function setBackground(part, changes) {
+    const parts = { ...backgrounds() };
+    const record = { dim: (BACKGROUND_PARTS.find(([id]) => id === part) || [])[2] || 0, ...(parts[part] || {}), ...changes };
+    if (record.image) parts[part] = record;
+    else delete parts[part];
+    writeJsonStorage(BACKGROUNDS_KEY, parts);
+    applyPageBackground();
+    applyHeroAvatars();
+    renderBackgroundList();
+  }
+
   function setAvatarByScope(scope, key, image) {
     if (scope === 'type') setHeroTypeAvatar(key, image);
+    else if (scope === 'background') setBackground(key, { image });
     else setHeroAvatar(key, image);
   }
 
-  // 置中裁成正方形再縮小
-  async function shrinkAvatarImage(file) {
+  // 動圖（GIF、WebP）經過 canvas 會變成只剩第一格，所以原檔照存；檔案太大會拖慢每次重畫，設上限
+  const ANIMATED_IMAGE_TYPES = ['image/gif', 'image/webp', 'image/apng'];
+  const ANIMATED_IMAGE_MAX_BYTES = 4 * 1024 * 1024;
+  // 背景不裁切，等比例縮到最長邊這麼大
+  const BACKGROUND_MAX_SIDE = { page: 1920, card: 800, avatar: HERO_AVATAR_SIZE };
+
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error || new Error('讀檔失敗'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // 頭像：置中裁成正方形再縮小；背景：不裁，等比例縮小
+  async function prepareImage(file, { square, maxSide }) {
+    if (ANIMATED_IMAGE_TYPES.includes(file.type)) {
+      if (file.size > ANIMATED_IMAGE_MAX_BYTES) throw new Error(`動圖 ${(file.size / 1048576).toFixed(1)} MB 太大，請小於 4 MB`);
+      return readFileAsDataUrl(file);
+    }
     const bitmap = await createImageBitmap(file);
-    const side = Math.min(bitmap.width, bitmap.height);
     const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = Math.min(HERO_AVATAR_SIZE, side);
-    canvas.getContext('2d').drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, canvas.width, canvas.height);
+    if (square) {
+      const side = Math.min(bitmap.width, bitmap.height);
+      canvas.width = canvas.height = Math.min(maxSide, side);
+      canvas.getContext('2d').drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, canvas.width, canvas.height);
+    } else {
+      const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+      canvas.width = Math.round(bitmap.width * scale);
+      canvas.height = Math.round(bitmap.height * scale);
+      canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    }
     bitmap.close();
     return canvas.toDataURL('image/webp', 0.85);
+  }
+
+  function shrinkAvatarImage(file) {
+    return prepareImage(file, { square: true, maxSide: HERO_AVATAR_SIZE });
+  }
+
+  function renderBackgroundList() {
+    const list = panel.querySelector('[data-role="background-list"]');
+    if (!list) return;
+    const parts = backgrounds();
+    list.innerHTML = BACKGROUND_PARTS.map(([part, label, defaultDim]) => {
+      const record = parts[part];
+      const image = record && record.image;
+      return `<div class="row" style="align-items:center;gap:4px">
+        ${image ? `<img src="${escapeHtml(image)}" data-keep-avatar width="40" height="40" style="flex:none;width:40px;height:40px;border-radius:4px;object-fit:cover">` : '<span style="flex:none;width:40px;color:#888;font-size:11px;text-align:center">沒設</span>'}
+        <span style="flex:1;min-width:0">${label}</span>
+        ${part === 'avatar' ? '' : `<label style="flex:none">遮暗<input data-background-dim="${part}" type="number" min="0" max="90" step="5" value="${record ? Number(record.dim) || 0 : defaultDim}" style="width:48px">%</label>`}
+        <button data-avatar-pick data-scope="background" data-key="${part}" style="flex:none">選圖</button>
+        <button data-avatar-url data-scope="background" data-key="${part}" style="flex:none">網址</button>
+        ${image ? `<button data-avatar-reset data-scope="background" data-key="${part}" style="flex:none">還原</button>` : ''}
+      </div>`;
+    }).join('');
   }
 
   // 依種類分組：種類那行設共用圖，底下每隻角色可以另外設
@@ -16848,7 +16989,8 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   function setupHeroAvatarControls() {
     const list = panel.querySelector('[data-role="hero-avatar-list"]');
     const picker = panel.querySelector('[data-role="hero-avatar-file"]');
-    list.addEventListener('click', (event) => {
+    const backgroundList = panel.querySelector('[data-role="background-list"]');
+    const handleButton = (event) => {
       const button = event.target.closest('button');
       if (!button || !button.dataset.scope) return;
       const { scope, key } = button.dataset;
@@ -16868,16 +17010,23 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       } else if (button.hasAttribute('data-avatar-reset')) {
         setAvatarByScope(scope, key, '');
       }
-    });
+    };
+    list.addEventListener('click', handleButton);
+    backgroundList.addEventListener('click', handleButton);
     picker.addEventListener('change', async () => {
       const { pickingScope, pickingKey } = heroAvatarView;
       const chosen = picker.files && picker.files[0];
       if (!pickingScope || !chosen) return;
       try {
-        setAvatarByScope(pickingScope, pickingKey, await shrinkAvatarImage(chosen));
+        const options = pickingScope === 'background' ? { square: false, maxSide: BACKGROUND_MAX_SIDE[pickingKey] || 1920 } : { square: true, maxSide: HERO_AVATAR_SIZE };
+        setAvatarByScope(pickingScope, pickingKey, await prepareImage(chosen, options));
       } catch (error) {
         showToast(`圖片讀不了（${error.message}）`);
       }
+    });
+    backgroundList.addEventListener('change', (event) => {
+      const part = event.target.dataset && event.target.dataset.backgroundDim;
+      if (part) setBackground(part, { dim: Number(event.target.value) || 0 });
     });
   }
 
@@ -21070,7 +21219,10 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   showEquipRulePart(equipRuleView.part);
   openBigStorage();
   setupHeroAvatarControls();
-  bigStorage.ready.then(watchHeroAvatars);
+  bigStorage.ready.then(() => {
+    applyPageBackground();
+    watchHeroAvatars();
+  });
   installCrashGuard();
   setMinimized(startMinimized);
   setStatus(`已載入 v${SCRIPT_VERSION}`);
