@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      4.94
+// @version      4.95
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -79,7 +79,7 @@
     // 瀏覽器不支援長任務就只看腳本自己的數字
   }
   // 統計類（收入、抽卡、測名表、打怪、耐久、挖礦、市場、雲端同步紀錄）每個幾十到幾百 KB，加起來又把 localStorage 擠滿，也搬過去
-  const STATS_BIG_STORAGE_KEYS = ['autoClickerV2HeroAvatarsByHero', 'autoClickerV2Cloud', 'autoClickerV2Income', 'autoClickerV2Draws', 'autoClickerV2NameWeights', 'autoClickerV2HuntStats', 'autoClickerV2DurTrack', 'autoClickerV2Mining', 'autoClickerV2MarketSales'];
+  const STATS_BIG_STORAGE_KEYS = ['autoClickerV2HeroAvatarsByHero', 'autoClickerV2HeroAvatarsByType', 'autoClickerV2Cloud', 'autoClickerV2Income', 'autoClickerV2Draws', 'autoClickerV2NameWeights', 'autoClickerV2HuntStats', 'autoClickerV2DurTrack', 'autoClickerV2Mining', 'autoClickerV2MarketSales'];
   const BIG_STORAGE_KEYS = new Set(['autoClickerV2CloudEquipments', 'autoClickerV2CloudScratch', 'autoClickerV2CloudDraws', 'autoClickerV2Scratch', 'autoClickerV2ForgedEquipments', 'autoClickerV2ForgeMaterials', ...STATS_BIG_STORAGE_KEYS]);
   // 這些是累加的：資料庫開好之前讀到的是空的，那時寫的是「空的＋一筆」，資料庫裡已經有就以資料庫的為準（頂多少記那一筆）
   const KEEP_STORED_BIG_STORAGE_KEYS = new Set(STATS_BIG_STORAGE_KEYS);
@@ -1356,7 +1356,7 @@
       <label class="row"><input data-field="cinnamonTheme" type="checkbox" style="flex:none;width:auto"> 風格2</label>
       <fieldset class="group">
         <legend>角色頭像</legend>
-        <div class="hint">把遊戲畫面上某隻角色的圖片換成自己的圖，只有這台電腦的瀏覽器看得到（伺服器、別人看不到）。畫面上沒有角色編號，是看圖旁邊的角色名字認的，所以別人的角色跟你的同名同種卡也會被換</div>
+        <div class="hint">把遊戲畫面上的角色圖換成自己的圖，只有這台電腦的瀏覽器看得到（伺服器、別人看不到）。粗體那行是<b>整種卡共用</b>（別人的同種卡也會換），底下每隻角色可以<b>另外設</b>，單獨的優先。單獨的是看圖旁邊的名字認的，名字、等級都一樣的分不出來</div>
         <div data-role="hero-avatar-list"></div>
         <input data-role="hero-avatar-file" type="file" accept="image/*" style="display:none">
       </fieldset>
@@ -13996,7 +13996,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
         get.onsuccess = () => {
           if (typeof get.result === 'string') bigStorage.values.set(key, get.result);
           // 別的分頁換了卡圖：畫面上已經顯示的也要馬上換
-          if (key === HERO_AVATARS_KEY) {
+          if (key === HERO_AVATARS_KEY || key === HERO_TYPE_AVATARS_KEY) {
             applyHeroAvatars();
             if (activeTab === 'alert') renderHeroAvatarList();
           }
@@ -16613,26 +16613,40 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     }).observe(document.body, { childList: true, subtree: true });
   }
 
-  // 角色頭像：遊戲的圖是 /hero-avatars/{typeId}.png（同種卡同一張），畫面上沒有角色 id，
-  // 所以看圖片旁邊顯示的角色名字認是哪一隻。存在 IndexedDB：{ heroId: { name, type, image } }，image 是網址或 data URL
+  // 角色頭像：遊戲的圖是 /hero-avatars/{typeId}.png（同種卡同一張），alt 是種類名稱，畫面上沒有角色 id。
+  // 兩種設定：整種卡共用一張（看 alt 的種類），單獨某隻角色（看圖旁邊顯示的名字認），單獨的優先。
+  // 存在 IndexedDB：單獨 { heroId: { name, type, typeId, image } }、共用 { 種類名稱: { typeId, image } }；image 是網址或 data URL
   const HERO_AVATARS_KEY = 'autoClickerV2HeroAvatarsByHero';
+  const HERO_TYPE_AVATARS_KEY = 'autoClickerV2HeroAvatarsByType';
   const HERO_AVATAR_PATTERN = /\/hero-avatars\/([^/?#]+)\.png/;
   const HERO_AVATAR_IMAGES = 'img[src*="/hero-avatars/"], img[data-original-avatar]';
   // 往上找包住「這張圖＋名字」的區塊最多幾層；再上去就是整個列表
   const HERO_AVATAR_CLIMB = 6;
   // 遊戲最大顯示 168px，存成這個大小就夠，免得一張原圖好幾 MB
   const HERO_AVATAR_SIZE = 168;
-  const heroAvatarView = { pickingHeroId: '' };
+  const heroAvatarView = { pickingScope: '', pickingKey: '' };
 
   // 遊戲重畫很頻繁，每次都 JSON.parse 一堆圖片太浪費；存的字串沒變就用上次的
-  const heroAvatarCache = { raw: undefined, value: {} };
+  const avatarStoreCache = new Map();
+  function cachedAvatarStore(key) {
+    const raw = rawStorage(key);
+    const cached = avatarStoreCache.get(key);
+    if (cached && cached.raw === raw) return cached.value;
+    const value = readJsonStorage(key, {}) || {};
+    avatarStoreCache.set(key, { raw, value });
+    return value;
+  }
+
   function heroAvatars() {
-    const raw = rawStorage(HERO_AVATARS_KEY);
-    if (raw !== heroAvatarCache.raw) {
-      heroAvatarCache.raw = raw;
-      heroAvatarCache.value = readJsonStorage(HERO_AVATARS_KEY, {}) || {};
-    }
-    return heroAvatarCache.value;
+    return cachedAvatarStore(HERO_AVATARS_KEY);
+  }
+
+  function heroTypeAvatars() {
+    return cachedAvatarStore(HERO_TYPE_AVATARS_KEY);
+  }
+
+  function anyHeroAvatar() {
+    return Object.keys(heroAvatars()).length > 0 || Object.keys(heroTypeAvatars()).length > 0;
   }
 
   // 認名字用的候選：自己全部角色（沒換圖的也要，免得「瘟疫醫生2」的卡被認成「瘟疫醫生」），名字長的先比
@@ -16686,14 +16700,24 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     return null;
   }
 
-  // 遊戲重畫時會把 src 改回原圖網址（換角色、重排），所以每次都以目前 src 為準；面板裡要顯示原圖的加 data-keep-avatar
+  // 共用圖先看 alt 的種類名稱，沒有 alt 才用網址裡的編號
+  function typeAvatarOf(img, original) {
+    const typeAvatars = heroTypeAvatars();
+    const type = img.getAttribute('alt') || '';
+    if (type && typeAvatars[type]) return typeAvatars[type].image;
+    const match = HERO_AVATAR_PATTERN.exec(original);
+    const record = match && Object.values(typeAvatars).find((candidate) => String(candidate.typeId) === match[1]);
+    return record ? record.image : '';
+  }
+
+  // 遊戲重畫時會把 src 改回原圖網址（換角色、重排），所以每次都以目前 src 為準；面板裡的不動
   function swapHeroAvatar(img, candidates) {
     if (img.hasAttribute('data-keep-avatar') || panel.contains(img)) return;
     const src = img.getAttribute('src') || '';
     const original = HERO_AVATAR_PATTERN.test(src) ? src : img.dataset.originalAvatar;
     if (!original || !HERO_AVATAR_PATTERN.test(original)) return;
-    const hero = heroOfAvatarImage(img, candidates);
-    const custom = hero && hero.image;
+    const hero = Object.keys(heroAvatars()).length ? heroOfAvatarImage(img, candidates) : null;
+    const custom = (hero && hero.image) || typeAvatarOf(img, original);
     if (custom) {
       img.dataset.originalAvatar = original;
       if (src !== custom) img.setAttribute('src', custom);
@@ -16704,7 +16728,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   }
 
   function applyHeroAvatars() {
-    if (!Object.keys(heroAvatars()).length && !document.querySelector('img[data-original-avatar]')) return;
+    if (!anyHeroAvatar() && !document.querySelector('img[data-original-avatar]')) return;
     const candidates = heroAvatarCandidates();
     document.querySelectorAll(HERO_AVATAR_IMAGES).forEach((img) => swapHeroAvatar(img, candidates));
   }
@@ -16715,7 +16739,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     // 狩獵分頁可能還沒讀過角色清單，沒有全部名字就容易認錯
     if (Object.keys(heroAvatars()).length && !forgeHeroes.length) refreshForgeHeroes().then(applyHeroAvatars).catch(() => {});
     new MutationObserver((mutations) => {
-      if (!Object.keys(heroAvatars()).length) return;
+      if (!anyHeroAvatar()) return;
       const touched = mutations.some(
         (mutation) =>
           (mutation.type === 'attributes' && mutation.target.tagName === 'IMG' && !panel.contains(mutation.target)) ||
@@ -16728,11 +16752,27 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
   function setHeroAvatar(heroId, image) {
     const avatars = { ...heroAvatars() };
     const hero = forgeHeroes.find((candidate) => String(candidate.id) === String(heroId));
-    if (image) avatars[heroId] = { name: hero ? hero.name : (avatars[heroId] || {}).name, type: hero ? hero.type : (avatars[heroId] || {}).type, typeId: hero ? hero.typeId : (avatars[heroId] || {}).typeId, image };
+    const old = avatars[heroId] || {};
+    if (image) avatars[heroId] = { name: hero ? hero.name : old.name, type: hero ? hero.type : old.type, typeId: hero ? hero.typeId : old.typeId, image };
     else delete avatars[heroId];
     writeJsonStorage(HERO_AVATARS_KEY, avatars);
     applyHeroAvatars();
     renderHeroAvatarList();
+  }
+
+  function setHeroTypeAvatar(type, image) {
+    const typeAvatars = { ...heroTypeAvatars() };
+    const hero = forgeHeroes.find((candidate) => candidate.type === type);
+    if (image) typeAvatars[type] = { typeId: hero ? hero.typeId : (typeAvatars[type] || {}).typeId, image };
+    else delete typeAvatars[type];
+    writeJsonStorage(HERO_TYPE_AVATARS_KEY, typeAvatars);
+    applyHeroAvatars();
+    renderHeroAvatarList();
+  }
+
+  function setAvatarByScope(scope, key, image) {
+    if (scope === 'type') setHeroTypeAvatar(key, image);
+    else setHeroAvatar(key, image);
   }
 
   // 置中裁成正方形再縮小
@@ -16746,34 +16786,61 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     return canvas.toDataURL('image/webp', 0.85);
   }
 
+  // 依種類分組：種類那行設共用圖，底下每隻角色可以另外設
   function renderHeroAvatarList() {
     const list = panel.querySelector('[data-role="hero-avatar-list"]');
     if (!list) return;
     const avatars = heroAvatars();
-    const rows = forgeHeroes.map((hero) => ({ heroId: String(hero.id), name: hero.name, type: hero.type || '', typeId: hero.typeId }));
-    // 換過圖但現在沒有這隻的（賣掉了）也列出來，才還原得了
-    Object.entries(avatars).forEach(([heroId, record]) => rows.some((row) => row.heroId === heroId) || rows.push({ heroId, name: record.name || `#${heroId}`, type: record.type || '', typeId: record.typeId }));
-    if (!rows.length) {
+    const typeAvatars = heroTypeAvatars();
+    const groups = new Map();
+    const groupOf = (type, typeId) => {
+      if (!groups.has(type)) groups.set(type, { typeId, heroes: [] });
+      const group = groups.get(type);
+      if (group.typeId === undefined) group.typeId = typeId;
+      return group;
+    };
+    forgeHeroes.forEach((hero) => groupOf(hero.type || '', hero.typeId).heroes.push({ heroId: String(hero.id), name: hero.name }));
+    // 換過圖但現在沒有的（賣掉了）也列出來，才還原得了
+    Object.entries(avatars).forEach(([heroId, record]) => {
+      const group = groupOf(record.type || '', record.typeId);
+      if (!group.heroes.some((hero) => hero.heroId === heroId)) group.heroes.push({ heroId, name: record.name || `#${heroId}` });
+    });
+    Object.entries(typeAvatars).forEach(([type, record]) => groupOf(type, record.typeId));
+    if (!groups.size) {
       list.innerHTML = '<div class="hint">讀取角色中…（讀不到的話先到遊戲的英雄頁）</div>';
       return;
     }
     const gameImages = [...document.querySelectorAll(HERO_AVATAR_IMAGES)].filter((img) => !panel.contains(img));
     const swapped = gameImages.filter((img) => img.dataset.originalAvatar).length;
     const status = `<div class="hint">目前遊戲畫面上：角色圖 ${gameImages.length} 張、已換成自訂的 ${swapped} 張</div>`;
-    const thumb = (src) => `<img src="${escapeHtml(src)}" data-keep-avatar width="40" height="40" style="flex:none;width:40px;height:40px;border-radius:4px;object-fit:cover">`;
+    const thumb = (src, size = 40) => `<img src="${escapeHtml(src)}" data-keep-avatar width="${size}" height="${size}" style="flex:none;width:${size}px;height:${size}px;border-radius:4px;object-fit:cover">`;
+    const buttons = (scope, key, custom) =>
+      `<button data-avatar-pick data-scope="${scope}" data-key="${escapeHtml(key)}" style="flex:none">選圖</button>` +
+      `<button data-avatar-url data-scope="${scope}" data-key="${escapeHtml(key)}" style="flex:none">網址</button>` +
+      (custom ? `<button data-avatar-reset data-scope="${scope}" data-key="${escapeHtml(key)}" style="flex:none">還原</button>` : '');
     list.innerHTML =
       status +
-      rows
-        .sort((first, second) => first.name.localeCompare(second.name))
-        .map((row) => {
-          const custom = avatars[row.heroId] && avatars[row.heroId].image;
-          return `<div class="row" style="align-items:center;gap:4px">
-          ${row.typeId !== undefined ? thumb(`/hero-avatars/${row.typeId}.png`) : ''}${custom ? `→${thumb(custom)}` : ''}
-          <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(row.name)}<span style="color:#888">（${escapeHtml(row.type)}）</span></span>
-          <button data-avatar-pick="${row.heroId}" style="flex:none">選圖</button>
-          <button data-avatar-url="${row.heroId}" style="flex:none">網址</button>
-          ${custom ? `<button data-avatar-reset="${row.heroId}" style="flex:none">還原</button>` : ''}
-        </div>`;
+      [...groups.entries()]
+        .sort(([first], [second]) => first.localeCompare(second))
+        .map(([type, group]) => {
+          const shared = typeAvatars[type] && typeAvatars[type].image;
+          const original = group.typeId !== undefined ? `/hero-avatars/${group.typeId}.png` : '';
+          const heroRows = group.heroes
+            .sort((first, second) => first.name.localeCompare(second.name))
+            .map((hero) => {
+              const own = avatars[hero.heroId] && avatars[hero.heroId].image;
+              return `<div class="row" style="align-items:center;gap:4px;padding-left:22px">
+              ${own ? thumb(own, 28) : `<span style="flex:none;width:28px;color:#888;font-size:11px;text-align:center">${shared ? '共用' : '原圖'}</span>`}
+              <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(hero.name)}</span>
+              ${buttons('hero', hero.heroId, own)}
+            </div>`;
+            })
+            .join('');
+          return `<div class="row" style="align-items:center;gap:4px;margin-top:6px">
+            ${original ? thumb(original) : ''}${shared ? `→${thumb(shared)}` : ''}
+            <b style="flex:1;min-width:0">${escapeHtml(type || '（不明種類）')}<span style="color:#888;font-weight:normal"> 共用</span></b>
+            ${buttons('type', type, shared)}
+          </div>${heroRows}`;
         })
         .join('');
   }
@@ -16783,29 +16850,31 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     const picker = panel.querySelector('[data-role="hero-avatar-file"]');
     list.addEventListener('click', (event) => {
       const button = event.target.closest('button');
-      if (!button) return;
-      if (button.dataset.avatarPick) {
-        heroAvatarView.pickingHeroId = button.dataset.avatarPick;
+      if (!button || !button.dataset.scope) return;
+      const { scope, key } = button.dataset;
+      if (button.hasAttribute('data-avatar-pick')) {
+        heroAvatarView.pickingScope = scope;
+        heroAvatarView.pickingKey = key;
         picker.value = '';
         picker.click();
-      } else if (button.dataset.avatarUrl) {
+      } else if (button.hasAttribute('data-avatar-url')) {
         const url = (prompt('圖片網址（https://…）', '') || '').trim();
         if (!url) return;
         if (!/^https?:\/\//.test(url)) {
           showToast('網址要是 http:// 或 https:// 開頭');
           return;
         }
-        setHeroAvatar(button.dataset.avatarUrl, url);
-      } else if (button.dataset.avatarReset) {
-        setHeroAvatar(button.dataset.avatarReset, '');
+        setAvatarByScope(scope, key, url);
+      } else if (button.hasAttribute('data-avatar-reset')) {
+        setAvatarByScope(scope, key, '');
       }
     });
     picker.addEventListener('change', async () => {
-      const heroId = heroAvatarView.pickingHeroId;
+      const { pickingScope, pickingKey } = heroAvatarView;
       const chosen = picker.files && picker.files[0];
-      if (!heroId || !chosen) return;
+      if (!pickingScope || !chosen) return;
       try {
-        setHeroAvatar(heroId, await shrinkAvatarImage(chosen));
+        setAvatarByScope(pickingScope, pickingKey, await shrinkAvatarImage(chosen));
       } catch (error) {
         showToast(`圖片讀不了（${error.message}）`);
       }
