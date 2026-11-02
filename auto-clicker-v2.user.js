@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.03
+// @version      5.04
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -450,6 +450,7 @@
     equipExportBase: false,
     // 穿著的裝備預測還能打幾場，少於這麼多場就提醒（0＝不提醒）
     durWarnBattles: 30,
+    durRecentBattles: 10,
     // 換過名字：舊版存的「關閉」不會蓋掉現在的預設開啟
     cloudSyncEnabled: true,
     huntStatsEnabled: true,
@@ -1280,6 +1281,7 @@
         <div class="row">預測還能打少於 ${numberInput('durWarnBattles', 'min="0"')} 場就提醒（0＝不提醒）</div>
         <div class="hint">記每件穿著的裝備每場掉多少耐久（最近 30 場平均），算出還能撐幾場；打過幾場才算得出來</div>
         <div class="hint">「依類型」把出戰隊伍裡同類型的裝備合在一起算（不同角色拿同一類武器也算一起，沒出戰的角色不算）：每場合計掉多少、今天用掉多少，加上閒置的備用裝備還能打幾場、照最近打怪的速度大約多久用完。有開 API 換裝的話，低於換裝門檻的部分不算（到那裡就會被換掉）</div>
+        <div class="row">依類型的每場消耗看同陣容最近 ${numberInput('durRecentBattles', 'min="3"')} 場（換陣容後打不到 3 場時先看所有陣容的最近幾場）</div>
         <div data-role="dur-type-forecast" style="font-size:12px;margin-bottom:6px"></div>
         <div data-role="dur-forecast" style="font-size:12px"></div>
       </fieldset>
@@ -15973,6 +15975,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     const today = localDayKey(now);
     stats.battles = [...stats.battles, now].slice(-DUR_HISTORY - 1);
     const todayUsage = (stats.days[today] = stats.days[today] || {});
+    const battleLoss = {};
     const updated = new Map((Array.isArray(changes.updated) ? changes.updated : []).map((equipment) => [String(equipment.id), equipment]));
     (changes.deletedIds || []).forEach((id) => delete track[id]);
     // 沒變的穿著裝備這場掉 0
@@ -15988,6 +15991,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
         entry.losses = [...entry.losses, entry.dur - dur].slice(-DUR_HISTORY);
         const type = equipment.type || entry.type || '?';
         todayUsage[type] = (todayUsage[type] || 0) + entry.dur - dur;
+        battleLoss[type] = (battleLoss[type] || 0) + entry.dur - dur;
       } else if (entry.dur !== undefined) entry.losses = [];
       Object.assign(entry, {
         name: equipment.name || entry.name,
@@ -16000,6 +16004,8 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       track[id] = entry;
     });
     writeJsonStorage(DUR_TRACK_KEY, track);
+    // 每場記下當時的陣容，換陣容後消耗不同，只拿同陣容的來算
+    stats.recent = [...(stats.recent || []), { at: now, team: durTeamKey(), loss: battleLoss }].slice(-DUR_HISTORY);
     Object.keys(stats.days)
       .sort()
       .slice(0, -DUR_STATS_DAYS)
@@ -16018,6 +16024,27 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       .filter((gap) => gap > 0 && gap < DUR_PACE_GAP_MILLISECONDS)
       .sort((first, second) => first - second);
     return gaps.length >= 3 ? gaps[Math.floor(gaps.length / 2)] : null;
+  }
+
+  function durTeamKey() {
+    return state.huntTeamIds
+      .map(Number)
+      .sort((first, second) => first - second)
+      .join(',');
+  }
+
+  // 同陣容最近幾場每類型平均掉多少；同陣容不到 3 場就先用所有陣容的最近幾場
+  function recentTypeLoss(settings) {
+    const recent = readJsonStorage(DUR_STATS_KEY, { battles: [], days: {} }).recent || [];
+    const count = Math.max(3, Number(settings.durRecentBattles) || 10);
+    const team = durTeamKey();
+    const sameTeam = recent.filter((battle) => battle.team === team);
+    const picked = (sameTeam.length >= 3 ? sameTeam : recent).slice(-count);
+    if (picked.length < 3) return null;
+    const perType = new Map();
+    picked.forEach((battle) => Object.entries(battle.loss).forEach(([type, loss]) => perType.set(type, (perType.get(type) || 0) + loss)));
+    perType.forEach((total, type) => perType.set(type, total / picked.length));
+    return { perType, battles: picked.length, sameTeam: sameTeam.length >= 3 };
   }
 
   // 同類型的裝備合起來算：不同角色拿同一類武器時，備用的是共用的，誰先用完都會去拿
@@ -16058,11 +16085,13 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
           group.usable += Number(equipment.dur) - minimum;
         });
     }
+    const recent = recentTypeLoss(settings);
     return [...groups.values()].map((group) => {
       // 剛換上、還沒紀錄的那件用同類型其他件的平均補
       const measured = group.worn.filter((piece) => piece.average !== null);
       const typeAverage = measured.length ? measured.reduce((sum, piece) => sum + piece.average, 0) / measured.length : null;
-      const perBattle = typeAverage === null ? null : group.worn.reduce((sum, piece) => sum + (piece.average ?? typeAverage), 0);
+      // 有最近幾場的戰報就用那個（反映現在的陣容和關卡），還沒累積夠才用每件的 30 場平均
+      const perBattle = recent ? recent.perType.get(group.type) || 0 : typeAverage === null ? null : group.worn.reduce((sum, piece) => sum + (piece.average ?? typeAverage), 0);
       const left = perBattle === null ? null : perBattle > 0 ? Math.floor(group.usable / perBattle) : Infinity;
       return { ...group, perBattle, left, sparesKnown: known };
     });
@@ -16095,8 +16124,10 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     const todayUsage = stats.days[localDayKey(Date.now())] || {};
     const battleMilliseconds = durBattleMilliseconds(stats);
     const limit = Number(settings.durWarnBattles) || 0;
+    const recent = recentTypeLoss(settings);
+    const basis = recent ? `・每場看${recent.sameTeam ? '同陣容' : '最近（陣容剛換，含舊陣容）'} ${recent.battles} 場` : '・每場看每件的 30 場平均';
     const timeText = (left) => (left === null || left === Infinity || !battleMilliseconds ? '' : `<div style="color:#a0a0aa">約 ${durationText((left * battleMilliseconds) / 60000)}</div>`);
-    box.innerHTML = `<div style="color:#a0a0aa;margin-bottom:2px">依類型（含備用）${battleMilliseconds ? `・最近一場約 ${Math.round(battleMilliseconds / 1000)} 秒` : ''}${sparesNote(groups)}</div>
+    box.innerHTML = `<div style="color:#a0a0aa;margin-bottom:2px">依類型（含備用）${basis}${battleMilliseconds ? `・最近一場約 ${Math.round(battleMilliseconds / 1000)} 秒` : ''}${sparesNote(groups)}</div>
       <table class="combat"><tr><th style="text-align:left">類型</th><th>穿著／備用</th><th>每場</th><th>今天用掉</th><th>可用耐久</th><th>還能打</th></tr>${groups
         .map((group) => {
           const left = group.left === null ? '算不出' : group.left === Infinity ? '不會掉' : `${group.left} 場`;
