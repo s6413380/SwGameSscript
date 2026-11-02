@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.06
+// @version      5.07
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -16079,7 +16079,7 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
           .map(([id, entry]) => ({ ...entry, id }));
     const groups = new Map();
     const groupOf = (type) => {
-      if (!groups.has(type)) groups.set(type, { type, worn: [], spares: [], usable: 0 });
+      if (!groups.has(type)) groups.set(type, { type, worn: [], spares: [], skipped: [], usable: 0 });
       return groups.get(type);
     };
     // 有勾自動換裝的角色才會被換下來；沒勾的會一直穿到壞
@@ -16092,18 +16092,21 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
       group.usable += Math.max(0, Number(equipment.dur) - minimum);
     });
     if (known) {
-      // 開了自動換裝：備用的要照那個角色的換裝限制換得上去才算，算進第一個換得上的那類（不重複算）；
-      // 沒開：自己手動換，同類型的閒置裝備都算
+      // 有勾自動換裝的角色：備用的要照那個角色的換裝限制換得上去才算，算進第一個換得上的那類（不重複算）；
+      // 沒勾（或沒開 API 換裝）：自己手動換，同類型的閒置裝備都算
       const swappable = worn.filter(autoSwapped).map((equipment) => ({ ...equipment, id: Number(equipment.id), equipped: Number(equipment.equipped) }));
+      const manualTypes = new Set(worn.filter((equipment) => !autoSwapped(equipment)).map((equipment) => equipment.type));
       state.equipments
-        .filter((equipment) => equipment.equipped === null && equipment.state === 0 && !blocked.has(equipment.id))
+        .filter((equipment) => equipment.equipped === null && equipment.state === 0)
         .forEach((equipment) => {
           let target = null;
-          if (swapping) {
-            const wearer = swappable.find((piece) => isReplacementCandidate(settings, piece, equipment, blocked));
-            if (wearer) target = { group: groups.get(wearer.type || '?'), minimum: heroMinDurability(settings, wearer.equipped) };
-          } else if (groups.has(equipment.type)) target = { group: groups.get(equipment.type), minimum: 0 };
-          if (!target || Number(equipment.dur) <= target.minimum) return;
+          const wearer = swappable.find((piece) => isReplacementCandidate(settings, piece, equipment, blocked));
+          if (wearer) target = { group: groups.get(wearer.type || '?'), minimum: heroMinDurability(settings, wearer.equipped) };
+          else if (manualTypes.has(equipment.type)) target = { group: groups.get(equipment.type), minimum: 0 };
+          if (!target || Number(equipment.dur) <= target.minimum) {
+            if (groups.has(equipment.type)) groups.get(equipment.type).skipped.push(equipment);
+            return;
+          }
           target.group.spares.push(equipment);
           target.group.usable += Number(equipment.dur) - target.minimum;
         });
@@ -16159,7 +16162,16 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
             <td>${group.perBattle === null ? '-' : group.perBattle.toFixed(2)}</td><td>${(todayUsage[group.type] || 0).toLocaleString()}</td>
             <td>${group.usable.toLocaleString()}</td><td style="color:${danger ? '#f87171' : '#4ade80'}">${left}${timeText(group.left)}</td></tr>`;
         })
-        .join('')}</table>`;
+        .join('')}</table>${groups
+      .filter((group) => !group.spares.length && group.skipped.length)
+      .map((group) => {
+        const piece = group.worn.find(({ equipment }) => settings.equipApiEnabled && isMonitoredEquipment(settings, { ...equipment, equipped: Number(equipment.equipped) }));
+        const why = piece
+          ? explainNoReplacement(settings, { ...piece.equipment, id: Number(piece.equipment.id), equipped: Number(piece.equipment.equipped) })
+          : group.skipped.map((equipment) => `「${equipment.name}」${equipment.dur}`).join('、');
+        return `<div class="hint" style="color:#fbbf24">${escapeHtml(group.type)}：倉庫有 ${group.skipped.length} 件沒算進備用（${escapeHtml(why)}）</div>`;
+      })
+      .join('')}`;
   }
 
   function sparesNote(groups) {
