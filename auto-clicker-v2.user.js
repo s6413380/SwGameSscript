@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.12
+// @version      5.13
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -355,6 +355,8 @@
     partyWaitEnabled: true,
     partyWaitHpPercent: 100,
     partyWaitSpPercent: 0,
+    // 隊友這些角色（名稱或 id）倒下時不用等、也不因為它倒下暫停；還活著血低照樣等
+    partyIgnoreDeadNames: '',
     partyWaitAlertMinutes: 5,
     // 隊友角色血低於這個 %（或倒下）而且一段時間都沒補上來，就暫停報警；剛打完對方腳本還沒喝水是正常的，所以要等寬限
     partyLowHpPauseEnabled: true,
@@ -1126,6 +1128,8 @@
       <div class="hint">填帳號名稱。主帳號照常打；其他帳號每次打怪後多等一段（每次長短不一），50% 約兩輪打一次，讓出來的時間給主帳號。只影響 API 打怪，鍛造照常。三個帳號自動同步</div>
       <label class="row"><input data-field="partyWaitEnabled" type="checkbox" style="flex:none;width:auto"> <b>組隊時等隊友補好</b>再打</label>
       <div class="row">隊友每隻角色血 ≥ ${numberInput('partyWaitHpPercent', 'min="1" max="100" step="5"')} %、體力 ≥ ${numberInput('partyWaitSpPercent', 'min="0" max="100" step="5"')} %</div>
+      <div class="row">隊友這些角色倒下不用等<input data-field="partyIgnoreDeadNames" placeholder="角色名稱或 id，用、分開" style="flex:1;min-width:0"></div>
+      <div class="hint">名單上的角色倒下時直接打，也不會因為它倒下暫停報警；還活著但血低，照樣等它補好、超過秒數照樣暫停</div>
       <div class="row">等超過 ${numberInput('partyWaitAlertMinutes', 'min="1"')} 分鐘就提醒</div>
       <label class="row"><input data-field="partyLowHpPauseEnabled" type="checkbox" style="flex:none;width:auto"> 隊友角色血低於 ${numberInput('partyLowHpPausePercent', 'min="1" max="100" step="5"')} %（或倒下）超過 ${numberInput('partyLowHpPauseSeconds', 'min="10" step="10"')} 秒沒補上來就<b>暫停報警</b></label>
       <div class="hint">要勾上面的「等隊友補好」才會檢查。剛打完隊友腳本還沒喝水是正常的，所以要持續一段時間才算</div>
@@ -9529,10 +9533,20 @@
     return { ...huntInfo, teammate: state.huntInfo.teammate };
   }
 
+  function ignoredDeadTeammate(settings, hero) {
+    if ((Number(hero.hp) || 0) > 0 && !hero.perished) return false;
+    const names = String(settings.partyIgnoreDeadNames || '')
+      .split(/[,，、]/)
+      .map((name) => name.trim())
+      .filter(Boolean);
+    return names.some((name) => name === String(hero.name).trim() || name === String(hero.id));
+  }
+
   function teammateHeroesNotReady(settings, heroes) {
     const hpPercent = Math.min(100, Math.max(1, Number(settings.partyWaitHpPercent) || 100));
     const spPercent = Math.min(100, Math.max(0, Number(settings.partyWaitSpPercent) || 0));
     return heroes.filter((hero) => {
+      if (ignoredDeadTeammate(settings, hero)) return false;
       const hp = Number(hero.hp) || 0;
       const fullHp = Number(hero.fullHp) || 0;
       if (hp <= 0 || hp < (fullHp * hpPercent) / 100) return true;
@@ -9542,7 +9556,7 @@
 
   function teammateHeroesLow(settings, heroes) {
     const percent = Math.min(100, Math.max(1, Number(settings.partyLowHpPausePercent) || 20));
-    return heroes.filter((hero) => (Number(hero.hp) || 0) <= 0 || Number(hero.hp) < (Number(hero.fullHp) * percent) / 100);
+    return heroes.filter((hero) => !ignoredDeadTeammate(settings, hero) && ((Number(hero.hp) || 0) <= 0 || Number(hero.hp) < (Number(hero.fullHp) * percent) / 100));
   }
 
   // 回傳 true＝已暫停
