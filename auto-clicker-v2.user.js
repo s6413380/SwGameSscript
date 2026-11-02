@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.02
+// @version      5.03
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1279,7 +1279,7 @@
         <legend>耐久預測</legend>
         <div class="row">預測還能打少於 ${numberInput('durWarnBattles', 'min="0"')} 場就提醒（0＝不提醒）</div>
         <div class="hint">記每件穿著的裝備每場掉多少耐久（最近 30 場平均），算出還能撐幾場；打過幾場才算得出來</div>
-        <div class="hint">「依類型」把同類型的裝備合在一起算（不同角色拿同一類武器也算一起）：每場合計掉多少、今天用掉多少，加上閒置的備用裝備還能打幾場、照最近打怪的速度大約多久用完。有開 API 換裝的話，低於換裝門檻的部分不算（到那裡就會被換掉）</div>
+        <div class="hint">「依類型」把出戰隊伍裡同類型的裝備合在一起算（不同角色拿同一類武器也算一起，沒出戰的角色不算）：每場合計掉多少、今天用掉多少，加上閒置的備用裝備還能打幾場、照最近打怪的速度大約多久用完。有開 API 換裝的話，低於換裝門檻的部分不算（到那裡就會被換掉）</div>
         <div data-role="dur-type-forecast" style="font-size:12px;margin-bottom:6px"></div>
         <div data-role="dur-forecast" style="font-size:12px"></div>
       </fieldset>
@@ -16025,10 +16025,15 @@ setInterval(function () { try { opener.__aijijiMiniAttach(window); } catch (erro
     const swapping = Boolean(settings.equipApiEnabled);
     const blocked = noAutoEquipIds();
     const known = state.equipments.length > 0;
+    // 只算出戰隊伍的：沒出戰的角色身上的不會掉；還沒讀到隊伍時才全部算
+    const team = new Set(state.huntTeamIds.map(Number));
+    const inTeam = (heroId) => !team.size || team.has(Number(heroId));
     const worn = known
-      ? state.equipments.filter((equipment) => equipment.equipped !== null && equipment.equipped !== undefined).map((equipment) => ({ ...equipment, id: String(equipment.id) }))
+      ? state.equipments
+          .filter((equipment) => equipment.equipped !== null && equipment.equipped !== undefined && inTeam(equipment.equipped))
+          .map((equipment) => ({ ...equipment, id: String(equipment.id) }))
       : Object.entries(track)
-          .filter(([, entry]) => entry.equipped)
+          .filter(([, entry]) => entry.equipped && inTeam(entry.equipped))
           .map(([id, entry]) => ({ ...entry, id }));
     const groups = new Map();
     const groupOf = (type) => {
