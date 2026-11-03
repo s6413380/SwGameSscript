@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.13
+// @version      5.14
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -133,6 +133,7 @@
     ['recipe', '配方'],
     ['mining', '挖礦'],
     ['material', '材料統計'],
+    ['forgerCompare', '鍛造師比較'],
     ['combat', '戰鬥'],
     ['huntStats', '樓層'],
     ['income', '收益'],
@@ -155,7 +156,7 @@
   // 分頁太多，先選大類再選分頁；大類裡記住上次看的分頁
   const TAB_GROUPS = [
     ['hunt', '打怪', ['main', 'health', 'resource', 'move', 'equip', 'train', 'pause']],
-    ['forging', '鍛造', ['forge', 'recipe', 'material', 'mining']],
+    ['forging', '鍛造', ['forge', 'recipe', 'material', 'forgerCompare', 'mining']],
     ['stats', '統計', ['income', 'combat', 'huntStats', 'loot', 'growth', 'draw', 'scratch', 'sales']],
     ['other', '其他', ['pick', 'transfer', 'cardBuy', 'alert', 'cloud', 'log', 'api', 'backup']],
   ];
@@ -1465,6 +1466,16 @@
       <div data-role="material-summary" style="font-size:12px;max-height:380px;overflow:auto"></div>
     </div>
 
+    <div data-tab="forgerCompare">
+      <div class="hint">同種類、同配方（材料和數量都一樣）的裝備，依鍛造師分開比。數值先換算成普通品質；同一個鍛造師做出來的高低差就是隨機範圍，換人後平均差超過隨機範圍（約 2 倍標準誤）才算「有差」。名稱每天 00:00 換效果，最準的是選「同一天同名稱」那批</div>
+      <div class="row"><select data-role="forger-compare-type" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
+      <div class="row"><select data-role="forger-compare-recipe" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
+      <div class="row"><select data-role="forger-compare-batch" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
+      <label class="row"><input data-role="forger-compare-name-adjust" type="checkbox" style="flex:none;width:auto"> 扣掉名稱影響（用每日測名表；混不同天、不同名稱時才需要）</label>
+      <div class="row"><button data-action="forger-compare-refresh">讀取裝備並比較</button></div>
+      <div data-role="forger-compare" style="font-size:12px;max-height:420px;overflow:auto"></div>
+    </div>
+
     <div data-tab="mining">
       <div class="row"><button data-action="mining-start" style="font-weight:bold">開始挖礦</button><button data-action="mining-stop">停止挖礦</button><button data-action="mining-refresh">重新讀取</button></div>
       <div class="row">立即收礦 <select data-role="mining-collect-site" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">全部地點</option><option value="1">砂石場</option><option value="2">森林區</option><option value="3">鐵礦山</option><option value="4">阿嬤寶山</option></select>
@@ -1995,16 +2006,18 @@
     activeTab = tabId;
     const group = tabGroupOf(tabId);
     if (tabId === 'growth') renderGrowthSummary();
-    if (tabId === 'material' || tabId === 'recipe') {
+    if (tabId === 'material' || tabId === 'recipe' || tabId === 'forgerCompare') {
       // 測名表過一陣子才重抓；抓到新的再重畫
       refreshNameWeights()
         .then(() => {
           if (activeTab === 'material') renderMaterialSummary();
           if (activeTab === 'recipe') renderRecipes();
+          if (activeTab === 'forgerCompare') renderForgerCompare();
         })
         .catch((error) => setStatus(`讀取測名表失敗（${error.message}）`));
     }
     if (tabId === 'material') renderMaterialSummary();
+    if (tabId === 'forgerCompare') renderForgerCompare();
     if (tabId === 'recipe') {
       renderRecipes();
       renderRecipeFavorites();
@@ -11506,6 +11519,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       syncCloud(readSettingsFromPanel());
     } else if (action === 'material-refresh') {
       refreshMaterialSummary();
+    } else if (action === 'forger-compare-refresh') {
+      refreshForgerCompare();
     } else if (action === 'quality-pick-scan') {
       showPickChoices();
     } else if (action === 'equip-export') {
@@ -15173,6 +15188,158 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }
     renderMaterialSummary();
     renderRecipes();
+  }
+
+  // ---------- 鍛造師比較 ----------
+  // 獨立一頁、只在打開時算，不拖慢材料統計和配方頁
+
+  const FORGER_COMPARE_FIELDS = [
+    ['atk', '攻'],
+    ['def', '防'],
+    ['int', '智'],
+    ['lck', '運'],
+    ['wgt', '重'],
+    ['fullDur', '耐'],
+  ];
+  const FORGER_COMPARE_MIN_COUNT = 3;
+
+  function fillSelect(select, options, fallback = '') {
+    const previous = select.value;
+    select.innerHTML = options.map(([value, label]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join('');
+    select.value = options.some(([value]) => value === previous) ? previous : fallback;
+    if (select.selectedIndex < 0 && options.length) select.value = options[0][0];
+  }
+
+  function statSpread(values) {
+    const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+    const variance = values.length > 1 ? values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (values.length - 1) : 0;
+    return { mean, sd: Math.sqrt(variance), min: Math.min(...values), max: Math.max(...values), count: values.length };
+  }
+
+  function forgerBatchKey(item) {
+    return `${localDayKey(item.craftedTime)}|${item.name || ''}`;
+  }
+
+  // 跟基準鍛造師比：平均差超過 2 倍標準誤才算有差；重量越輕越好
+  function forgerDifferenceHtml(field, own, base) {
+    if (own.count < FORGER_COMPARE_MIN_COUNT || base.count < FORGER_COMPARE_MIN_COUNT) return '<span style="color:#a0a0aa">件數太少</span>';
+    const gap = own.mean - base.mean;
+    const error = Math.sqrt(own.sd ** 2 / own.count + base.sd ** 2 / base.count);
+    const percent = base.mean ? `（${gap > 0 ? '+' : ''}${Math.round((gap / Math.abs(base.mean)) * 100)}%）` : '';
+    const gapText = `${gap > 0 ? '+' : ''}${gap.toFixed(1)}${percent}`;
+    if (Math.abs(gap) <= Math.max(2 * error, 0.5)) return `<span style="color:#a0a0aa">${gapText} 沒差</span>`;
+    const better = field === 'wgt' ? gap < 0 : gap > 0;
+    return `<b style="color:${better ? '#4ade80' : '#f87171'}">${gapText} 有差</b>`;
+  }
+
+  function forgerCardHtml(forger, items, stats, base, isBase, fields) {
+    const qualities = new Map();
+    items.forEach((item) => qualities.set(item.quality, (qualities.get(item.quality) || 0) + 1));
+    const qualityText = [...qualities.entries()]
+      .sort(([first], [second]) => qualityRank(first) - qualityRank(second))
+      .map(([quality, count]) => `<span style="color:${QUALITY_COLORS[quality] || '#aaa'}">${escapeHtml(quality)}${count}</span>`)
+      .join(' ');
+    const skills = skillsText(items);
+    const rows = fields.map(([field, label]) => {
+      const own = stats[field];
+      return `<tr><td>${label}</td><td style="text-align:right">${own.mean.toFixed(1)}</td><td style="text-align:right;color:#a0a0aa">±${own.sd.toFixed(1)}</td>
+        <td style="color:#a0a0aa">${Math.round(own.min)}～${Math.round(own.max)}</td><td>${isBase ? '<span style="color:#a0a0aa">基準</span>' : forgerDifferenceHtml(field, own, base[field])}</td></tr>`;
+    }).join('');
+    return `<div style="margin:6px 0;padding:6px;border:1px solid ${isBase ? '#fcd34d' : '#3a3a40'};border-radius:6px">
+      <div><b>${escapeHtml(forger)}</b> × ${items.length}${skills ? ` <span style="color:#a0a0aa">（${skills}）</span>` : ''}${isBase ? ' <span style="color:#fcd34d">基準</span>' : ''}</div>
+      <div>${qualityText}</div>
+      <table style="width:100%;border-collapse:collapse;margin-top:3px"><tr style="color:#a0a0aa"><td></td><td style="text-align:right">平均</td><td style="text-align:right">隨機±</td><td>最低～最高</td><td>跟基準比</td></tr>${rows}</table>
+    </div>`;
+  }
+
+  function renderForgerCompare() {
+    const box = panel.querySelector('[data-role="forger-compare"]');
+    const typeSelect = panel.querySelector('[data-role="forger-compare-type"]');
+    const recipeSelect = panel.querySelector('[data-role="forger-compare-recipe"]');
+    const batchSelect = panel.querySelector('[data-role="forger-compare-batch"]');
+    const nameAdjust = panel.querySelector('[data-role="forger-compare-name-adjust"]').checked;
+    const records = [...forgedRecords().values()].filter((item) => item.forger && item.type && Array.isArray(item.materials) && item.materials.length);
+    const types = [...new Set(records.map((item) => item.type))];
+    fillSelect(typeSelect, types.map((type) => [type, type]));
+    const ofType = records.filter((item) => item.type === typeSelect.value);
+    // 有兩位以上鍛造師做過的配方才比得起來，排前面
+    const recipes = new Map();
+    ofType.forEach((item) => {
+      const key = materialGroupKeys(item.materials, 'combo')[0];
+      if (!recipes.has(key)) recipes.set(key, []);
+      recipes.get(key).push(item);
+    });
+    const recipeOptions = [...recipes.entries()]
+      .map(([key, items]) => ({ key, count: items.length, forgers: new Set(items.map((item) => item.forger)).size }))
+      .filter((recipe) => recipe.count >= 2)
+      .sort((first, second) => second.forgers - first.forgers || second.count - first.count)
+      .map(({ key, count, forgers }) => [key, `${forgers} 位鍛造師・${count} 件｜${key}`]);
+    fillSelect(recipeSelect, recipeOptions);
+    const ofRecipe = recipes.get(recipeSelect.value) || [];
+    const batches = new Map();
+    ofRecipe.forEach((item) => {
+      const key = forgerBatchKey(item);
+      if (!batches.has(key)) batches.set(key, []);
+      batches.get(key).push(item);
+    });
+    const batchOptions = [...batches.entries()]
+      .sort(([first], [second]) => second.localeCompare(first))
+      .map(([key, items]) => {
+        const [day, name] = key.split('|');
+        return [key, `${day || '日期不明'} ${name || '（沒名稱）'}・${new Set(items.map((item) => item.forger)).size} 位・${items.length} 件`];
+      });
+    fillSelect(batchSelect, [['', `全部日期與名稱混在一起（${ofRecipe.length} 件）`], ...batchOptions]);
+    if (!records.length) {
+      box.innerHTML = '<div class="hint">還沒有帶材料的鍛造紀錄；鍛造後按「讀取裝備並比較」</div>';
+      return;
+    }
+    if (!recipeOptions.length) {
+      box.innerHTML = '<div class="hint">這個種類還沒有同一個配方做過 2 件以上</div>';
+      return;
+    }
+    const chosen = batchSelect.value ? batches.get(batchSelect.value) || [] : ofRecipe;
+    const multipliers = qualityMultipliers();
+    const weights = nameAdjust ? loadNameWeights() || { days: {} } : null;
+    let unmatched = 0;
+    const byForger = new Map();
+    chosen.forEach((item) => {
+      const stats = adjustedBaseStats(item, multipliers, weights);
+      if (!stats) {
+        unmatched++;
+        return;
+      }
+      if (!byForger.has(item.forger)) byForger.set(item.forger, []);
+      byForger.get(item.forger).push({ ...item, stats });
+    });
+    const forgers = [...byForger.entries()]
+      .map(([forger, items]) => ({
+        forger,
+        items,
+        stats: Object.fromEntries(FORGER_COMPARE_FIELDS.map(([field]) => [field, statSpread(items.map((item) => item.stats[field]))])),
+      }))
+      .sort((first, second) => second.items.length - first.items.length);
+    const notes = [];
+    if (!batchSelect.value && batches.size > 1 && !nameAdjust) notes.push('混了不同天或不同名稱，差異可能是名稱造成的；選一批同一天同名稱的，或勾「扣掉名稱影響」');
+    if (unmatched) notes.push(`${unmatched} 件對不到測名表，沒算進去`);
+    if (forgers.length < 2) notes.push('這批只有一位鍛造師，只能看隨機範圍；換一位鍛造師用同配方、同名稱做幾件再來比');
+    if (forgers.some(({ items }) => items.length < 8)) notes.push(`每位最好 8 件以上；少於 ${FORGER_COMPARE_MIN_COUNT} 件不判斷`);
+    const base = forgers[0] ? forgers[0].stats : null;
+    // 這種裝備本來就沒有的屬性（劍的智力之類）全是 0，不用列
+    const fields = FORGER_COMPARE_FIELDS.filter(([field]) => forgers.some(({ stats }) => stats[field].min !== 0 || stats[field].max !== 0));
+    box.innerHTML = `${notes.map((note) => `<div class="hint" style="color:#fbbf24">${escapeHtml(note)}</div>`).join('')}
+      <div class="hint">數值已換算成普通品質${nameAdjust ? '、扣掉名稱影響' : ''}；「隨機±」是標準差，基準＝件數最多的鍛造師</div>
+      ${forgers.map(({ forger, items, stats }, index) => forgerCardHtml(forger, items, stats, base, index === 0, fields)).join('')}`;
+  }
+
+  async function refreshForgerCompare() {
+    try {
+      const equipments = (await requestGameApi(EQUIPMENTS_API)).equipments || [];
+      matchPendingForges(equipments);
+      rememberForgedEquipments(equipments);
+    } catch (error) {
+      setStatus(`讀取裝備清單失敗（${error.message}）`);
+    }
+    renderForgerCompare();
   }
 
   // 雲端（Google 試算表 Apps Script）：跟朋友共用成長值與材料紀錄。
@@ -20986,6 +21153,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   panel.querySelector('[data-role="material-type"]').addEventListener('change', renderMaterialSummary);
   panel.querySelector('[data-role="material-forger"]').addEventListener('change', renderMaterialSummary);
   panel.querySelector('[data-role="material-sort"]').addEventListener('change', renderMaterialSummary);
+  ['type', 'recipe', 'batch', 'name-adjust'].forEach((role) =>
+    panel.querySelector(`[data-role="forger-compare-${role}"]`).addEventListener('change', renderForgerCompare)
+  );
   panel.querySelector('[data-role="material-filter"]').addEventListener('input', renderMaterialSummary);
   panel.querySelector('[data-role="growth-import-file"]').addEventListener('change', (event) => {
     const files = Array.from(event.target.files);
