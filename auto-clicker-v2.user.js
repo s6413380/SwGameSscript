@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.18
+// @version      5.19
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1471,6 +1471,7 @@
       <div class="row"><select data-role="forger-compare-type" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
       <div class="row"><select data-role="forger-compare-recipe" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
       <div class="row"><select data-role="forger-compare-batch" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
+      <div class="row"><select data-role="forger-compare-base" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px" title="其他鍛造師都跟這位比"></select></div>
       <label class="row"><input data-role="forger-compare-name-adjust" type="checkbox" style="flex:none;width:auto"> 扣掉名稱影響（用每日測名表；混不同天、不同名稱時才需要）</label>
       <div class="row"><button data-action="forger-compare-refresh">讀取裝備並比較</button><button data-action="forger-compare-viewer" style="font-weight:bold">放大檢視（技能影響、名稱對照）</button></div>
       <div data-role="forger-compare" style="font-size:12px;max-height:420px;overflow:auto"></div>
@@ -15375,6 +15376,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         stats: Object.fromEntries(FORGER_COMPARE_FIELDS.map(([field]) => [field, statSpread(items.map((item) => item.stats[field]))])),
       }))
       .sort((first, second) => second.items.length - first.items.length);
+    // 基準可以自己選；選的那位放第一個，其他照件數
+    const baseSelect = panel.querySelector('[data-role="forger-compare-base"]');
+    fillSelect(baseSelect, [
+      ['', '基準：件數最多的鍛造師'],
+      ...forgers.map(({ forger, identityKey, items }) => [identityKey, `基準：${forger}（${items.length} 件）`]),
+    ]);
+    const baseIndex = forgers.findIndex(({ identityKey }) => identityKey === baseSelect.value);
+    if (baseIndex > 0) forgers.unshift(...forgers.splice(baseIndex, 1));
     const notes = [];
     if (!batchSelect.value && batches.size > 1 && !nameAdjust) notes.push('混了不同天或不同名稱，差異可能是名稱造成的；選一批同一天同名稱的，或勾「扣掉名稱影響」');
     if (unmatched) notes.push(`${unmatched} 件對不到測名表（那天沒人測這個名稱），沒算進去；取消「扣掉名稱影響」，或改選一批同一天同名稱的就會算`);
@@ -15384,7 +15393,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     // 這種裝備本來就沒有的屬性（劍的智力之類）全是 0，不用列
     const fields = FORGER_COMPARE_FIELDS.filter(([field]) => forgers.some(({ stats }) => stats[field].min !== 0 || stats[field].max !== 0));
     const notesHtml = `${notes.map((note) => `<div class="hint" style="color:#fbbf24">${escapeHtml(note)}</div>`).join('')}
-      <div class="hint">數值已換算成普通品質${nameAdjust ? '、扣掉名稱影響' : ''}；「隨機±」是標準差，基準＝件數最多的鍛造師</div>`;
+      <div class="hint">數值已換算成普通品質${nameAdjust ? '、扣掉名稱影響' : ''}；「隨機±」是標準差，基準＝${baseIndex >= 0 ? '你選的' : '件數最多的'}鍛造師</div>`;
     const cards = forgers.map(({ forger, identityKey, items, stats }, index) => forgerCardHtml(forger, items, stats, base, index === 0, fields, identityKey)).join('');
     box.innerHTML = notesHtml + cards;
     const shownBatches = batchSelect.value ? [[batchSelect.value, chosen]] : [...batches.entries()];
@@ -15579,12 +15588,20 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         <button data-close style="padding:3px 10px;color:#fff;background:#3a3a42;border:1px solid #55555c;border-radius:5px;cursor:pointer">關閉</button></div>
       <div style="overflow:auto;padding:8px 14px">
         ${data.notes}
+        <select data-viewer-base style="margin-top:6px;padding:4px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px">${panel.querySelector('[data-role="forger-compare-base"]').innerHTML}</select>
         ${data.cards ? section('各鍛造師', `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:4px 12px;align-items:start">${data.cards}</div>`) : ''}
         ${section('是鍛造、裁縫還是工藝在影響？', skillEffectsHtml(data.items, data.fields))}
         ${section('這個配方用過的名稱（測名表基準比）', batchNamesHtml(data.batches))}
         ${section('查測名表歷史名稱', `<input data-name-history placeholder="輸入名稱，例如：霜、tamy" style="width:min(420px,100%);padding:4px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><div data-name-history-result style="margin-top:6px"></div>`)}
       </div>
     </div>`;
+    const baseChoice = overlay.querySelector('[data-viewer-base]');
+    baseChoice.value = panel.querySelector('[data-role="forger-compare-base"]').value;
+    baseChoice.addEventListener('change', () => {
+      panel.querySelector('[data-role="forger-compare-base"]').value = baseChoice.value;
+      close();
+      openForgerCompareViewer();
+    });
     const historyInput = overlay.querySelector('[data-name-history]');
     const historyResult = overlay.querySelector('[data-name-history-result]');
     historyInput.value = data.batches.length === 1 ? data.batches[0].name : '';
@@ -21434,7 +21451,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   panel.querySelector('[data-role="material-type"]').addEventListener('change', renderMaterialSummary);
   panel.querySelector('[data-role="material-forger"]').addEventListener('change', renderMaterialSummary);
   panel.querySelector('[data-role="material-sort"]').addEventListener('change', renderMaterialSummary);
-  ['type', 'recipe', 'batch', 'name-adjust'].forEach((role) =>
+  ['type', 'recipe', 'batch', 'base', 'name-adjust'].forEach((role) =>
     panel.querySelector(`[data-role="forger-compare-${role}"]`).addEventListener('change', renderForgerCompare)
   );
   panel.querySelector('[data-role="material-filter"]').addEventListener('input', renderMaterialSummary);
