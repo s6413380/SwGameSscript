@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.15
+// @version      5.16
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1472,7 +1472,7 @@
       <div class="row"><select data-role="forger-compare-recipe" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
       <div class="row"><select data-role="forger-compare-batch" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
       <label class="row"><input data-role="forger-compare-name-adjust" type="checkbox" style="flex:none;width:auto"> 扣掉名稱影響（用每日測名表；混不同天、不同名稱時才需要）</label>
-      <div class="row"><button data-action="forger-compare-refresh">讀取裝備並比較</button></div>
+      <div class="row"><button data-action="forger-compare-refresh">讀取裝備並比較</button><button data-action="forger-compare-viewer" style="font-weight:bold">放大檢視（技能影響、名稱對照）</button></div>
       <div data-role="forger-compare" style="font-size:12px;max-height:420px;overflow:auto"></div>
     </div>
 
@@ -11521,6 +11521,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       refreshMaterialSummary();
     } else if (action === 'forger-compare-refresh') {
       refreshForgerCompare();
+    } else if (action === 'forger-compare-viewer') {
+      openForgerCompareViewer();
     } else if (action === 'quality-pick-scan') {
       showPickChoices();
     } else if (action === 'equip-export') {
@@ -15299,6 +15301,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         return [key, `${day || '日期不明'} ${name || '（沒名稱）'}・${new Set(items.map((item) => forgerIdentity(item).key)).size} 位・${items.length} 件`];
       });
     fillSelect(batchSelect, [['', `全部日期與名稱混在一起（${ofRecipe.length} 件）`], ...batchOptions]);
+    lastForgerCompare = null;
     if (!records.length) {
       box.innerHTML = '<div class="hint">還沒有帶材料的鍛造紀錄；鍛造後按「讀取裝備並比較」</div>';
       return;
@@ -15342,9 +15345,225 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const base = forgers[0] ? forgers[0].stats : null;
     // 這種裝備本來就沒有的屬性（劍的智力之類）全是 0，不用列
     const fields = FORGER_COMPARE_FIELDS.filter(([field]) => forgers.some(({ stats }) => stats[field].min !== 0 || stats[field].max !== 0));
-    box.innerHTML = `${notes.map((note) => `<div class="hint" style="color:#fbbf24">${escapeHtml(note)}</div>`).join('')}
-      <div class="hint">數值已換算成普通品質${nameAdjust ? '、扣掉名稱影響' : ''}；「隨機±」是標準差，基準＝件數最多的鍛造師</div>
-      ${forgers.map(({ forger, items, stats }, index) => forgerCardHtml(forger, items, stats, base, index === 0, fields)).join('')}`;
+    const notesHtml = `${notes.map((note) => `<div class="hint" style="color:#fbbf24">${escapeHtml(note)}</div>`).join('')}
+      <div class="hint">數值已換算成普通品質${nameAdjust ? '、扣掉名稱影響' : ''}；「隨機±」是標準差，基準＝件數最多的鍛造師</div>`;
+    const cards = forgers.map(({ forger, items, stats }, index) => forgerCardHtml(forger, items, stats, base, index === 0, fields)).join('');
+    box.innerHTML = notesHtml + cards;
+    const shownBatches = batchSelect.value ? [[batchSelect.value, chosen]] : [...batches.entries()];
+    lastForgerCompare = {
+      title: `鍛造師比較：${typeSelect.value}・${recipeSelect.value}`,
+      notes: notesHtml,
+      cards,
+      fields,
+      items: forgers.flatMap(({ items }) => items),
+      batches: shownBatches
+        .sort(([first], [second]) => second.localeCompare(first))
+        .map(([key, items]) => {
+          const [day, name] = key.split('|');
+          return { day, name, count: items.length, forgers: new Set(items.map((item) => forgerIdentity(item).key)).size };
+        }),
+    };
+  }
+
+  // ---------- 鍛造師比較：放大檢視（卡片並排、技能影響、名稱對照） ----------
+
+  const FORGER_SKILLS = [
+    ['forge', '鍛造'],
+    ['tailor', '裁縫'],
+    ['craft', '工藝'],
+  ];
+  let lastForgerCompare = null;
+
+  // 解 (XᵀX)⁻¹；矩陣小（最多 4×4），高斯消去就好；奇異（技能完全同步變化）回傳 null
+  function invertMatrix(matrix) {
+    const size = matrix.length;
+    const work = matrix.map((row, index) => [...row, ...Array.from({ length: size }, (_, column) => (column === index ? 1 : 0))]);
+    for (let column = 0; column < size; column++) {
+      let pivot = column;
+      for (let row = column + 1; row < size; row++) if (Math.abs(work[row][column]) > Math.abs(work[pivot][column])) pivot = row;
+      if (Math.abs(work[pivot][column]) < 1e-9) return null;
+      [work[column], work[pivot]] = [work[pivot], work[column]];
+      const divisor = work[column][column];
+      work[column] = work[column].map((value) => value / divisor);
+      for (let row = 0; row < size; row++) {
+        if (row === column) continue;
+        const factor = work[row][column];
+        work[row] = work[row].map((value, index) => value - factor * work[column][index]);
+      }
+    }
+    return work.map((row) => row.slice(size));
+  }
+
+  function correlation(first, second) {
+    const mean = (values) => values.reduce((sum, value) => sum + value, 0) / values.length;
+    const firstMean = mean(first);
+    const secondMean = mean(second);
+    let product = 0;
+    let firstSquares = 0;
+    let secondSquares = 0;
+    first.forEach((value, index) => {
+      product += (value - firstMean) * (second[index] - secondMean);
+      firstSquares += (value - firstMean) ** 2;
+      secondSquares += (second[index] - secondMean) ** 2;
+    });
+    return firstSquares && secondSquares ? product / Math.sqrt(firstSquares * secondSquares) : 0;
+  }
+
+  // 屬性 ≈ 常數 + a×鍛造 + b×裁縫 + c×工藝，三項一起解才分得出是哪一項；
+  // 係數除以標準誤 ≥ 2 才算「有關」，不然就是隨機噪音蓋過去了
+  function skillEffects(items, fields) {
+    const withSkills = items.filter((item) => item.skills && FORGER_SKILLS.every(([skill]) => Number.isFinite(Number(item.skills[skill]))));
+    const skillValues = (skill) => withSkills.map((item) => Number(item.skills[skill]));
+    const varying = FORGER_SKILLS.filter(([skill]) => new Set(skillValues(skill)).size > 1);
+    const combos = new Set(withSkills.map((item) => FORGER_SKILLS.map(([skill]) => item.skills[skill]).join('/'))).size;
+    const result = { count: withSkills.length, missing: items.length - withSkills.length, varying, combos, linked: [], rows: [], problem: '' };
+    if (withSkills.length < 6) {
+      result.problem = `有技能紀錄的只有 ${withSkills.length} 件（雲端和舊紀錄沒存技能），至少要 6 件`;
+      return result;
+    }
+    if (!varying.length) {
+      result.problem = '這幾件的鍛造師技能都一樣，看不出技能的影響；要找技能不同的鍛造師來做';
+      return result;
+    }
+    // 兩項技能幾乎一起升降就分不開是誰的功勞
+    varying.forEach(([first, firstLabel], index) =>
+      varying.slice(index + 1).forEach(([second, secondLabel]) => {
+        if (Math.abs(correlation(skillValues(first), skillValues(second))) > 0.95) result.linked.push(`${firstLabel}和${secondLabel}`);
+      })
+    );
+    const parameters = varying.length + 1;
+    if (withSkills.length < parameters + 4) {
+      result.problem = `件數太少（${withSkills.length} 件），三項技能都在變時至少要 ${parameters + 4} 件`;
+      return result;
+    }
+    const design = withSkills.map((item) => [1, ...varying.map(([skill]) => Number(item.skills[skill]))]);
+    const normal = design[0].map((_, row) => design[0].map((__, column) => design.reduce((sum, line) => sum + line[row] * line[column], 0)));
+    const inverse = invertMatrix(normal);
+    if (!inverse) {
+      result.problem = `技能的組合只有 ${combos} 種，而且是同步變化，數學上分不開；要多找幾位技能高低不同的鍛造師`;
+      return result;
+    }
+    result.rows = fields.map(([field, label]) => {
+      const values = withSkills.map((item) => item.stats[field]);
+      const transposed = design[0].map((_, row) => design.reduce((sum, line, index) => sum + line[row] * values[index], 0));
+      const coefficients = inverse.map((row) => row.reduce((sum, value, index) => sum + value * transposed[index], 0));
+      const residuals = values.map((value, index) => value - design[index].reduce((sum, cell, column) => sum + cell * coefficients[column], 0));
+      const variance = residuals.reduce((sum, value) => sum + value ** 2, 0) / Math.max(1, withSkills.length - parameters);
+      const effects = varying.map(([skill], index) => {
+        const coefficient = coefficients[index + 1];
+        const error = Math.sqrt(Math.max(0, variance * inverse[index + 1][index + 1]));
+        return { skill, coefficient, score: error ? coefficient / error : 0 };
+      });
+      return { field, label, effects };
+    });
+    return result;
+  }
+
+  function skillEffectCell(effect, field) {
+    if (!effect) return '<td style="color:#71717a">都一樣</td>';
+    const perTen = effect.coefficient * 10;
+    const text = `${perTen > 0 ? '+' : ''}${perTen.toFixed(1)}`;
+    if (Math.abs(effect.score) < 2) return `<td style="color:#a0a0aa">${text}<br><small>看不出</small></td>`;
+    const better = field === 'wgt' ? perTen < 0 : perTen > 0;
+    return `<td><b style="color:${better ? '#4ade80' : '#f87171'}">${text}</b><br><small style="color:${better ? '#4ade80' : '#f87171'}">有關</small></td>`;
+  }
+
+  function skillEffectsHtml(items, fields) {
+    const result = skillEffects(items, fields);
+    const notes = [];
+    if (result.missing) notes.push(`${result.missing} 件沒有鍛造當下的技能紀錄（雲端、舊紀錄），不算`);
+    if (result.linked.length) notes.push(`${result.linked.join('、')}幾乎一起升降，這兩項的功勞分不開，數字要打折看`);
+    const head = `<div class="hint">用 ${result.count} 件、${result.combos} 種技能組合解「屬性 ≈ 常數 + a×鍛造 + b×裁縫 + c×工藝」。數字是<b>技能每 +10 點</b>，這項屬性平均變多少（已換算普通品質）；係數超過 2 倍標準誤才標「有關」。技能高低差越大、鍛造師越多越準</div>`;
+    if (result.problem) return `${head}<div style="color:#fbbf24;margin:6px 0">${escapeHtml(result.problem)}</div>`;
+    const rows = result.rows
+      .map(({ field, label, effects }) => `<tr><td><b>${label}</b></td>${FORGER_SKILLS.map(([skill]) => skillEffectCell(effects.find((effect) => effect.skill === skill), field)).join('')}</tr>`)
+      .join('');
+    return `${head}${notes.map((note) => `<div style="color:#fbbf24">${escapeHtml(note)}</div>`).join('')}
+      <table style="border-collapse:collapse;margin-top:6px;text-align:center" cellpadding="5"><tr style="color:#a0a0aa"><td></td>${FORGER_SKILLS.map(([, label]) => `<td>${label} +10</td>`).join('')}</tr>${rows}</table>`;
+  }
+
+  function nameRatioCells(entry) {
+    if (!entry) return `<td colspan="7" style="color:#71717a">測名表沒有</td>`;
+    const ratio = (value) => {
+      const color = value >= 0.85 ? '#4ade80' : value >= 0.7 ? '#e4e4e7' : value >= 0.55 ? '#fbbf24' : '#f87171';
+      return `<td style="color:${color}">${Math.round(value * 100)}%</td>`;
+    };
+    const average = entry.w.reduce((sum, value) => sum + value, 0) / entry.w.length;
+    return `${entry.w.map(ratio).join('')}${ratio(average)}`;
+  }
+
+  const NAME_RATIO_HEAD = '<td>攻</td><td>防</td><td>智</td><td>幸</td><td>重(高=輕)</td><td>耐</td><td>六圍</td>';
+
+  function batchNamesHtml(batches) {
+    const weights = loadNameWeights();
+    if (!weights) return '<div class="hint">還沒讀到測名表</div>';
+    const rows = batches
+      .map(({ day, name, count, forgers }) => {
+        const entry = (weights.days[day] || {})[name];
+        return `<tr><td>${escapeHtml(day || '日期不明')}</td><td style="text-align:left">${escapeHtml(name || '（沒名稱）')}</td><td>${count} 件・${forgers} 位</td>${nameRatioCells(entry)}<td style="color:#a0a0aa">${entry ? entry.n : ''}</td></tr>`;
+      })
+      .join('');
+    return `<table style="border-collapse:collapse;text-align:center;width:100%" cellpadding="4"><tr style="color:#a0a0aa"><td>日期</td><td style="text-align:left">名稱</td><td>這個配方</td>${NAME_RATIO_HEAD}<td>樣本</td></tr>${rows}</table>`;
+  }
+
+  // 輸入名稱（可多個，用、或逗號分開）查測名表歷史，比較哪天、哪個名稱比較好
+  function nameHistoryHtml(query) {
+    const weights = loadNameWeights();
+    const words = String(query).split(/[、,，\s]+/).map((word) => word.trim()).filter(Boolean);
+    if (!weights || !words.length) return '<div class="hint">輸入名稱（部分文字也行，多個用、分開）</div>';
+    const rows = [];
+    Object.keys(weights.days)
+      .sort()
+      .reverse()
+      .forEach((day) =>
+        Object.entries(weights.days[day]).forEach(([name, entry]) => {
+          if (words.some((word) => name.includes(word))) rows.push({ day, name, entry });
+        })
+      );
+    if (!rows.length) return `<div class="hint">測名表最近 ${NAME_WEIGHT_DAYS} 天沒有這個名稱</div>`;
+    return `<table style="border-collapse:collapse;text-align:center;width:100%" cellpadding="4"><tr style="color:#a0a0aa"><td>日期</td><td style="text-align:left">名稱</td>${NAME_RATIO_HEAD}<td>樣本</td></tr>
+      ${rows
+        .slice(0, 200)
+        .map(({ day, name, entry }) => `<tr><td>${day}</td><td style="text-align:left">${escapeHtml(name)}</td>${nameRatioCells(entry)}<td style="color:#a0a0aa">${entry.n}</td></tr>`)
+        .join('')}</table>${rows.length > 200 ? `<div class="hint">只列最近 200 筆（共 ${rows.length} 筆）</div>` : ''}`;
+  }
+
+  function openForgerCompareViewer() {
+    renderForgerCompare();
+    const data = lastForgerCompare;
+    if (!data) return;
+    const section = (title, html) => `<div style="margin:10px 0 4px;font-weight:bold;color:#fcd34d">${title}</div>${html}`;
+    const overlay = document.createElement('div');
+    overlay.style.cssText =
+      'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;font:13px system-ui,sans-serif;color:#eee';
+    overlay.innerHTML = `<div style="width:min(1200px,96vw);height:90vh;display:flex;flex-direction:column;background:#18181b;border:1px solid #3a3a40;border-radius:10px">
+      <div style="display:flex;align-items:center;padding:10px 14px;border-bottom:1px solid #3a3a40"><b style="flex:1">${escapeHtml(data.title)}</b>
+        <button data-close style="padding:3px 10px;color:#fff;background:#3a3a42;border:1px solid #55555c;border-radius:5px;cursor:pointer">關閉</button></div>
+      <div style="overflow:auto;padding:8px 14px">
+        ${data.notes}
+        ${data.cards ? section('各鍛造師', `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:4px 12px;align-items:start">${data.cards}</div>`) : ''}
+        ${section('是鍛造、裁縫還是工藝在影響？', skillEffectsHtml(data.items, data.fields))}
+        ${section('這個配方用過的名稱（測名表基準比）', batchNamesHtml(data.batches))}
+        ${section('查測名表歷史名稱', `<input data-name-history placeholder="輸入名稱，例如：霜、tamy" style="width:min(420px,100%);padding:4px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><div data-name-history-result style="margin-top:6px"></div>`)}
+      </div>
+    </div>`;
+    const historyInput = overlay.querySelector('[data-name-history]');
+    const historyResult = overlay.querySelector('[data-name-history-result]');
+    historyInput.value = data.batches.length === 1 ? data.batches[0].name : '';
+    historyResult.innerHTML = nameHistoryHtml(historyInput.value);
+    historyInput.addEventListener('input', () => (historyResult.innerHTML = nameHistoryHtml(historyInput.value)));
+    const close = () => {
+      overlay.remove();
+      document.removeEventListener('keydown', onKey);
+    };
+    const onKey = (event) => {
+      if (event.key === 'Escape') close();
+    };
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay || event.target.hasAttribute('data-close')) close();
+    });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(overlay);
   }
 
   async function refreshForgerCompare() {
@@ -17246,7 +17465,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 社群測名表：名稱對屬性的影響每天 00:00 換，大家用便宜的短刀測出每個名稱當天各屬性是理論上限的幾 %（基準比）。
   // 用「名稱＋鍛造日期」對到當天的比例，就能把名稱造成的加減成除掉，剩下的才是材料與鍛造師的效果
   const NAME_SHEET_URL =
-    'https://docs.google.com/spreadsheets/d/1AQgO3da4OrSQk6Jwpm9wUkNfI1a0OYKwDyDuf_dwhaM/export?format=csv&gid=1009041432';
+    'https://docs.google.com/spreadsheets/d/1AQgO3da4OrSQk6Jwpm9wUkNfI1a0OYKwDyDuf_dwhaM/export?format=csv&gid=321318328';
   // 「今天」分頁：基準比是對今天樣本的最高值算的，跟歷史分頁（對歷史最高值）不同尺度；大家看的「通用 88%」是這頁的數字
   const NAME_TODAY_SHEET_URL =
     'https://docs.google.com/spreadsheets/d/1AQgO3da4OrSQk6Jwpm9wUkNfI1a0OYKwDyDuf_dwhaM/export?format=csv&gid=2031406039';
@@ -17316,18 +17535,24 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   function parseNameSheet(text) {
     const rows = parseCsv(text);
-    const headerIndex = rows.findIndex((row) => row.includes('鍛造日期') && row.includes('名子') && row.includes('品質'));
-    if (headerIndex < 0) throw new Error('測名表格式變了，找不到「鍛造日期／名子／品質」欄');
+    const headerIndex = rows.findIndex(
+      (row) => (row.includes('鍛造日期') || row.includes('鍛造時間')) && (row.includes('名子') || row.includes('名稱')) && row.includes('品質')
+    );
+    if (headerIndex < 0) throw new Error('測名表格式變了，找不到「鍛造時間／名稱／品質」欄');
     const header = rows[headerIndex];
-    const dateColumn = header.indexOf('鍛造日期');
-    const nameColumn = header.indexOf('名子');
+    const column = (...names) => names.map((name) => header.indexOf(name)).find((index) => index >= 0);
+    const dateColumn = column('鍛造日期', '鍛造時間');
+    const nameColumn = column('名子', '名稱');
     const qualityColumn = header.indexOf('品質');
+    // 「測名表」分頁品質後面先是倍率和基礎值，基準比那組看表頭上方寫「基準比」的那一欄；舊分頁緊接在品質後面
+    const groupRow = rows.slice(0, headerIndex).find((row) => row.some((cell) => String(cell).startsWith('基準比')));
+    const ratioColumn = groupRow ? groupRow.findIndex((cell) => String(cell).startsWith('基準比')) : qualityColumn + 1;
     const now = new Date();
     const sums = {};
     rows.slice(headerIndex + 1).forEach((row) => {
       const day = sheetDayKey(row[dateColumn], now);
       const name = String(row[nameColumn] || '').trim();
-      const ratios = NAME_WEIGHT_FIELDS.map((_, offset) => percentValue(row[qualityColumn + 1 + offset]));
+      const ratios = NAME_WEIGHT_FIELDS.map((_, offset) => percentValue(row[ratioColumn + offset]));
       if (!day || !name || ratios.some((ratio) => ratio === null)) return;
       // 品質太差的基底數字很小、太好的會碰到上限，比例都會跳；跟測名表「今天」分頁一樣只採普通、精良的樣本
       const good = NAME_SHEET_TRUSTED_QUALITIES.includes(String(row[qualityColumn]).trim());
@@ -17395,7 +17620,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 測名表一直有人更新，隔一段時間才重抓；同時只抓一次
   function refreshNameWeights(force = false) {
     const saved = loadNameWeights();
-    if (!force && saved && Date.now() - saved.fetchedAt < NAME_SHEET_REFRESH_MILLISECONDS) return Promise.resolve(saved);
+    // 換了來源分頁就不沿用舊的
+    if (!force && saved && saved.source === NAME_SHEET_URL && Date.now() - saved.fetchedAt < NAME_SHEET_REFRESH_MILLISECONDS) return Promise.resolve(saved);
     if (!nameSheetLoading) {
       nameSheetLoading = window
         .fetch(NAME_SHEET_URL, { cache: 'no-store' })
@@ -17404,7 +17630,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           return response.text();
         })
         .then(async (text) => {
-          const fresh = { fetchedAt: Date.now(), days: parseNameSheet(text) };
+          const fresh = { fetchedAt: Date.now(), source: NAME_SHEET_URL, days: parseNameSheet(text) };
           // 「今天」分頁讀不到也不影響歷史資料，挑名稱時改用歷史分頁
           try {
             const response = await window.fetch(NAME_TODAY_SHEET_URL, { cache: 'no-store' });
