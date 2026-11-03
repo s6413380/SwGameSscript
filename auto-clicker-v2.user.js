@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.16
+// @version      5.17
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -2017,7 +2017,13 @@
         .catch((error) => setStatus(`讀取測名表失敗（${error.message}）`));
     }
     if (tabId === 'material') renderMaterialSummary();
-    if (tabId === 'forgerCompare') renderForgerCompare();
+    if (tabId === 'forgerCompare') {
+      renderForgerCompare();
+      // 卡片上要寫鍛造師目前的技能
+      refreshForgeHeroes()
+        .then(() => activeTab === 'forgerCompare' && renderForgerCompare())
+        .catch(() => {});
+    }
     if (tabId === 'recipe') {
       renderRecipes();
       renderRecipeFavorites();
@@ -15205,8 +15211,29 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     ['lck', '運'],
     ['wgt', '重'],
     ['fullDur', '耐'],
+    // 回收價是實際金額（已含品質），不換算
+    ['recyclePrice', '回收$'],
   ];
   const FORGER_COMPARE_MIN_COUNT = 3;
+
+  // 技能在開爐當下記的（開爐回應帶全部角色）；同一位做的期間技能升過就寫成範圍
+  function forgeTimeSkillsText(items) {
+    const withSkills = items.filter((item) => item.skills);
+    if (!withSkills.length) return '當下技能沒記到';
+    const parts = [['forge', '鍛'], ['tailor', '裁'], ['craft', '工']].map(([skill, label]) => {
+      const values = withSkills.map((item) => Number(item.skills[skill])).filter(Number.isFinite);
+      if (!values.length) return `${label} ?`;
+      const low = Math.min(...values);
+      const high = Math.max(...values);
+      return low === high ? `${label} ${low}` : `${label} ${low}～${high}`;
+    });
+    return `當下 ${parts.join('／')}${withSkills.length < items.length ? `（${items.length - withSkills.length} 件沒記到）` : ''}`;
+  }
+
+  function currentSkillsText(heroId) {
+    const hero = heroId && forgeHeroes.find((candidate) => candidate.id === heroId);
+    return hero ? `目前 鍛 ${hero.forge ?? '?'}／裁 ${hero.tailor ?? '?'}／工 ${hero.craft ?? '?'}` : '';
+  }
 
   function fillSelect(select, options, fallback = '') {
     const previous = select.value;
@@ -15244,21 +15271,22 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return `<b style="color:${better ? '#4ade80' : '#f87171'}">${gapText} 有差</b>`;
   }
 
-  function forgerCardHtml(forger, items, stats, base, isBase, fields) {
+  function forgerCardHtml(forger, items, stats, base, isBase, fields, heroId) {
     const qualities = new Map();
     items.forEach((item) => qualities.set(item.quality, (qualities.get(item.quality) || 0) + 1));
     const qualityText = [...qualities.entries()]
       .sort(([first], [second]) => qualityRank(first) - qualityRank(second))
       .map(([quality, count]) => `<span style="color:${QUALITY_COLORS[quality] || '#aaa'}">${escapeHtml(quality)}${count}</span>`)
       .join(' ');
-    const skills = skillsText(items);
+    const current = currentSkillsText(heroId);
     const rows = fields.map(([field, label]) => {
       const own = stats[field];
       return `<tr><td>${label}</td><td style="text-align:right">${own.mean.toFixed(1)}</td><td style="text-align:right;color:#a0a0aa">±${own.sd.toFixed(1)}</td>
         <td style="color:#a0a0aa">${Math.round(own.min)}～${Math.round(own.max)}</td><td>${isBase ? '<span style="color:#a0a0aa">基準</span>' : forgerDifferenceHtml(field, own, base[field])}</td></tr>`;
     }).join('');
     return `<div style="margin:6px 0;padding:6px;border:1px solid ${isBase ? '#fcd34d' : '#3a3a40'};border-radius:6px">
-      <div><b>${escapeHtml(forger)}</b> × ${items.length}${skills ? ` <span style="color:#a0a0aa">（${skills}）</span>` : ''}${isBase ? ' <span style="color:#fcd34d">基準</span>' : ''}</div>
+      <div><b>${escapeHtml(forger)}</b> × ${items.length}${isBase ? ' <span style="color:#fcd34d">基準</span>' : ''}</div>
+      <div style="color:#93c5fd">${forgeTimeSkillsText(items)}${current ? `<span style="color:#a0a0aa">・${current}</span>` : ''}</div>
       <div>${qualityText}</div>
       <table style="width:100%;border-collapse:collapse;margin-top:3px"><tr style="color:#a0a0aa"><td></td><td style="text-align:right">平均</td><td style="text-align:right">隨機±</td><td>最低～最高</td><td>跟基準比</td></tr>${rows}</table>
     </div>`;
@@ -15333,6 +15361,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const forgers = [...byForger.values()]
       .map(({ identity, items }) => ({
         forger: nameCounts.get(identity.label) > 1 ? `${identity.label}（${identity.detail}）` : identity.label,
+        heroId: identity.key.startsWith('hero:') ? Number(identity.key.slice(5)) : 0,
         items,
         stats: Object.fromEntries(FORGER_COMPARE_FIELDS.map(([field]) => [field, statSpread(items.map((item) => item.stats[field]))])),
       }))
@@ -15347,7 +15376,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const fields = FORGER_COMPARE_FIELDS.filter(([field]) => forgers.some(({ stats }) => stats[field].min !== 0 || stats[field].max !== 0));
     const notesHtml = `${notes.map((note) => `<div class="hint" style="color:#fbbf24">${escapeHtml(note)}</div>`).join('')}
       <div class="hint">數值已換算成普通品質${nameAdjust ? '、扣掉名稱影響' : ''}；「隨機±」是標準差，基準＝件數最多的鍛造師</div>`;
-    const cards = forgers.map(({ forger, items, stats }, index) => forgerCardHtml(forger, items, stats, base, index === 0, fields)).join('');
+    const cards = forgers.map(({ forger, heroId, items, stats }, index) => forgerCardHtml(forger, items, stats, base, index === 0, fields, heroId)).join('');
     box.innerHTML = notesHtml + cards;
     const shownBatches = batchSelect.value ? [[batchSelect.value, chosen]] : [...batches.entries()];
     lastForgerCompare = {
@@ -15473,7 +15502,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const notes = [];
     if (result.missing) notes.push(`${result.missing} 件沒有鍛造當下的技能紀錄（雲端、舊紀錄），不算`);
     if (result.linked.length) notes.push(`${result.linked.join('、')}幾乎一起升降，這兩項的功勞分不開，數字要打折看`);
-    const head = `<div class="hint">用 ${result.count} 件、${result.combos} 種技能組合解「屬性 ≈ 常數 + a×鍛造 + b×裁縫 + c×工藝」。數字是<b>技能每 +10 點</b>，這項屬性平均變多少（已換算普通品質）；係數超過 2 倍標準誤才標「有關」。技能高低差越大、鍛造師越多越準</div>`;
+    const head = `<div class="hint">用 ${result.count} 件、${result.combos} 種技能組合解「屬性 ≈ 常數 + a×鍛造 + b×裁縫 + c×工藝」。數字是<b>技能每 +10 點</b>，這項屬性平均變多少（已換算普通品質；回收$ 是實際金額，含品質的影響）；係數超過 2 倍標準誤才標「有關」。技能高低差越大、鍛造師越多越準</div>`;
     if (result.problem) return `${head}<div style="color:#fbbf24;margin:6px 0">${escapeHtml(result.problem)}</div>`;
     const rows = result.rows
       .map(({ field, label, effects }) => `<tr><td><b>${label}</b></td>${FORGER_SKILLS.map(([skill]) => skillEffectCell(effects.find((effect) => effect.skill === skill), field)).join('')}</tr>`)
@@ -15571,6 +15600,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const equipments = (await requestGameApi(EQUIPMENTS_API)).equipments || [];
       matchPendingForges(equipments);
       rememberForgedEquipments(equipments);
+      await refreshForgeHeroes(true);
     } catch (error) {
       setStatus(`讀取裝備清單失敗（${error.message}）`);
     }
