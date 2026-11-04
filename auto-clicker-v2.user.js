@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.21
+// @version      5.22
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -17274,43 +17274,145 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 頁面上的戰報：狩獵頁顯示最新一場，戰報詳情頁顯示那一份。用遊戲回應裡的戰報資料畫，不多發請求
   const PAGE_REPORT_ID = 'ac-page-report';
   const PAGE_HIDDEN_ATTR = 'data-ac-hidden';
-  const pageReport = { hunt: null, detail: {}, signature: '', showGame: false, open: { loot: true, battle: true, log: true }, openMembers: new Set(), focus: '' };
+  const pageReport = { hunt: null, detail: {}, signature: '', showGame: false, open: { loot: true, battle: true, log: true }, openMembers: new Set(), current: null };
   // 遊戲戰報每行的樣式名 → 顏色（跟遊戲一樣）
   const REPORT_COLORS = {
     default: '#d6d3d1', info: '#67e8f9', exp: '#14b8a6', subInfo: '#fed7aa', sub: '#78716c', skill: '#5eead4',
     strong: '#fdba74', heal: '#86efac', lucky: '#c084fc', critical: '#f87171', state: '#f9a8d4',
   };
 
-  // 我方每個角色固定一個顏色（照隊伍順序），戰報裡一眼看出是誰；跟行本身的顏色（爆擊紅、回復綠）分得開
-  const MEMBER_COLORS = ['#38bdf8', '#fbbf24', '#a3e635', '#f472b6', '#c4b5fd', '#fb923c'];
+  // 我方名字統一一個顏色；要查某個角色時點上面的名字，那個人才換成醒目的黃底
+  const REPORT_NAME_COLOR = '#7dd3fc';
+  const REPORT_PICKED_STYLE = 'background:#fde047;color:#1c1917;border-radius:3px;padding:0 2px';
+  const REPORT_KINDS = [['', '全部'], ['crit', '紅字'], ['hurt', '我方被打'], ['heal', '回復'], ['key', '關鍵']];
+  const REPORT_FILTER_KEY = 'autoClickerV2ReportFilter';
+  // 篩選條件換一場、重新整理都留著，連續盯同一個角色不用每場重點
+  const reportFilter = (() => {
+    const fallback = { focus: '', kind: '', search: '', hideOthers: false };
+    try {
+      return { ...fallback, ...JSON.parse(localStorage.getItem(REPORT_FILTER_KEY) || '{}') };
+    } catch {
+      return fallback;
+    }
+  })();
+
+  function saveReportFilter() {
+    try {
+      localStorage.setItem(REPORT_FILTER_KEY, JSON.stringify(reportFilter));
+    } catch {
+      // 記不住只是下次要重選
+    }
+  }
 
   function fighterNames(side) {
     return Array.isArray(side) ? side.map((fighter) => fighter && fighter.name).filter(Boolean) : [];
   }
 
-  function reportMemberColors(report) {
-    return new Map(fighterNames(report.a).map((name, index) => [name, MEMBER_COLORS[index % MEMBER_COLORS.length]]));
+  // 行首是我方角色＝他出手；縮排的子行（群體技能第 N 擊）算上面那行的人
+  function reportLineEntries(report, party) {
+    let actor = '';
+    return report.messages
+      .filter((message) => String(message.m || '').trim())
+      .map((message) => {
+        const line = String(message.m);
+        const indented = Boolean(Number(message.indent));
+        if (!indented) actor = party.find((name) => line.trim().startsWith(name)) || '';
+        const kinds = [];
+        if (message.s === 'critical') kinds.push('crit');
+        if (message.dmged === 'a') kinds.push('hurt');
+        if (message.s === 'heal') kinds.push('heal');
+        if (message.crucial) kinds.push('key');
+        return { line, indented, actor, kinds, crucial: Boolean(message.crucial), color: REPORT_COLORS[message.s] || REPORT_COLORS.default };
+      });
   }
 
-  // 長的名字先比，「哥布林王」才不會被切成「哥布林」＋「王」
-  function reportNamePattern(names) {
-    const sorted = [...new Set(names)].sort((first, second) => second.length - first.length);
-    return sorted.length ? new RegExp(`(${sorted.map(escapeRegExp).join('|')})`) : null;
+  // 被別人打、被補血的行也算這個角色的（名字出現在行裡）
+  function reportLineMatches(entry, kind = reportFilter.kind) {
+    const keyword = reportFilter.search.trim();
+    return (!reportFilter.focus || entry.actor === reportFilter.focus || entry.line.includes(reportFilter.focus)) && (!kind || entry.kinds.includes(kind)) && (!keyword || entry.line.includes(keyword));
   }
 
-  function markReportNames(line, pattern, memberColors) {
-    if (!pattern) return escapeHtml(line);
-    // split 帶括號，奇數格就是比到的名字
+  // 長的先比，「哥布林王」才不會被切成「哥布林」＋「王」；split 帶括號，奇數格就是比到的字
+  function markReportLine(line, party) {
+    const keyword = reportFilter.search.trim();
+    const words = [...new Set([...party, keyword].filter(Boolean))].sort((first, second) => second.length - first.length);
+    if (!words.length) return escapeHtml(line);
     return line
-      .split(new RegExp(pattern.source, 'g'))
+      .split(new RegExp(`(${words.map(escapeRegExp).join('|')})`, 'g'))
       .map((part, index) => {
         if (index % 2 === 0) return escapeHtml(part);
-        const color = memberColors.get(part);
-        return color
-          ? `<span style="color:${color};font-weight:bold;background:${color}26;border-radius:3px;padding:0 2px">${escapeHtml(part)}</span>`
-          : `<span style="color:#fca5a5;text-decoration:underline dotted">${escapeHtml(part)}</span>`;
+        if (party.includes(part)) {
+          return part === reportFilter.focus ? `<b style="${REPORT_PICKED_STYLE}">${escapeHtml(part)}</b>` : `<b style="color:${REPORT_NAME_COLOR}">${escapeHtml(part)}</b>`;
+        }
+        return `<mark style="background:#f59e0b;color:#1c1917;border-radius:2px">${escapeHtml(part)}</mark>`;
       })
       .join('');
+  }
+
+  function reportFocusSummary(members, totals) {
+    const member = reportFilter.focus && members && members[reportFilter.focus];
+    if (!member) return '';
+    const parts = [
+      `傷害 ${formatAmount(member.damage)}（全隊 ${percentText(member.damage, totals.damage)}）`,
+      member.hits ? `${member.hits} 中・爆擊 ${percentText(member.crits, member.hits)}` : '',
+      member.healthHealing ? `回血 ${formatAmount(member.healthHealing)}` : '',
+      member.staminaHealing ? `回體 ${formatAmount(member.staminaHealing)}` : '',
+      member.kills ? `擊殺 ${member.kills}` : '',
+      member.damageTaken ? `承受 ${formatAmount(member.damageTaken)}` : '',
+    ].filter(Boolean);
+    return `<div style="margin:2px 0 4px;padding:2px 6px;border-left:3px solid #fde047;color:#e7e5e4"><b style="${REPORT_PICKED_STYLE}">${escapeHtml(reportFilter.focus)}</b> ${parts.join('・')}</div>`;
+  }
+
+  // 篩選換了只重畫這塊，搜尋框在外面，打字時不會被換掉
+  function reportLogBodyHtml() {
+    const current = pageReport.current;
+    if (!current) return '';
+    const { entries, party, members, totals } = current;
+    const chip = (attribute, value, label, picked, title) =>
+      `<button type="button" ${attribute}="${escapeHtml(value)}" title="${title}" style="margin:0 4px 3px 0;padding:0 8px;border-radius:10px;border:1px solid ${picked ? '#fde047' : '#57534e'};background:${picked ? '#fde047' : '#292524'};color:${picked ? '#1c1917' : attribute === 'data-ac-focus' ? REPORT_NAME_COLOR : '#d6d3d1'};font-weight:bold;cursor:pointer">${label}</button>`;
+    const people = party.length
+      ? `<div>${chip('data-ac-focus', '', '全隊', !reportFilter.focus, '不限角色')}${party
+          .map((name) => chip('data-ac-focus', name, escapeHtml(name), reportFilter.focus === name, reportFilter.focus === name ? '再點一下取消' : '只看這個角色出手、被打、被補的行'))
+          .join('')}</div>`
+      : '';
+    const kinds = `<div>${REPORT_KINDS.map(([kind, label]) => {
+      const count = entries.filter((entry) => reportLineMatches(entry, kind)).length;
+      return chip('data-ac-kind', kind, `${label} <span style="font-weight:normal;opacity:.75">${count}</span>`, reportFilter.kind === kind, kind ? '只看這種行' : '不限種類');
+    }).join('')}</div>`;
+    let shown = 0;
+    const lines = entries
+      .map((entry) => {
+        const matched = reportLineMatches(entry);
+        if (matched) shown++;
+        if (!matched && reportFilter.hideOthers) return '';
+        const picked = reportFilter.focus && entry.actor === reportFilter.focus;
+        const mark = entry.crucial ? '#f87171' : picked ? '#fde047' : '';
+        return `<div style="padding-left:${(entry.indented ? 18 : 0) + (mark ? 5 : 0)}px;color:${entry.color};${mark ? `border-left:3px solid ${mark};` : ''}${entry.crucial ? 'font-weight:bold;' : ''}${matched ? '' : 'opacity:.28;'}">${markReportLine(entry.line, party)}</div>`;
+      })
+      .join('');
+    const filtering = reportFilter.focus || reportFilter.kind || reportFilter.search.trim();
+    return `${people}${kinds}${reportFocusSummary(members, totals)}
+      ${filtering ? `<div style="color:#a8a29e">符合 ${shown}／${entries.length} 行</div>` : ''}
+      <div style="font:12px/1.6 monospace;max-height:420px;overflow:auto">${lines || '<span style="color:#78716c">沒有符合的行</span>'}</div>`;
+  }
+
+  function refreshReportLog() {
+    const body = document.querySelector(`#${PAGE_REPORT_ID} [data-ac-log-body]`);
+    if (body) body.innerHTML = reportLogBodyHtml();
+  }
+
+  function copyReportLines(button) {
+    const current = pageReport.current;
+    if (!current) return;
+    const lines = current.entries
+      .filter((entry) => reportLineMatches(entry))
+      .map((entry) => `${entry.indented ? '  ' : ''}${entry.line.trim()}`)
+      .join('\n');
+    navigator.clipboard
+      .writeText(lines)
+      .then(() => (button.textContent = '已複製'))
+      .catch(() => (button.textContent = '瀏覽器不讓複製'))
+      .finally(() => setTimeout(() => (button.textContent = '複製符合的行'), 1500));
   }
 
   function noticeReportDetail(id, data) {
@@ -17364,14 +17466,17 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   }
 
   // 這一場每個我方角色的傷害、爆擊、回復、控制、擊殺，點角色展開各招式
-  function pageBattleHtml(report, memberColors) {
-    let members;
+  function reportMembers(report) {
     try {
       const { lines, indented, sides } = battleInputOfReport(report);
-      members = parseBattle(lines, indented, sides).members;
+      return parseBattle(lines, indented, sides).members;
     } catch {
-      return '';
+      return null;
     }
+  }
+
+  function pageBattleHtml(members) {
+    if (!members) return '';
     const entries = Object.entries(members).sort(byDamage);
     if (!entries.length) return '';
     const totals = sumMembers(members);
@@ -17390,7 +17495,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           member.staminaHealing ? `<span style="color:#67e8f9">回體 ${formatAmount(member.staminaHealing)}</span>` : '',
         ].filter(Boolean).join(' ');
         return `<tr data-ac-member="${escapeHtml(name)}" style="cursor:pointer" title="點一下看各招式">
-            <td style="padding:1px 5px;white-space:nowrap">▸ <b style="color:${memberColors.get(name) || 'inherit'}">${escapeHtml(name)}</b></td>
+            <td style="padding:1px 5px;white-space:nowrap">▸ <b style="${name === reportFilter.focus ? REPORT_PICKED_STYLE : ''}">${escapeHtml(name)}</b></td>
             <td style="${cell};position:relative"><span style="position:absolute;left:0;top:2px;bottom:2px;width:${Math.round((member.damage / top) * 100)}%;background:rgba(248,113,113,.25);border-radius:2px"></span><span style="position:relative">${formatAmount(member.damage)}</span></td>
             <td style="${cell}">${percentText(member.damage, totals.damage)}</td>
             <td style="${cell}">${member.hits} 中</td><td style="${cell}">爆 ${percentText(member.crits, member.hits)}</td>
@@ -17424,39 +17529,23 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       .filter(Boolean)
       .map((match) => `${/每位/.test(match[1]) ? '每人' : match[1]} +${messageNumber(match[2]).toLocaleString()}`)
       .join('・');
-    const memberColors = reportMemberColors(report);
-    const enemies = fighterNames(report.b);
-    const namePattern = reportNamePattern([...memberColors.keys(), ...enemies]);
-    const focus = memberColors.has(pageReport.focus) ? pageReport.focus : '';
-    // 行首是我方角色＝他出手，左邊畫他的顏色；縮排的子行（群體技能第 N 擊）算上面那行的人
-    let actor = '';
-    const lines = messages
-      .map((message) => {
-        const line = String(message.m);
-        const indented = Boolean(Number(message.indent));
-        if (!indented) actor = [...memberColors.keys()].find((name) => line.trim().startsWith(name)) || '';
-        const color = REPORT_COLORS[message.s] || REPORT_COLORS.default;
-        const mark = message.crucial ? '#f87171' : memberColors.get(actor);
-        const dim = focus && actor !== focus && !line.includes(focus);
-        return `<div style="padding-left:${(indented ? 18 : 0) + (mark ? 5 : 0)}px;color:${color};${mark ? `border-left:3px solid ${mark};` : ''}${message.crucial ? 'font-weight:bold;' : ''}${dim ? 'opacity:.3;' : ''}">${markReportNames(line, namePattern, memberColors)}</div>`;
-      })
-      .join('');
-    const chip = (name, color) =>
-      `<button type="button" data-ac-focus="${escapeHtml(name)}" title="${focus === name ? '再點一下取消' : '只看他的行（其他變淡）'}" style="margin:0 4px 2px 0;padding:0 7px;border-radius:10px;border:1px solid ${color};background:${focus === name ? color : 'transparent'};color:${focus === name ? '#1c1917' : color};font-weight:bold;cursor:pointer">${escapeHtml(name)}</button>`;
-    const legend = memberColors.size
-      ? `<div style="margin-bottom:4px">${[...memberColors].map(([name, color]) => chip(name, color)).join('')}${
-          enemies.length ? `<span style="color:#fca5a5;text-decoration:underline dotted">敵方</span>` : ''
-        }<span style="color:#78716c">・點名字只看那個角色；左邊色條＝誰出手，紅色＝關鍵行</span></div>`
-      : '';
+    const party = fighterNames(report.a);
+    const members = reportMembers(report);
+    pageReport.current = { entries: reportLineEntries(report, party), party, members, totals: members ? sumMembers(members) : {} };
+    const tools = `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px">
+        <input data-ac-search value="${escapeHtml(reportFilter.search)}" placeholder="搜尋：技能、怪物、中毒…" style="flex:1;min-width:140px;padding:1px 6px;color:#e7e5e4;background:#1c1917;border:1px solid #57534e;border-radius:4px">
+        <label style="white-space:nowrap;cursor:pointer"><input type="checkbox" data-ac-hide-others ${reportFilter.hideOthers ? 'checked' : ''}> 隱藏不符合的</label>
+        <button type="button" data-ac-copy-lines style="padding:0 6px;border:1px solid #57534e;border-radius:4px;background:#292524;color:#d6d3d1">複製符合的行</button>
+      </div>`;
     const place = [report.zone, report.stage].filter(Boolean).join(' ');
     const time = report.time ? new Date(report.time).toLocaleTimeString('zh-TW', { hour12: false }) : '';
     const section = (key, title, extra, body) => `<details data-ac-sec="${key}" ${pageReport.open[key] ? 'open' : ''} style="margin:4px 0;border:1px solid #44403c;border-radius:4px;background:rgba(41,37,36,.55)">
         <summary style="cursor:pointer;padding:4px 8px;font-weight:bold">${title}<span style="float:right;font-weight:normal;color:#a8a29e">${extra}</span></summary>
         <div style="padding:4px 8px 6px">${body}</div></details>`;
-    const battle = pageBattleHtml(report, memberColors);
+    const battle = pageBattleHtml(members);
     return `${section('loot', '🎁 本場掉落・狀態', [place, time].filter(Boolean).join('・'), `<div>${lootHtml}</div>${expText ? `<div style="color:#93c5fd">經驗 ${escapeHtml(expText)}</div>` : ''}${moneyText ? `<div style="color:#fcd34d">${escapeHtml(moneyText)}</div>` : ''}${withStatus ? `<div data-ac-status>${teamStatusHtml()}</div>` : ''}`)}
       ${battle ? section('battle', '⚔️ 傷害・技能', '點角色看各招式', battle) : ''}
-      ${section('log', '📜 戰報內容', `${messages.length} 行 <button type="button" data-ac-toggle-game style="margin-left:6px;padding:0 6px;border:1px solid #57534e;border-radius:4px;background:#292524;color:#d6d3d1">${pageReport.showGame ? '收起原本的' : '顯示原本的'}</button>`, `${legend}<div style="font:12px/1.6 monospace;max-height:420px;overflow:auto">${lines}</div>`)}`;
+      ${section('log', '📜 戰報內容', `${messages.length} 行 <button type="button" data-ac-toggle-game style="margin-left:6px;padding:0 6px;border:1px solid #57534e;border-radius:4px;background:#292524;color:#d6d3d1">${pageReport.showGame ? '收起原本的' : '顯示原本的'}</button>`, `${tools}<div data-ac-log-body>${reportLogBodyHtml()}</div>`)}`;
   }
 
   function renderPageReport(...args) {
@@ -17521,7 +17610,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       return;
     }
     block.dataset.signature = signature;
+    const active = document.activeElement;
+    const typing = active && active.matches && active.matches(`#${PAGE_REPORT_ID} [data-ac-search]`) ? active.selectionStart : null;
     block.innerHTML = pageReportHtml(report, withStatus);
+    if (typing !== null) {
+      const search = block.querySelector('[data-ac-search]');
+      search.focus();
+      search.setSelectionRange(typing, typing);
+    }
   }
 
   function isPageReportPath() {
@@ -17549,12 +17645,35 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       else pageReport.openMembers.delete(name);
     }, true);
     document.addEventListener('click', (event) => {
-      const button = event.target.closest && event.target.closest(`#${PAGE_REPORT_ID} [data-ac-focus]`);
+      const button = event.target.closest && event.target.closest(`#${PAGE_REPORT_ID} [data-ac-focus], #${PAGE_REPORT_ID} [data-ac-kind], #${PAGE_REPORT_ID} [data-ac-copy-lines]`);
       if (!button) return;
       event.preventDefault();
       event.stopPropagation();
-      pageReport.focus = pageReport.focus === button.dataset.acFocus ? '' : button.dataset.acFocus;
-      renderPageReport(true);
+      if ('acCopyLines' in button.dataset) {
+        copyReportLines(button);
+        return;
+      }
+      if ('acFocus' in button.dataset) {
+        reportFilter.focus = reportFilter.focus === button.dataset.acFocus ? '' : button.dataset.acFocus;
+        // 傷害表的名字也要跟著換底色，整塊重畫
+        renderPageReport(true);
+      } else {
+        reportFilter.kind = button.dataset.acKind;
+        refreshReportLog();
+      }
+      saveReportFilter();
+    }, true);
+    document.addEventListener('input', (event) => {
+      if (!event.target.matches || !event.target.matches(`#${PAGE_REPORT_ID} [data-ac-search]`)) return;
+      reportFilter.search = event.target.value;
+      refreshReportLog();
+      saveReportFilter();
+    }, true);
+    document.addEventListener('change', (event) => {
+      if (!event.target.matches || !event.target.matches(`#${PAGE_REPORT_ID} [data-ac-hide-others]`)) return;
+      reportFilter.hideOthers = event.target.checked;
+      refreshReportLog();
+      saveReportFilter();
     }, true);
     document.addEventListener('click', (event) => {
       if (!event.target.closest || !event.target.closest('[data-ac-toggle-game]')) return;
