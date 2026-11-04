@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.19
+// @version      5.20
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -14629,14 +14629,23 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       sample.materials.forEach(([name, quantity]) => (row[column.get(name)] += quantity));
       return row;
     });
-    const gram = names.map((_, first) =>
-      names.map((__, second) => rows.reduce((sum, row) => sum + row[first] * row[second], 0) + (first === second ? REGRESSION_RIDGE : 0))
-    );
+    // 每件只放幾種材料，只掃有放的欄位；全部欄位兩兩相乘，上萬件紀錄要算快一秒（打開鍛造頁就卡在這）
+    const usedColumns = rows.map((row) => row.flatMap((value, index) => (value ? [index] : [])));
+    const gram = names.map((_, first) => names.map((__, second) => (first === second ? REGRESSION_RIDGE : 0)));
+    rows.forEach((row, rowIndex) => {
+      const used = usedColumns[rowIndex];
+      used.forEach((first) => used.forEach((second) => (gram[first][second] += row[first] * row[second])));
+    });
+    const momentOf = (targets) => {
+      const moment = new Array(names.length).fill(0);
+      rows.forEach((row, rowIndex) => usedColumns[rowIndex].forEach((index) => (moment[index] += row[index] * targets[rowIndex])));
+      return moment;
+    };
     const inverse = invertMatrix(gram);
     const result = { type, names: materialNames, sampleCount: samples.length, coefficients: {}, errors: {}, fit: {}, uses: {}, enchantLift: {}, means: {} };
     REGRESSION_FIELDS.forEach(([field]) => {
       const targets = samples.map((sample) => sample.base[field]);
-      const moment = names.map((_, index) => rows.reduce((sum, row, rowIndex) => sum + row[index] * targets[rowIndex], 0));
+      const moment = momentOf(targets);
       const beta = inverse.map((row) => row.reduce((sum, value, index) => sum + value * moment[index], 0));
       const predictions = rows.map((row) => row.reduce((sum, value, index) => sum + value * beta[index], 0));
       const residual = targets.reduce((sum, target, index) => sum + (target - predictions[index]) ** 2, 0);
@@ -14654,21 +14663,36 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     result.enchantCoefficients = {};
     enchantNames.forEach((enchant) => {
       const targets = samples.map((sample) => Number(sample.enchantments[enchant]) || 0);
-      const moment = names.map((_, index) => rows.reduce((sum, row, rowIndex) => sum + row[index] * targets[rowIndex], 0));
+      const moment = momentOf(targets);
       const beta = inverse.map((row) => row.reduce((sum, value, index) => sum + value * moment[index], 0));
       result.enchantCounts[enchant] = targets.filter(Boolean).length;
       result.enchantCoefficients[enchant] = Object.fromEntries(materialNames.map((name) => [name, beta[names.indexOf(name)]]));
     });
+    // 一次數完每種材料、每種附魔各幾件；每種材料×每種附魔都重掃全部紀錄太慢
+    const materialCounts = new Map();
+    const enchantTotals = new Map();
+    const togetherCounts = new Map();
+    samples.forEach((sample) => {
+      const enchants = Object.keys(sample.enchantments);
+      enchants.forEach((enchant) => enchantTotals.set(enchant, (enchantTotals.get(enchant) || 0) + 1));
+      new Set(sample.materials.map(([material]) => material)).forEach((material) => {
+        materialCounts.set(material, (materialCounts.get(material) || 0) + 1);
+        if (!togetherCounts.has(material)) togetherCounts.set(material, new Map());
+        const counts = togetherCounts.get(material);
+        enchants.forEach((enchant) => counts.set(enchant, (counts.get(enchant) || 0) + 1));
+      });
+    });
     materialNames.forEach((name) => {
-      const withMaterial = samples.filter((sample) => sample.materials.some(([material]) => material === name));
-      const without = samples.filter((sample) => !sample.materials.some(([material]) => material === name));
-      result.uses[name] = withMaterial.length;
-      const rate = (group, enchant) => (group.length ? group.filter((sample) => enchant in sample.enchantments).length / group.length : null);
+      const withCount = materialCounts.get(name) || 0;
+      const withoutCount = samples.length - withCount;
+      result.uses[name] = withCount;
       result.enchantLift[name] = enchantNames
         .map((enchant) => {
-          const withRate = rate(withMaterial, enchant);
-          const withoutRate = rate(without, enchant);
-          return withoutRate === null || withRate === null ? null : { enchant, lift: withRate - withoutRate, rate: withRate };
+          if (!withCount || !withoutCount) return null;
+          const together = togetherCounts.get(name).get(enchant) || 0;
+          const withRate = together / withCount;
+          const withoutRate = (enchantTotals.get(enchant) - together) / withoutCount;
+          return { enchant, lift: withRate - withoutRate, rate: withRate };
         })
         .filter((entry) => entry && Math.abs(entry.lift) >= 0.1)
         .sort((first, second) => second.lift - first.lift);
@@ -18688,7 +18712,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           <div style="display:flex;gap:6px;align-items:baseline"><b style="white-space:nowrap">${escapeHtml(row.name)}</b>
             <span style="flex:1;text-align:right;color:${row.statusColor}">${row.statusText}</span>
             ${(() => {
-              const options = favoriteOptionsHtml(readSettingsFromPanel(), row.type, '★ 換最愛');
+              const options = favoriteOptionsHtml(settings, row.type, '★ 換最愛');
               return options ? `<select data-forge-fav="${row.heroId}" data-type="${escapeHtml(row.type)}" style="flex:none;max-width:110px;padding:1px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px">${options}</select>` : '';
             })()}
             <button data-action="forge-unqueue" data-hero="${row.heroId}" style="padding:0 6px" title="移出佇列（配方會留著）">移出</button></div>
