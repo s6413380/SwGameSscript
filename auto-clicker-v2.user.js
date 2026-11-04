@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.20
+// @version      5.21
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -17274,12 +17274,44 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 頁面上的戰報：狩獵頁顯示最新一場，戰報詳情頁顯示那一份。用遊戲回應裡的戰報資料畫，不多發請求
   const PAGE_REPORT_ID = 'ac-page-report';
   const PAGE_HIDDEN_ATTR = 'data-ac-hidden';
-  const pageReport = { hunt: null, detail: {}, signature: '', showGame: false, open: { loot: true, battle: true, log: true }, openMembers: new Set() };
+  const pageReport = { hunt: null, detail: {}, signature: '', showGame: false, open: { loot: true, battle: true, log: true }, openMembers: new Set(), focus: '' };
   // 遊戲戰報每行的樣式名 → 顏色（跟遊戲一樣）
   const REPORT_COLORS = {
     default: '#d6d3d1', info: '#67e8f9', exp: '#14b8a6', subInfo: '#fed7aa', sub: '#78716c', skill: '#5eead4',
     strong: '#fdba74', heal: '#86efac', lucky: '#c084fc', critical: '#f87171', state: '#f9a8d4',
   };
+
+  // 我方每個角色固定一個顏色（照隊伍順序），戰報裡一眼看出是誰；跟行本身的顏色（爆擊紅、回復綠）分得開
+  const MEMBER_COLORS = ['#38bdf8', '#fbbf24', '#a3e635', '#f472b6', '#c4b5fd', '#fb923c'];
+
+  function fighterNames(side) {
+    return Array.isArray(side) ? side.map((fighter) => fighter && fighter.name).filter(Boolean) : [];
+  }
+
+  function reportMemberColors(report) {
+    return new Map(fighterNames(report.a).map((name, index) => [name, MEMBER_COLORS[index % MEMBER_COLORS.length]]));
+  }
+
+  // 長的名字先比，「哥布林王」才不會被切成「哥布林」＋「王」
+  function reportNamePattern(names) {
+    const sorted = [...new Set(names)].sort((first, second) => second.length - first.length);
+    return sorted.length ? new RegExp(`(${sorted.map(escapeRegExp).join('|')})`) : null;
+  }
+
+  function markReportNames(line, pattern, memberColors) {
+    if (!pattern) return escapeHtml(line);
+    // split 帶括號，奇數格就是比到的名字
+    return line
+      .split(new RegExp(pattern.source, 'g'))
+      .map((part, index) => {
+        if (index % 2 === 0) return escapeHtml(part);
+        const color = memberColors.get(part);
+        return color
+          ? `<span style="color:${color};font-weight:bold;background:${color}26;border-radius:3px;padding:0 2px">${escapeHtml(part)}</span>`
+          : `<span style="color:#fca5a5;text-decoration:underline dotted">${escapeHtml(part)}</span>`;
+      })
+      .join('');
+  }
 
   function noticeReportDetail(id, data) {
     if (!data || !data.report) return;
@@ -17332,7 +17364,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   }
 
   // 這一場每個我方角色的傷害、爆擊、回復、控制、擊殺，點角色展開各招式
-  function pageBattleHtml(report) {
+  function pageBattleHtml(report, memberColors) {
     let members;
     try {
       const { lines, indented, sides } = battleInputOfReport(report);
@@ -17358,7 +17390,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           member.staminaHealing ? `<span style="color:#67e8f9">回體 ${formatAmount(member.staminaHealing)}</span>` : '',
         ].filter(Boolean).join(' ');
         return `<tr data-ac-member="${escapeHtml(name)}" style="cursor:pointer" title="點一下看各招式">
-            <td style="padding:1px 5px;white-space:nowrap">▸ <b>${escapeHtml(name)}</b></td>
+            <td style="padding:1px 5px;white-space:nowrap">▸ <b style="color:${memberColors.get(name) || 'inherit'}">${escapeHtml(name)}</b></td>
             <td style="${cell};position:relative"><span style="position:absolute;left:0;top:2px;bottom:2px;width:${Math.round((member.damage / top) * 100)}%;background:rgba(248,113,113,.25);border-radius:2px"></span><span style="position:relative">${formatAmount(member.damage)}</span></td>
             <td style="${cell}">${percentText(member.damage, totals.damage)}</td>
             <td style="${cell}">${member.hits} 中</td><td style="${cell}">爆 ${percentText(member.crits, member.hits)}</td>
@@ -17392,22 +17424,39 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       .filter(Boolean)
       .map((match) => `${/每位/.test(match[1]) ? '每人' : match[1]} +${messageNumber(match[2]).toLocaleString()}`)
       .join('・');
+    const memberColors = reportMemberColors(report);
+    const enemies = fighterNames(report.b);
+    const namePattern = reportNamePattern([...memberColors.keys(), ...enemies]);
+    const focus = memberColors.has(pageReport.focus) ? pageReport.focus : '';
+    // 行首是我方角色＝他出手，左邊畫他的顏色；縮排的子行（群體技能第 N 擊）算上面那行的人
+    let actor = '';
     const lines = messages
       .map((message) => {
+        const line = String(message.m);
+        const indented = Boolean(Number(message.indent));
+        if (!indented) actor = [...memberColors.keys()].find((name) => line.trim().startsWith(name)) || '';
         const color = REPORT_COLORS[message.s] || REPORT_COLORS.default;
-        const indent = Number(message.indent) ? 18 : 0;
-        return `<div style="padding-left:${indent + (message.crucial ? 4 : 0)}px;color:${color};${message.crucial ? 'border-left:2px solid #f87171;font-weight:bold' : ''}">${escapeHtml(message.m)}</div>`;
+        const mark = message.crucial ? '#f87171' : memberColors.get(actor);
+        const dim = focus && actor !== focus && !line.includes(focus);
+        return `<div style="padding-left:${(indented ? 18 : 0) + (mark ? 5 : 0)}px;color:${color};${mark ? `border-left:3px solid ${mark};` : ''}${message.crucial ? 'font-weight:bold;' : ''}${dim ? 'opacity:.3;' : ''}">${markReportNames(line, namePattern, memberColors)}</div>`;
       })
       .join('');
+    const chip = (name, color) =>
+      `<button type="button" data-ac-focus="${escapeHtml(name)}" title="${focus === name ? '再點一下取消' : '只看他的行（其他變淡）'}" style="margin:0 4px 2px 0;padding:0 7px;border-radius:10px;border:1px solid ${color};background:${focus === name ? color : 'transparent'};color:${focus === name ? '#1c1917' : color};font-weight:bold;cursor:pointer">${escapeHtml(name)}</button>`;
+    const legend = memberColors.size
+      ? `<div style="margin-bottom:4px">${[...memberColors].map(([name, color]) => chip(name, color)).join('')}${
+          enemies.length ? `<span style="color:#fca5a5;text-decoration:underline dotted">敵方</span>` : ''
+        }<span style="color:#78716c">・點名字只看那個角色；左邊色條＝誰出手，紅色＝關鍵行</span></div>`
+      : '';
     const place = [report.zone, report.stage].filter(Boolean).join(' ');
     const time = report.time ? new Date(report.time).toLocaleTimeString('zh-TW', { hour12: false }) : '';
     const section = (key, title, extra, body) => `<details data-ac-sec="${key}" ${pageReport.open[key] ? 'open' : ''} style="margin:4px 0;border:1px solid #44403c;border-radius:4px;background:rgba(41,37,36,.55)">
         <summary style="cursor:pointer;padding:4px 8px;font-weight:bold">${title}<span style="float:right;font-weight:normal;color:#a8a29e">${extra}</span></summary>
         <div style="padding:4px 8px 6px">${body}</div></details>`;
-    const battle = pageBattleHtml(report);
+    const battle = pageBattleHtml(report, memberColors);
     return `${section('loot', '🎁 本場掉落・狀態', [place, time].filter(Boolean).join('・'), `<div>${lootHtml}</div>${expText ? `<div style="color:#93c5fd">經驗 ${escapeHtml(expText)}</div>` : ''}${moneyText ? `<div style="color:#fcd34d">${escapeHtml(moneyText)}</div>` : ''}${withStatus ? `<div data-ac-status>${teamStatusHtml()}</div>` : ''}`)}
       ${battle ? section('battle', '⚔️ 傷害・技能', '點角色看各招式', battle) : ''}
-      ${section('log', '📜 戰報內容', `${messages.length} 行 <button type="button" data-ac-toggle-game style="margin-left:6px;padding:0 6px;border:1px solid #57534e;border-radius:4px;background:#292524;color:#d6d3d1">${pageReport.showGame ? '收起原本的' : '顯示原本的'}</button>`, `<div style="font:12px/1.6 monospace;max-height:420px;overflow:auto">${lines}</div>`)}`;
+      ${section('log', '📜 戰報內容', `${messages.length} 行 <button type="button" data-ac-toggle-game style="margin-left:6px;padding:0 6px;border:1px solid #57534e;border-radius:4px;background:#292524;color:#d6d3d1">${pageReport.showGame ? '收起原本的' : '顯示原本的'}</button>`, `${legend}<div style="font:12px/1.6 monospace;max-height:420px;overflow:auto">${lines}</div>`)}`;
   }
 
   function renderPageReport(...args) {
@@ -17498,6 +17547,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       row.querySelector('td').firstChild.textContent = open ? '▾ ' : '▸ ';
       if (open) pageReport.openMembers.add(name);
       else pageReport.openMembers.delete(name);
+    }, true);
+    document.addEventListener('click', (event) => {
+      const button = event.target.closest && event.target.closest(`#${PAGE_REPORT_ID} [data-ac-focus]`);
+      if (!button) return;
+      event.preventDefault();
+      event.stopPropagation();
+      pageReport.focus = pageReport.focus === button.dataset.acFocus ? '' : button.dataset.acFocus;
+      renderPageReport(true);
     }, true);
     document.addEventListener('click', (event) => {
       if (!event.target.closest || !event.target.closest('[data-ac-toggle-game]')) return;
