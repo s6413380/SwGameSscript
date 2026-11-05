@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.22
+// @version      5.23
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -134,6 +134,7 @@
     ['mining', '挖礦'],
     ['material', '材料統計'],
     ['forgerCompare', '鍛造師比較'],
+    ['nameTest', '自測名稱'],
     ['combat', '戰鬥'],
     ['huntStats', '樓層'],
     ['income', '收益'],
@@ -152,11 +153,11 @@
     ['cardBuy', '購卡'],
   ];
   // 輔助模式收起來的分頁：都是自動化才用得到的
-  const ASSIST_HIDDEN_TABS = ['main', 'move', 'train', 'forge', 'mining', 'pick', 'transfer', 'cardBuy', 'api'];
+  const ASSIST_HIDDEN_TABS = ['main', 'move', 'train', 'forge', 'nameTest', 'mining', 'pick', 'transfer', 'cardBuy', 'api'];
   // 分頁太多，先選大類再選分頁；大類裡記住上次看的分頁
   const TAB_GROUPS = [
     ['hunt', '打怪', ['main', 'health', 'resource', 'move', 'equip', 'train', 'pause']],
-    ['forging', '鍛造', ['forge', 'recipe', 'material', 'forgerCompare', 'mining']],
+    ['forging', '鍛造', ['forge', 'recipe', 'material', 'forgerCompare', 'nameTest', 'mining']],
     ['stats', '統計', ['income', 'combat', 'huntStats', 'loot', 'growth', 'draw', 'scratch', 'sales']],
     ['other', '其他', ['pick', 'transfer', 'cardBuy', 'alert', 'cloud', 'log', 'api', 'backup']],
   ];
@@ -1477,6 +1478,18 @@
       <div data-role="forger-compare" style="font-size:12px;max-height:420px;overflow:auto"></div>
     </div>
 
+    <div data-tab="nameTest">
+      <div class="hint">測名表沒有今天的名稱時自己測：同一個角色、同一種裝備、同一個配方，輪流用下面的名稱各做幾件，比做出來的數值。數值先換成普通品質，再跟這個角色用這個配方做過最好的比（跟測名表的基準比同一種算法）。名稱 00:00 換效果，只比今天做的。配方挑便宜、材料少的就好，測完不要換配方</div>
+      <div class="row">角色<select data-name-test="heroId" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
+      <div class="row">裝備<select data-name-test="type" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select>每個名稱做<input data-name-test="repeat" type="number" min="1" max="5" style="flex:none;width:48px">件</div>
+      <div class="row">配方<input data-name-test="recipe" placeholder="例：鐵礦×2、木頭×1" style="flex:1;min-width:0"><button data-action="name-test-recipe-from-page" title="把「配方」頁現在的類型和配方帶進來">用配方頁的</button></div>
+      <textarea data-name-test="names" rows="4" placeholder="候選名稱，一行一個（或用、隔開）" style="width:100%;box-sizing:border-box;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></textarea>
+      <label class="row"><input data-name-test="useForAuto" type="checkbox" style="flex:none;width:auto"> 自動換名稱、名稱推薦改用自測結果（測的是哪種裝備就只準那種）</label>
+      <div class="row"><button data-action="name-test-start" style="font-weight:bold">開始測名</button><button data-action="name-test-stop">停止</button><button data-action="name-test-refresh">讀取裝備並更新結果</button></div>
+      <div data-role="name-test-status" class="hint"></div>
+      <div data-role="name-test-result" style="font-size:12px;max-height:420px;overflow:auto"></div>
+    </div>
+
     <div data-tab="mining">
       <div class="row"><button data-action="mining-start" style="font-weight:bold">開始挖礦</button><button data-action="mining-stop">停止挖礦</button><button data-action="mining-refresh">重新讀取</button></div>
       <div class="row">立即收礦 <select data-role="mining-collect-site" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">全部地點</option><option value="1">砂石場</option><option value="2">森林區</option><option value="3">鐵礦山</option><option value="4">阿嬤寶山</option></select>
@@ -2024,6 +2037,13 @@
       refreshForgeHeroes()
         .then(() => activeTab === 'forgerCompare' && renderForgerCompare())
         .catch(() => {});
+    }
+    if (tabId === 'nameTest') {
+      renderNameTest();
+      refreshForgeHeroes()
+        .then(() => activeTab === 'nameTest' && renderNameTest())
+        .catch(() => {});
+      if (Date.now() - mineStockAt > MINE_STOCK_FRESH_MILLISECONDS) refreshMineStock().then(() => activeTab === 'nameTest' && renderNameTestStatus()).catch(() => {});
     }
     if (tabId === 'recipe') {
       renderRecipes();
@@ -11530,6 +11550,18 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       refreshForgerCompare();
     } else if (action === 'forger-compare-viewer') {
       openForgerCompareViewer();
+    } else if (action === 'name-test-start') {
+      startNameTest();
+    } else if (action === 'name-test-stop') {
+      stopNameTest();
+    } else if (action === 'name-test-refresh') {
+      refreshNameTest();
+    } else if (action === 'name-test-use') {
+      useTestedName(event.target.dataset.name);
+    } else if (action === 'name-test-recipe-from-page') {
+      const settings = readSettingsFromPanel();
+      saveNameTest({ ...readNameTestForm(), type: settings.forgeRecipeType || '短刀', recipe: normalizeRecipe(settings.forgeRecipe) });
+      renderNameTest();
     } else if (action === 'quality-pick-scan') {
       showPickChoices();
     } else if (action === 'equip-export') {
@@ -15645,6 +15677,295 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     document.body.appendChild(overlay);
   }
 
+  // ---------- 自測名稱 ----------
+  // 測名表沒有今天的名稱（或機制改了不準）時自己測：同一個角色、同一種裝備、同一個配方，輪流用候選名稱開爐，
+  // 做好的數值換成普通品質後，跟這個角色用這個配方做過最好的比（重量越輕越好），就是自己的「基準比」
+  const NAME_TEST_KEY = 'autoClickerV2NameTest';
+  const NAME_TEST_RETRY_LIMIT = 3;
+  const nameTestRunner = { running: false, runId: 0, timerId: null, failures: 0, status: '' };
+
+  function loadNameTest() {
+    return { heroId: 0, type: '短刀', recipe: '', names: '', repeat: 1, useForAuto: false, started: {}, ...(readJsonStorage(NAME_TEST_KEY, null) || {}) };
+  }
+
+  function saveNameTest(config) {
+    writeJsonStorage(NAME_TEST_KEY, config);
+  }
+
+  function nameTestCandidates(config) {
+    return [...new Set(String(config.names || '').split(/[\n,，、]+/).map((name) => name.trim()).filter(Boolean))];
+  }
+
+  function nameTestRepeat(config) {
+    return Math.min(5, Math.max(1, Math.round(Number(config.repeat) || 1)));
+  }
+
+  // 今天每個名稱開過幾爐（開了就算，不等做好）；過了 00:00 名稱效果換了，重新算
+  function nameTestStartedToday(config) {
+    return (config.started && config.started[localDayKey(Date.now())]) || {};
+  }
+
+  function nextTestName(config) {
+    const started = nameTestStartedToday(config);
+    return nameTestCandidates(config).find((name) => (started[name] || 0) < nameTestRepeat(config)) || null;
+  }
+
+  // 材料順序不同也算同一個配方
+  function recipeKeyOf(materials) {
+    return materials
+      .map(([name, quantity]) => `${name}×${Number(quantity) || 0}`)
+      .sort()
+      .join('、');
+  }
+
+  function nameTestResults(config) {
+    const key = recipeKeyOf(parseRecipeLoosely(config.recipe));
+    if (!config.heroId || !config.type || !key) return null;
+    const multipliers = qualityMultipliers();
+    const samples = [...forgedRecords().values()]
+      .filter((item) => Number(item.heroId) === Number(config.heroId) && item.type === config.type && Array.isArray(item.materials) && recipeKeyOf(item.materials) === key)
+      .map((item) => ({ name: String(item.name || '').trim(), day: localDayKey(item.craftedTime), base: baseStats(item, multipliers) }));
+    if (!samples.length) return null;
+    const values = (field) => samples.map((sample) => sample.base[field]).filter((value) => value > 0);
+    const best = Object.fromEntries(NAME_WEIGHT_FIELDS.map((field) => [field, values(field).length ? (field === 'wgt' ? Math.min(...values(field)) : Math.max(...values(field))) : 0]));
+    const today = localDayKey(Date.now());
+    const groups = new Map();
+    samples
+      .filter((sample) => sample.day === today && sample.name)
+      .forEach((sample) => {
+        if (!groups.has(sample.name)) groups.set(sample.name, []);
+        groups.get(sample.name).push(sample.base);
+      });
+    // 這種裝備本來就沒有的屬性（短刀沒智力）當 100%，不拉低六圍平均
+    const ratio = (field, value) => (!best[field] ? 1 : field === 'wgt' ? (value > 0 ? best.wgt / value : 0) : value / best[field]);
+    const names = [...groups].map(([name, bases]) => {
+      const w = NAME_WEIGHT_FIELDS.map((field) => ratio(field, bases.reduce((sum, base) => sum + base[field], 0) / bases.length));
+      return { name, w, n: bases.length, good: true };
+    });
+    return { total: samples.length, days: new Set(samples.map((sample) => sample.day)).size, names };
+  }
+
+  // 勾了「自動換名稱改用自測結果」：今天測過的名稱取代測名表，挑名稱、自動換名稱都用這份
+  function ownTestedNamesToday() {
+    const config = loadNameTest();
+    if (!config.useForAuto) return null;
+    const results = nameTestResults(config);
+    if (!results || !results.names.length) return null;
+    return Object.fromEntries(results.names.map(({ name, w, n }) => [name, { w, n, good: true }]));
+  }
+
+  function readNameTestForm() {
+    const config = loadNameTest();
+    panel.querySelectorAll('[data-name-test]').forEach((input) => {
+      const field = input.dataset.nameTest;
+      config[field] = input.type === 'checkbox' ? input.checked : field === 'heroId' || field === 'repeat' ? Number(input.value) || 0 : input.value;
+    });
+    return config;
+  }
+
+  function renderNameTest() {
+    const config = loadNameTest();
+    const settings = readSettingsFromPanel();
+    const heroSelect = panel.querySelector('[data-name-test="heroId"]');
+    const heroes = forgeHeroes.slice().sort((first, second) => (second.forge || 0) - (first.forge || 0));
+    heroSelect.innerHTML = `<option value="0">選角色</option>${heroes.map((hero) => `<option value="${hero.id}">${escapeHtml(hero.name)}（鍛 ${hero.forge ?? '?'}・裁 ${hero.tailor ?? '?'}・工 ${hero.craft ?? '?'}）</option>`).join('')}`;
+    if (config.heroId && !heroes.some((hero) => hero.id === Number(config.heroId))) heroSelect.add(new Option(`角色 ${config.heroId}`, String(config.heroId)));
+    const typeSelect = panel.querySelector('[data-name-test="type"]');
+    if (!typeSelect.options.length) typeSelect.innerHTML = Object.values(FORGE_TYPE_NAMES).map((type) => `<option>${escapeHtml(type)}</option>`).join('');
+    panel.querySelectorAll('[data-name-test]').forEach((input) => {
+      const value = config[input.dataset.nameTest];
+      if (input.type === 'checkbox') input.checked = Boolean(value);
+      else if (document.activeElement !== input) input.value = value ?? '';
+    });
+    renderNameTestStatus();
+    const box = panel.querySelector('[data-role="name-test-result"]');
+    const results = nameTestResults(config);
+    const weights = nameWeightsFor(settings, config.type, 'use');
+    const score = (entry) => (weights ? weights.pairs.reduce((sum, [stat, share]) => sum + share * entry.w[NAME_STAT_INDEX[stat]], 0) : entry.w.reduce((sum, value) => sum + value, 0) / entry.w.length);
+    const started = nameTestStartedToday(config);
+    const finished = new Set(results ? results.names.map((entry) => entry.name) : []);
+    const pending = Object.keys(started).filter((name) => !finished.has(name));
+    if (!results || !results.names.length) {
+      box.innerHTML = `<div class="hint">今天還沒有測好的名稱${pending.length ? `（做好還沒讀到：${pending.map(escapeHtml).join('、')}，做好後按「讀取裝備並更新結果」）` : ''}</div>`;
+      return;
+    }
+    const percent = (value) => `${Math.round(value * 1000) / 10}`;
+    const rows = results.names
+      .map((entry) => ({ ...entry, score: score(entry), six: entry.w.reduce((sum, value) => sum + value, 0) / entry.w.length }))
+      .sort((first, second) => second.score - first.score);
+    box.innerHTML = `<table class="combat"><tr><th>名稱</th><th>件</th><th>攻</th><th>防</th><th>智</th><th>幸</th><th>重</th><th>耐</th><th>六圍</th><th title="${escapeHtml(weights ? weights.label : '六圍平均')}">分數</th><th></th></tr>${rows
+      .map(
+        (entry, index) => `<tr style="${index === 0 ? 'background:#16261c' : ''}"><td style="white-space:normal">${index === 0 ? '👑 ' : ''}${escapeHtml(entry.name)}</td><td>${entry.n}</td>
+          ${entry.w.map((value) => `<td>${percent(value)}</td>`).join('')}<td>${percent(entry.six)}</td><td><b>${percent(entry.score)}</b></td>
+          <td><button data-action="name-test-use" data-name="${escapeHtml(entry.name)}" title="把${escapeHtml(config.type)}的鍛造名稱換成這個">用</button></td></tr>`
+      )
+      .join('')}</table>
+      <div class="hint">分數照${escapeHtml(weights ? weights.label : '六圍平均')}排。% ＝ 今天這個名稱的平均（換成普通品質）÷ 這個角色用這個配方做過最好的（共 ${results.total} 件、${results.days} 天；重量是最輕的 ÷ 這個）。紀錄少時基準偏低、% 會偏高，只看名次比較準。同名稱只做 1 件時還會有隨機誤差，前幾名差不多的話每個多做 1～2 件再比${pending.length ? `；做好還沒讀到：${pending.map(escapeHtml).join('、')}` : ''}</div>`;
+  }
+
+  function renderNameTestStatus() {
+    const box = panel.querySelector('[data-role="name-test-status"]');
+    if (!box) return;
+    const config = loadNameTest();
+    const names = nameTestCandidates(config);
+    const started = nameTestStartedToday(config);
+    const done = names.reduce((sum, name) => sum + Math.min(started[name] || 0, nameTestRepeat(config)), 0);
+    const total = names.length * nameTestRepeat(config);
+    const recipe = parseRecipeLoosely(config.recipe);
+    const enough = recipe.length && mineStock.length ? forgesPossible(recipe, mineStock) : null;
+    box.innerHTML = `${nameTestRunner.running ? '🟢 測名中' : '⚪ 沒在測'}・今天 ${done}/${total} 爐${enough === null ? '' : `・材料夠 ${enough} 爐${enough < total - done ? '（<span style="color:#f87171">不夠測完</span>）' : ''}`}${
+      nameTestRunner.status ? `<br>${escapeHtml(nameTestRunner.status)}` : ''
+    }`;
+  }
+
+  async function refreshNameTestEquipments() {
+    const equipments = (await requestGameApi(EQUIPMENTS_API)).equipments || [];
+    matchPendingForges(equipments);
+    rememberForgedEquipments(equipments);
+  }
+
+  async function refreshNameTest() {
+    try {
+      await refreshNameTestEquipments();
+      await refreshForgeHeroes(true);
+      if (Date.now() - mineStockAt > MINE_STOCK_FRESH_MILLISECONDS) await refreshMineStock();
+    } catch (error) {
+      setStatus(`讀取失敗（${error.message}）`);
+    }
+    renderNameTest();
+  }
+
+  function useTestedName(name) {
+    const config = loadNameTest();
+    applyForgeNamesByType({ [`${config.type}|use`]: name, [`${config.type}|sell`]: name });
+    // 自動換名稱還在等測名表的話，今天的名稱就算定了
+    writeJsonStorage(FORGE_NAME_DAY_KEY, localDayKey(Date.now()));
+    forgeRunner.nameWaiting = '';
+    renderForgePlanOverview();
+    wakeForgeRunner();
+    setStatus(`${config.type}的鍛造名稱換成「${name}」`);
+  }
+
+  function nameTestLog(message) {
+    nameTestRunner.status = `${new Date().toLocaleTimeString('zh-TW', { hour12: false })} ${message}`;
+    setStatus(`［測名］${message}`);
+    if (activeTab === 'nameTest') renderNameTestStatus();
+  }
+
+  function scheduleNameTest(delay) {
+    backgroundTimer.clearTimeout(nameTestRunner.timerId);
+    const runId = nameTestRunner.runId;
+    nameTestRunner.timerId = backgroundTimer.setTimeout(() => {
+      if (runId === nameTestRunner.runId) nameTestTick();
+    }, delay);
+  }
+
+  function startNameTest() {
+    const config = readNameTestForm();
+    saveNameTest(config);
+    if (nameTestRunner.running) return nameTestLog('已經在測了');
+    if (!config.heroId) return nameTestLog('先選測名的角色');
+    // 同一個角色兩邊都管的話會互相搶著收爐、開爐
+    if (forgeByApiHeroIds(readSettingsFromPanel()).includes(Number(config.heroId))) return nameTestLog('這個角色在自動鍛造佇列裡，先移出佇列再測');
+    if (!parseRecipeLoosely(config.recipe).length) return nameTestLog('先填配方');
+    if (!nameTestCandidates(config).length) return nameTestLog('先填候選名稱');
+    if (!nextTestName(config)) return nameTestLog('今天這些名稱都測過了，要再做就把「每個名稱做幾件」調大');
+    nameTestRunner.running = true;
+    nameTestRunner.runId++;
+    nameTestRunner.failures = 0;
+    nameTestLog('開始測名');
+    nameTestTick();
+  }
+
+  function stopNameTest(message) {
+    nameTestRunner.running = false;
+    nameTestRunner.runId++;
+    backgroundTimer.clearTimeout(nameTestRunner.timerId);
+    nameTestLog(message || '已停止');
+  }
+
+  async function nameTestTick() {
+    if (!nameTestRunner.running) return;
+    if (tabShutDown) return stopNameTest('分頁關閉了');
+    const runId = nameTestRunner.runId;
+    const cancelled = () => runId !== nameTestRunner.runId;
+    const config = loadNameTest();
+    try {
+      let heroes = (await requestGameApi(HEROES_API)).heroes || [];
+      if (cancelled()) return;
+      forgeHeroes = heroes;
+      forgeHeroesAt = Date.now();
+      let hero = heroes.find((candidate) => candidate.id === Number(config.heroId));
+      if (!hero) return stopNameTest('找不到測名的角色');
+      if (hero.actionState === 5) {
+        const doneAt = Date.parse(hero.actionCompleteTime);
+        if (!hero.canComplete && !(Number.isFinite(doneAt) && doneAt <= Date.now())) {
+          const delay = Math.min(Math.max((Number.isFinite(doneAt) ? doneAt : Date.now() + 60000) - Date.now(), 0) + randomGap(3000, 12000), 15 * 60000);
+          nameTestLog(`${hero.name} 鍛造中，${Math.round(delay / 1000)} 秒後再看`);
+          scheduleNameTest(delay);
+          return;
+        }
+        const completed = await requestGameApi(`${HEROES_API}/${hero.id}/completeForge`, { method: 'POST' });
+        if (cancelled()) return;
+        syncGameCompleteForge(completed, hero.id);
+        heroes = completed.heroes || heroes;
+        hero = heroes.find((candidate) => candidate.id === hero.id) || { ...hero, actionState: 0 };
+        // 做好的裝備要讀一次裝備清單才對得上名稱和數值
+        await refreshNameTestEquipments();
+        if (cancelled()) return;
+        if (activeTab === 'nameTest') renderNameTest();
+      }
+      const name = nextTestName(loadNameTest());
+      if (!name) {
+        stopNameTest(`今天的 ${nameTestCandidates(config).length} 個名稱都測完了`);
+        showToast('測名：都測完了，到「鍛造 → 自測名稱」看結果');
+        return;
+      }
+      if (inHuntTeam(hero)) return stopNameTest(`${hero.name} 在狩獵隊伍裡，不能鍛造`);
+      if (hero.actionState) {
+        nameTestLog(`${hero.name} 在忙別的事，閒下來再開爐`);
+        scheduleNameTest(randomGap(60000, 90000));
+        return;
+      }
+      const busyShops = new Set(heroes.filter((candidate) => candidate.actionState === 5).map((candidate) => Number(candidate.actionTarget)));
+      const shopCount = await forgeShopCount();
+      if (cancelled()) return;
+      const freeShop = Array.from({ length: shopCount }, (_, index) => index + 1).find((shop) => !busyShops.has(shop));
+      if (!freeShop) {
+        const delay = nextForgeDelay(heroes, [hero.id], false);
+        nameTestLog(`${shopCount} 間鍛造坊都有人在用，${Math.round(delay / 1000)} 秒後再看`);
+        scheduleNameTest(delay);
+        return;
+      }
+      const { body, summary } = await buildForgeRequest({ type: config.type, recipe: config.recipe, name }, hero.id, freeShop);
+      if (cancelled()) return;
+      await sendForge(body);
+      const fresh = loadNameTest();
+      const started = nameTestStartedToday(fresh);
+      fresh.started = { [localDayKey(Date.now())]: { ...started, [name]: (started[name] || 0) + 1 } };
+      saveNameTest(fresh);
+      nameTestRunner.failures = 0;
+      nameTestLog(`${hero.name} 在鍛造坊 ${freeShop} 開始做「${name}」${summary}`);
+      scheduleNameTest(randomGap(15000, 30000));
+    } catch (error) {
+      if (cancelled()) return;
+      if (error.captchaRequired) {
+        stopNameTest('伺服器要求活人驗證，驗證完再按「開始測名」');
+        alertUser('測名：伺服器要求活人驗證，已停止', { paused: true });
+        return;
+      }
+      if ((error.transient || error.status) && nameTestRunner.failures < NAME_TEST_RETRY_LIMIT) {
+        nameTestRunner.failures++;
+        nameTestLog(`出錯（${error.message}），稍後重試（第 ${nameTestRunner.failures}/${NAME_TEST_RETRY_LIMIT} 次）`);
+        scheduleNameTest(randomGap(30000, 60000));
+        return;
+      }
+      // 材料不夠、配方超過上限這類不會自己好
+      stopNameTest(`停止：${error.message}`);
+      showToast(`測名停止：${error.message}`);
+    }
+  }
+
   async function refreshForgerCompare() {
     try {
       const equipments = (await requestGameApi(EQUIPMENTS_API)).equipments || [];
@@ -18013,7 +18334,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   function todayNames(goal) {
     const weights = loadNameWeights();
     const day = localDayKey(Date.now());
-    const today = !weights ? {} : weights.today && weights.today.day === day ? weights.today.names : weights.days[day] || {};
+    const today = ownTestedNamesToday() || (!weights ? {} : weights.today && weights.today.day === day ? weights.today.names : weights.days[day] || {});
     const fieldIndex = (field) => NAME_WEIGHT_FIELDS.indexOf(field);
     const score = ({ w }) => (goal === 'six' ? w.reduce((sum, value) => sum + value, 0) / w.length : goal === 'total' ? (w[0] + w[1] + w[2] + w[3]) / 4 : w[fieldIndex(goal)]);
     // 只有次等以下（或上等以上）測過的名稱不準，不拿來挑（測名表「今天」分頁也不列）
@@ -21653,6 +21974,12 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   panel.querySelector('[data-role="material-sort"]').addEventListener('change', renderMaterialSummary);
   ['type', 'recipe', 'batch', 'base', 'name-adjust'].forEach((role) =>
     panel.querySelector(`[data-role="forger-compare-${role}"]`).addEventListener('change', renderForgerCompare)
+  );
+  panel.querySelectorAll('[data-name-test]').forEach((input) =>
+    input.addEventListener('change', () => {
+      saveNameTest(readNameTestForm());
+      renderNameTest();
+    })
   );
   panel.querySelector('[data-role="material-filter"]').addEventListener('input', renderMaterialSummary);
   panel.querySelector('[data-role="growth-import-file"]').addEventListener('change', (event) => {
