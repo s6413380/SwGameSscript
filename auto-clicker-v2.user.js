@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.30
+// @version      5.31
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -15824,28 +15824,32 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   }
 
   // 測名表的「用途」分類（社群定義，權重高的優先）；w 順序是攻防智幸重耐。
-  // 「或接近」放寬 2%，「智幸可略低」智幸再放寬 5%
+  // 「或接近」放寬 2%，「智幸可略低」智幸再放寬 5%。
+  // 表上只有「防具」那幾級（看防耐）；名稱效果現在照裝備種類分開，武器套防具級沒意義，改看攻耐（自己延伸的「武器」級）
   const NAME_USAGE_CLASSES = (() => {
     const near = (value, threshold, extra = 0) => value >= threshold - 0.02 - extra;
     const allAbove = (w, threshold, lenientIntLck) => [0, 1, 5].every((index) => near(w[index], threshold)) && [2, 3].every((index) => near(w[index], threshold, lenientIntLck ? 0.05 : 0));
-    const armorAbove = (w, threshold) => near(w[1], threshold) && near(w[5], threshold);
+    // 武器看攻（0）、防具看防（1），都要耐（5）
+    const mainAbove = (w, weapon, threshold) => near(w[weapon ? 0 : 1], threshold) && near(w[5], threshold);
     const light = (w) => near(w[4], 0.7);
+    const role = (weapon) => (weapon ? '武器' : '防具');
     return [
-      [810, '通用頂名', (w) => allAbove(w, 0.85) && light(w)],
-      [800, '通用頂名(重)', (w) => allAbove(w, 0.85)],
-      [710, '防具頂名', (w) => armorAbove(w, 0.9) && light(w)],
-      [700, '防具頂名(重)', (w) => armorAbove(w, 0.9)],
-      [510, '通用', (w) => allAbove(w, 0.75, true) && light(w)],
-      [500, '通用(重)', (w) => allAbove(w, 0.75, true)],
-      [410, '防具', (w) => armorAbove(w, 0.85) && light(w)],
-      [400, '防具(重)', (w) => armorAbove(w, 0.85)],
-      [200, '高智幸', (w) => near(w[2], 0.85) && near(w[3], 0.85)],
+      [810, () => '通用頂名', (w) => allAbove(w, 0.85) && light(w)],
+      [800, () => '通用頂名(重)', (w) => allAbove(w, 0.85)],
+      [710, (weapon) => `${role(weapon)}頂名`, (w, weapon) => mainAbove(w, weapon, 0.9) && light(w)],
+      [700, (weapon) => `${role(weapon)}頂名(重)`, (w, weapon) => mainAbove(w, weapon, 0.9)],
+      [510, () => '通用', (w) => allAbove(w, 0.75, true) && light(w)],
+      [500, () => '通用(重)', (w) => allAbove(w, 0.75, true)],
+      [410, (weapon) => role(weapon), (w, weapon) => mainAbove(w, weapon, 0.85) && light(w)],
+      [400, (weapon) => `${role(weapon)}(重)`, (w, weapon) => mainAbove(w, weapon, 0.85)],
+      [200, () => '高智幸', (w) => near(w[2], 0.85) && near(w[3], 0.85)],
     ];
   })();
 
-  function nameUsageClass(w) {
-    const found = NAME_USAGE_CLASSES.find(([, , matches]) => matches(w));
-    return found ? { rank: found[0], label: found[1] } : { rank: 0, label: '' };
+  function nameUsageClass(w, type) {
+    const weapon = WEAPON_TYPES.includes(type);
+    const found = NAME_USAGE_CLASSES.find(([, , matches]) => matches(w, weapon));
+    return found ? { rank: found[0], label: found[1](weapon) } : { rank: 0, label: '' };
   }
 
   const NAME_TEST_LOG_DAYS = 30;
@@ -15919,7 +15923,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const weights = nameWeightsFor(settings, config.type, 'use');
     const score = (entry) => (weights ? weights.pairs.reduce((sum, [stat, share]) => sum + share * entry.w[NAME_STAT_INDEX[stat]], 0) : entry.w.reduce((sum, value) => sum + value, 0) / entry.w.length);
     return results.names
-      .map((entry) => ({ ...entry, usage: nameUsageClass(entry.w), score: score(entry), six: entry.w.reduce((sum, value) => sum + value, 0) / entry.w.length }))
+      .map((entry) => ({ ...entry, usage: nameUsageClass(entry.w, config.type), score: score(entry), six: entry.w.reduce((sum, value) => sum + value, 0) / entry.w.length }))
       .sort((first, second) => second.usage.rank - first.usage.rank || second.score - first.score);
   }
 
@@ -16007,7 +16011,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           <td><button data-action="name-test-use" data-name="${escapeHtml(entry.name)}" title="把${escapeHtml(config.type)}的鍛造名稱換成這個">用</button></td></tr>`
       )
       .join('')}</table>
-      <div class="hint">先照用途排（測名表的定義：頂名＝全屬性 85%+、防具＝防耐 90%/85%+，沒有「(重)」的還要重量 70%+；差 2% 內算接近），同用途再照${escapeHtml(weights ? weights.label : '六圍平均')}的分數排。% ＝ 今天這個名稱的平均（換成普通品質）÷ 這個角色用這個配方做過最好的（共 ${results.total} 件、${results.days} 天）；重量照新表算法：1.2 − 重量 ÷ 做過最重的，越高越輕。紀錄少時基準偏低、% 會偏高，只看名次比較準。同名稱只做 1 件時還會有隨機誤差，前幾名差不多的話每個多做 1～2 件再比${pending.length ? `；做好還沒讀到：${pending.map(escapeHtml).join('、')}` : ''}</div>`;
+      <div class="hint">先照用途排（測名表的定義：頂名＝全屬性 85%+、防具＝防耐 90%/85%+（武器改看攻耐），沒有「(重)」的還要重量 70%+；差 2% 內算接近），同用途再照${escapeHtml(weights ? weights.label : '六圍平均')}的分數排。% ＝ 今天這個名稱的平均（換成普通品質）÷ 這個角色用這個配方做過最好的（共 ${results.total} 件、${results.days} 天）；重量照新表算法：1.2 − 重量 ÷ 做過最重的，越高越輕。紀錄少時基準偏低、% 會偏高，只看名次比較準。同名稱只做 1 件時還會有隨機誤差，前幾名差不多的話每個多做 1～2 件再比${pending.length ? `；做好還沒讀到：${pending.map(escapeHtml).join('、')}` : ''}</div>`;
   }
 
   function renderNameTestStatus() {
