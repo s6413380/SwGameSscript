@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.36
+// @version      5.37
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -15849,7 +15849,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const name = template
         ? template.replace(/\{字\}/g, randomPart).replace(/\{數\}/g, () => String(number + 1))
         : randomPart();
-      if (name.length > maxLength || name.length < minLength || /の$/.test(name) || taken.has(name)) continue;
+      // 模板沒有 {字}（例：00{數}）長度是模板定的，不套最少字數，不然 001 這種永遠太短
+      if (name.length > maxLength || (name.length < minLength && (!template || slots)) || /の$/.test(name) || taken.has(name)) continue;
       if (template.includes('{數}')) number++;
       taken.add(name);
       names.push(name);
@@ -15865,6 +15866,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     config.names = [...existing, ...names].join('\n');
     saveNameTest(config);
     renderNameTest();
+    if (names.length < count) {
+      const { minLength, maxLength } = nameLengthRange(config);
+      setStatus(`只產生 ${names.length} 個（要 ${count} 個）：照字數 ${minLength}～${maxLength}、模板和系列湊不出更多不重複的名稱，把字數範圍放寬或換系列`);
+    }
   }
 
   function nextTestName(config) {
