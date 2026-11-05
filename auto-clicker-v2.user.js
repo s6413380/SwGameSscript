@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.25
+// @version      5.26
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1486,6 +1486,8 @@
       <div class="row">候選名稱<span style="flex:1"></span><button data-action="name-test-random" title="隨機產生中文名稱加到下面（不會跟已經有的、今天測過的重複）">亂取</button><input data-role="name-test-random-count" type="number" min="1" max="50" value="10" style="flex:none;width:48px">個<button data-action="name-test-clear-names" title="清空候選名稱">清空</button></div>
       <textarea data-name-test="names" rows="4" placeholder="候選名稱，一行一個（或用、隔開）" style="width:100%;box-sizing:border-box;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></textarea>
       <label class="row"><input data-name-test="useForAuto" type="checkbox" style="flex:none;width:auto"> 自動換名稱、名稱推薦改用自測結果（測的是哪種裝備就只準那種）</label>
+      <label class="row"><input data-name-test="autoDaily" type="checkbox" style="flex:none;width:auto"> 每天 00:00 後自動測名，測完把第一名套用到自動鍛造（要開自動鍛造的「每天自動換名稱」）</label>
+      <div class="row">每天亂取<input data-name-test="dailyRandom" type="number" min="0" max="50" style="flex:none;width:48px">個新名稱來測（0＝用下面的清單）</div>
       <div class="row"><button data-action="name-test-start" style="font-weight:bold">開始測名</button><button data-action="name-test-stop">停止</button><button data-action="name-test-refresh">讀取裝備並更新結果</button></div>
       <div data-role="name-test-status" class="hint"></div>
       <div data-role="name-test-result" style="font-size:12px;max-height:420px;overflow:auto"></div>
@@ -15840,11 +15842,61 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return Object.fromEntries(results.names.map(({ name, w, n }) => [name, { w, n, good: true }]));
   }
 
+  // 先照測名表的用途等級，同等級再照這種裝備的分數（表格和每天自動套用都用這個順序）
+  function rankTestedNames(config, settings, results = nameTestResults(config)) {
+    if (!results) return [];
+    const weights = nameWeightsFor(settings, config.type, 'use');
+    const score = (entry) => (weights ? weights.pairs.reduce((sum, [stat, share]) => sum + share * entry.w[NAME_STAT_INDEX[stat]], 0) : entry.w.reduce((sum, value) => sum + value, 0) / entry.w.length);
+    return results.names
+      .map((entry) => ({ ...entry, usage: nameUsageClass(entry.w), score: score(entry), six: entry.w.reduce((sum, value) => sum + value, 0) / entry.w.length }))
+      .sort((first, second) => second.usage.rank - first.usage.rank || second.score - first.score);
+  }
+
+  // 每天自動測名：自動鍛造過了 00:00 還沒定名稱時叫這個。今天還沒測就開測（可每天換一批亂取的名稱），
+  // 回傳等待說明；沒開這功能回傳 null，照原本等測名表
+  function ensureDailyNameTest() {
+    const config = loadNameTest();
+    if (!config.autoDaily) return null;
+    const today = localDayKey(Date.now());
+    if (config.autoDay !== today) {
+      if (Number(config.dailyRandom) > 0) config.names = randomForgeNames(Math.min(50, Number(config.dailyRandom)), []).join('\n');
+      config.autoDay = today;
+      config.useForAuto = true;
+      saveNameTest(config);
+      startNameTest(false);
+    }
+    if (nameTestRunner.running) {
+      const names = nameTestCandidates(config);
+      const started = nameTestStartedToday(config);
+      return `自測名稱中（${names.filter((name) => started[name]).length}/${names.length} 個名稱），測完自動套用第一名`;
+    }
+    return `自測名稱沒在跑：${nameTestRunner.status || '到「自測名稱」看原因'}`;
+  }
+
+  function applyBestTestedName() {
+    const config = loadNameTest();
+    const settings = readSettingsFromPanel();
+    const best = rankTestedNames(config, settings)[0];
+    if (!best) return;
+    // 佇列裡其他種類也換：昨天的名稱過了 00:00 效果是隨機的，用今天測到最好的比較保險
+    const keys = new Set([`${settings.forgeRecipeType}|use`, ...forgeByApiHeroIds(settings).map((heroId) => {
+      const plan = forgeApiPlan(settings, heroId);
+      return `${plan.type}|${plan.purpose}`;
+    })].filter((key) => !key.startsWith('|')));
+    applyForgeNamesByType(Object.fromEntries([...keys].map((key) => [key, best.name])));
+    writeJsonStorage(FORGE_NAME_DAY_KEY, localDayKey(Date.now()));
+    forgeRunner.nameWaiting = '';
+    renderForgePlanOverview();
+    wakeForgeRunner();
+    forgeLog(`自測名稱完成，鍛造名稱換成「${best.name}」${best.usage.label ? `（${best.usage.label}）` : ''}，繼續鍛造`);
+    showToast(`自測名稱完成：鍛造名稱換成「${best.name}」`);
+  }
+
   function readNameTestForm() {
     const config = loadNameTest();
     panel.querySelectorAll('[data-name-test]').forEach((input) => {
       const field = input.dataset.nameTest;
-      config[field] = input.type === 'checkbox' ? input.checked : field === 'heroId' || field === 'repeat' ? Number(input.value) || 0 : input.value;
+      config[field] = input.type === 'checkbox' ? input.checked : ['heroId', 'repeat', 'dailyRandom'].includes(field) ? Number(input.value) || 0 : input.value;
     });
     return config;
   }
@@ -15867,7 +15919,6 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const box = panel.querySelector('[data-role="name-test-result"]');
     const results = nameTestResults(config);
     const weights = nameWeightsFor(settings, config.type, 'use');
-    const score = (entry) => (weights ? weights.pairs.reduce((sum, [stat, share]) => sum + share * entry.w[NAME_STAT_INDEX[stat]], 0) : entry.w.reduce((sum, value) => sum + value, 0) / entry.w.length);
     const started = nameTestStartedToday(config);
     const finished = new Set(results ? results.names.map((entry) => entry.name) : []);
     const pending = Object.keys(started).filter((name) => !finished.has(name));
@@ -15876,10 +15927,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       return;
     }
     const percent = (value) => `${Math.round(value * 1000) / 10}`;
-    const rows = results.names
-      .map((entry) => ({ ...entry, usage: nameUsageClass(entry.w), score: score(entry), six: entry.w.reduce((sum, value) => sum + value, 0) / entry.w.length }))
-      // 先照測名表的用途等級，同等級再照這種裝備的分數
-      .sort((first, second) => second.usage.rank - first.usage.rank || second.score - first.score);
+    const rows = rankTestedNames(config, settings, results);
     box.innerHTML = `<table class="combat"><tr><th>名稱</th><th>用途</th><th>件</th><th>攻</th><th>防</th><th>智</th><th>幸</th><th>重</th><th>耐</th><th>六圍</th><th title="${escapeHtml(weights ? weights.label : '六圍平均')}">分數</th><th></th></tr>${rows
       .map(
         (entry, index) => `<tr style="${index === 0 ? 'background:#16261c' : ''}"><td style="white-space:normal">${index === 0 ? '👑 ' : ''}${escapeHtml(entry.name)}</td>
@@ -15948,8 +15996,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }, delay);
   }
 
-  function startNameTest() {
-    const config = readNameTestForm();
+  // fromPanel：按按鈕才讀面板；自動鍛造叫的時候分頁可能還沒畫過，面板欄位是空的，要用存著的設定
+  function startNameTest(fromPanel = true) {
+    const config = fromPanel ? readNameTestForm() : loadNameTest();
     saveNameTest(config);
     if (nameTestRunner.running) return nameTestLog('已經在測了');
     if (!config.heroId) return nameTestLog('先選測名的角色');
@@ -15972,7 +16021,18 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     nameTestLog(message || '已停止');
   }
 
+  // 同一時間只跑一輪，不然開測時順手跑的那輪和排好的那輪會各開一爐同名的
   async function nameTestTick() {
+    if (nameTestRunner.ticking) return;
+    nameTestRunner.ticking = true;
+    try {
+      await nameTestTickOnce();
+    } finally {
+      nameTestRunner.ticking = false;
+    }
+  }
+
+  async function nameTestTickOnce() {
     if (!nameTestRunner.running) return;
     if (tabShutDown) return stopNameTest('分頁關閉了');
     const runId = nameTestRunner.runId;
@@ -16006,7 +16066,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const name = nextTestName(loadNameTest());
       if (!name) {
         stopNameTest(`今天的 ${nameTestCandidates(config).length} 個名稱都測完了`);
-        showToast('測名：都測完了，到「鍛造 → 自測名稱」看結果');
+        if (config.autoDaily && readJsonStorage(FORGE_NAME_DAY_KEY, '') !== localDayKey(Date.now())) applyBestTestedName();
+        else showToast('測名：都測完了，到「鍛造 → 自測名稱」看結果');
         return;
       }
       if (inHuntTeam(hero)) return stopNameTest(`${hero.name} 在狩獵隊伍裡，不能鍛造`);
@@ -19830,8 +19891,11 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         return;
       }
       if (settings.forgeAutoNameEnabled && readJsonStorage(FORGE_NAME_DAY_KEY, '') !== localDayKey(Date.now())) {
-        const waiting = await pickTodayForgeName(settings);
+        const dailyTest = ensureDailyNameTest();
+        // 自測的結果中途就過門檻也直接用；沒過就等測完套第一名
+        let waiting = await pickTodayForgeName(settings);
         if (cancelled()) return;
+        if (waiting && dailyTest) waiting = dailyTest;
         if (waiting) {
           forgeRunner.nameWaiting = waiting;
           const minutes = settings.forgeAutoNameMinutes;
