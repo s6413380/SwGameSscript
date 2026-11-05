@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.23
+// @version      5.24
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1483,6 +1483,7 @@
       <div class="row">角色<select data-name-test="heroId" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
       <div class="row">裝備<select data-name-test="type" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select>每個名稱做<input data-name-test="repeat" type="number" min="1" max="5" style="flex:none;width:48px">件</div>
       <div class="row">配方<input data-name-test="recipe" placeholder="例：鐵礦×2、木頭×1" style="flex:1;min-width:0"><button data-action="name-test-recipe-from-page" title="把「配方」頁現在的類型和配方帶進來">用配方頁的</button></div>
+      <div class="row">候選名稱<span style="flex:1"></span><button data-action="name-test-random" title="隨機產生中文名稱加到下面（不會跟已經有的、今天測過的重複）">亂取</button><input data-role="name-test-random-count" type="number" min="1" max="50" value="10" style="flex:none;width:48px">個<button data-action="name-test-clear-names" title="清空候選名稱">清空</button></div>
       <textarea data-name-test="names" rows="4" placeholder="候選名稱，一行一個（或用、隔開）" style="width:100%;box-sizing:border-box;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></textarea>
       <label class="row"><input data-name-test="useForAuto" type="checkbox" style="flex:none;width:auto"> 自動換名稱、名稱推薦改用自測結果（測的是哪種裝備就只準那種）</label>
       <div class="row"><button data-action="name-test-start" style="font-weight:bold">開始測名</button><button data-action="name-test-stop">停止</button><button data-action="name-test-refresh">讀取裝備並更新結果</button></div>
@@ -11558,6 +11559,11 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       refreshNameTest();
     } else if (action === 'name-test-use') {
       useTestedName(event.target.dataset.name);
+    } else if (action === 'name-test-random') {
+      addRandomTestNames();
+    } else if (action === 'name-test-clear-names') {
+      saveNameTest({ ...readNameTestForm(), names: '' });
+      renderNameTest();
     } else if (action === 'name-test-recipe-from-page') {
       const settings = readSettingsFromPanel();
       saveNameTest({ ...readNameTestForm(), type: settings.forgeRecipeType || '短刀', recipe: normalizeRecipe(settings.forgeRecipe) });
@@ -15703,6 +15709,32 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 今天每個名稱開過幾爐（開了就算，不等做好）；過了 00:00 名稱效果換了，重新算
   function nameTestStartedToday(config) {
     return (config.started && config.started[localDayKey(Date.now())]) || {};
+  }
+
+  // 遊戲規定 12 字以內的中、英、日文或數字；取 2～4 個常用字就好，好記、好打
+  const RANDOM_NAME_CHARACTERS = '天地日月星雲風雷雨雪山川河海林木花草石金銀鐵火水光影龍虎鳳鶴獅狼鷹熊龜蛇劍刀斧槍盾弓戰神魔聖靈幻夢真心意志勇猛剛強柔美福壽喜樂安平吉祥瑞寶玉珠王皇帝君將軍士俠仙佛道武文明晨夜春夏秋冬東西南北紅藍綠黃白黑紫青赤金玄冰炎雷霆破斬滅絕極無雙超神奇妙靜動飛翔奔騰怒吼咆哮守護永恆不朽傳說英雄';
+
+  function randomForgeNames(count, exclude) {
+    const taken = new Set(exclude);
+    const names = [];
+    for (let tries = 0; names.length < count && tries < count * 50; tries++) {
+      const length = 2 + Math.floor(Math.random() * 3);
+      const name = Array.from({ length }, () => RANDOM_NAME_CHARACTERS[Math.floor(Math.random() * RANDOM_NAME_CHARACTERS.length)]).join('');
+      if (taken.has(name)) continue;
+      taken.add(name);
+      names.push(name);
+    }
+    return names;
+  }
+
+  function addRandomTestNames() {
+    const config = readNameTestForm();
+    const count = Math.min(50, Math.max(1, Number(panel.querySelector('[data-role="name-test-random-count"]').value) || 10));
+    const existing = nameTestCandidates(config);
+    const names = randomForgeNames(count, [...existing, ...Object.keys(nameTestStartedToday(config))]);
+    config.names = [...existing, ...names].join('\n');
+    saveNameTest(config);
+    renderNameTest();
   }
 
   function nextTestName(config) {
