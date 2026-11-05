@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.31
+// @version      5.32
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1494,6 +1494,7 @@
       <div class="row">每天亂取<input data-name-test="dailyRandom" type="number" min="0" max="50" style="flex:none;width:48px">個新名稱來測（0＝用下面的清單）</div>
       <div class="row"><button data-action="name-test-start" style="font-weight:bold">開始測名</button><button data-action="name-test-stop">停止</button><button data-action="name-test-refresh">讀取裝備並更新結果</button></div>
       <div data-role="name-test-status" class="hint"></div>
+      <div data-role="name-test-sort"></div>
       <div data-role="name-test-result" style="font-size:12px;max-height:420px;overflow:auto"></div>
     </div>
 
@@ -11565,6 +11566,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       refreshNameTest();
     } else if (action === 'name-test-use') {
       useTestedName(event.target.dataset.name);
+    } else if (action === 'name-test-sort') {
+      toggleNameTestSort(event.target.dataset.key);
     } else if (action === 'name-test-random') {
       addRandomTestNames();
     } else if (action === 'name-test-clear-names') {
@@ -15922,9 +15925,58 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     if (!results) return [];
     const weights = nameWeightsFor(settings, config.type, 'use');
     const score = (entry) => (weights ? weights.pairs.reduce((sum, [stat, share]) => sum + share * entry.w[NAME_STAT_INDEX[stat]], 0) : entry.w.reduce((sum, value) => sum + value, 0) / entry.w.length);
+    const keys = nameTestSortKeys(config);
     return results.names
       .map((entry) => ({ ...entry, usage: nameUsageClass(entry.w, config.type), score: score(entry), six: entry.w.reduce((sum, value) => sum + value, 0) / entry.w.length }))
-      .sort((first, second) => second.usage.rank - first.usage.rank || second.score - first.score);
+      .sort((first, second) => {
+        for (const key of keys) {
+          const difference = NAME_TEST_SORTS[key][1](second) - NAME_TEST_SORTS[key][1](first);
+          if (difference) return difference;
+        }
+        return 0;
+      });
+  }
+
+  // 自己點的排序（先點的優先），都是大的排前面（重量 % 越高越輕）；沒點就用「用途 → 分數」
+  const NAME_TEST_SORTS = {
+    atk: ['攻', (entry) => entry.w[0]],
+    def: ['防', (entry) => entry.w[1]],
+    int: ['智', (entry) => entry.w[2]],
+    lck: ['幸', (entry) => entry.w[3]],
+    wgt: ['重', (entry) => entry.w[4]],
+    fullDur: ['耐', (entry) => entry.w[5]],
+    six: ['六圍', (entry) => entry.six],
+    score: ['分數', (entry) => entry.score],
+    usage: ['用途', (entry) => entry.usage.rank],
+  };
+  const NAME_TEST_DEFAULT_SORT = ['usage', 'score'];
+
+  function nameTestSortKeys(config) {
+    const keys = (config.sortKeys || []).filter((key) => key in NAME_TEST_SORTS);
+    return keys.length ? keys : NAME_TEST_DEFAULT_SORT;
+  }
+
+  function toggleNameTestSort(key) {
+    const config = loadNameTest();
+    if (!(key in NAME_TEST_SORTS) && key !== 'reset') return;
+    const keys = (config.sortKeys || []).filter((existing) => existing in NAME_TEST_SORTS);
+    config.sortKeys = key === 'reset' ? [] : keys.includes(key) ? keys.filter((existing) => existing !== key) : [...keys, key];
+    saveNameTest(config);
+    renderNameTest();
+  }
+
+  function nameTestSortHtml(config) {
+    const chosen = (config.sortKeys || []).filter((key) => key in NAME_TEST_SORTS);
+    const chips = Object.entries(NAME_TEST_SORTS)
+      .map(([key, [label]]) => {
+        const order = chosen.indexOf(key);
+        const picked = order >= 0;
+        return `<button data-action="name-test-sort" data-key="${key}" title="${picked ? '再點一下拿掉' : '加進排序（越先點越優先）'}" style="flex:none;padding:0 7px;border-radius:10px;${picked ? 'background:#fde047;color:#1c1917;font-weight:bold' : ''}">${picked ? `${order + 1}. ` : ''}${label}</button>`;
+      })
+      .join('');
+    const current = nameTestSortKeys(config).map((key) => NAME_TEST_SORTS[key][0]).join(' → ');
+    return `<div class="row" style="flex-wrap:wrap;gap:3px">排序${chips}${chosen.length ? '<button data-action="name-test-sort" data-key="reset" style="flex:none;padding:0 7px">重設</button>' : ''}</div>
+      <div class="hint">目前：${escapeHtml(current)}${chosen.length ? '' : '（預設）'}；每天自動測名套用的「第一名」也照這個排序</div>`;
   }
 
   // 每天自動測名：自動鍛造過了 00:00 還沒定名稱時叫這個。今天還沒測就開測（可每天換一批亂取的名稱），
@@ -15991,6 +16043,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       else if (document.activeElement !== input) input.value = value ?? '';
     });
     renderNameTestStatus();
+    panel.querySelector('[data-role="name-test-sort"]').innerHTML = nameTestSortHtml(config);
     const box = panel.querySelector('[data-role="name-test-result"]');
     const results = nameTestResults(config);
     const weights = nameWeightsFor(settings, config.type, 'use');
@@ -16011,7 +16064,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           <td><button data-action="name-test-use" data-name="${escapeHtml(entry.name)}" title="把${escapeHtml(config.type)}的鍛造名稱換成這個">用</button></td></tr>`
       )
       .join('')}</table>
-      <div class="hint">先照用途排（測名表的定義：頂名＝全屬性 85%+、防具＝防耐 90%/85%+（武器改看攻耐），沒有「(重)」的還要重量 70%+；差 2% 內算接近），同用途再照${escapeHtml(weights ? weights.label : '六圍平均')}的分數排。% ＝ 今天這個名稱的平均（換成普通品質）÷ 這個角色用這個配方做過最好的（共 ${results.total} 件、${results.days} 天）；重量照新表算法：1.2 − 重量 ÷ 做過最重的，越高越輕。紀錄少時基準偏低、% 會偏高，只看名次比較準。同名稱只做 1 件時還會有隨機誤差，前幾名差不多的話每個多做 1～2 件再比${pending.length ? `；做好還沒讀到：${pending.map(escapeHtml).join('、')}` : ''}</div>`;
+      <div class="hint">用途照測名表的定義：頂名＝全屬性 85%+、防具＝防耐 90%/85%+（武器改看攻耐），沒有「(重)」的還要重量 70%+；差 2% 內算接近。分數照${escapeHtml(weights ? weights.label : '六圍平均')}算。% ＝ 今天這個名稱的平均（換成普通品質）÷ 這個角色用這個配方做過最好的（共 ${results.total} 件、${results.days} 天）；重量照新表算法：1.2 − 重量 ÷ 做過最重的，越高越輕。紀錄少時基準偏低、% 會偏高，只看名次比較準。同名稱只做 1 件時還會有隨機誤差，前幾名差不多的話每個多做 1～2 件再比${pending.length ? `；做好還沒讀到：${pending.map(escapeHtml).join('、')}` : ''}</div>`;
   }
 
   function renderNameTestStatus() {
