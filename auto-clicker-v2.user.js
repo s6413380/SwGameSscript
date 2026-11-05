@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.29
+// @version      5.30
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1489,6 +1489,7 @@
       <label class="row"><input data-name-test="autoDaily" type="checkbox" style="flex:none;width:auto"> 每天 00:00 後自動測名，測完把第一名套用到自動鍛造（要開自動鍛造的「每天自動換名稱」）</label>
       <div class="row">亂取系列<select data-name-test="randomStyle" style="flex:none;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="common">常用字</option><option value="xianxia">仙俠</option><option value="star">星辰</option><option value="myth">神話</option><option value="beast">猛獸</option><option value="custom">自己填字詞</option></select>
         <input data-name-test="randomTemplate" placeholder="模板，例：{字}之刃、鐵壁{數}（空白＝整個亂取）" title="{字}＝照系列亂取 2～4 字，{數}＝流水號；整個名稱 12 字以內" style="flex:1;min-width:0"></div>
+      <input data-name-test="randomKeywords" placeholder="關鍵字（選填）：每個名稱至少含一個，其他字照上面的系列補，例：鐵壁、守護" title="空白或、隔開；有時兩個關鍵字一起用，前後隨機加 0～2 段系列字詞" style="width:100%;box-sizing:border-box">
       <input data-name-test="randomPool" placeholder="自己填字詞（選「自己填字詞」才用）：用空白或、隔開，例：鋼、鐵壁、守護、堅" style="width:100%;box-sizing:border-box">
       <div class="row">每天亂取<input data-name-test="dailyRandom" type="number" min="0" max="50" style="flex:none;width:48px">個新名稱來測（0＝用下面的清單）</div>
       <div class="row"><button data-action="name-test-start" style="font-weight:bold">開始測名</button><button data-action="name-test-stop">停止</button><button data-action="name-test-refresh">讀取裝備並更新結果</button></div>
@@ -15696,7 +15697,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   const nameTestRunner = { running: false, runId: 0, timerId: null, failures: 0, status: '' };
 
   function loadNameTest() {
-    return { heroId: 0, type: '短刀', recipe: '', names: '', repeat: 1, useForAuto: false, randomStyle: 'common', randomTemplate: '', randomPool: '', started: {}, ...(readJsonStorage(NAME_TEST_KEY, null) || {}) };
+    return { heroId: 0, type: '短刀', recipe: '', names: '', repeat: 1, useForAuto: false, randomStyle: 'common', randomTemplate: '', randomPool: '', randomKeywords: '', started: {}, ...(readJsonStorage(NAME_TEST_KEY, null) || {}) };
   }
 
   function saveNameTest(config) {
@@ -15747,9 +15748,34 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return part;
   }
 
-  // 模板：{字}＝照系列亂取一段，{數}＝流水號（接在清單裡同模板最大的號碼後面）；沒填模板就整個亂取
+  function nameKeywords(config) {
+    return [...new Set(String(config.randomKeywords || '').split(/[\s,，、]+/).map((word) => word.trim()).filter(Boolean))];
+  }
+
+  // 關鍵字組合：一定有一個關鍵字（有時兩個），再隨機插 0～2 段系列的字詞在前後；太長（超過 8 字）就重抽
+  function randomKeywordPart(keywords, tokens) {
+    const pick = (list) => list[Math.floor(Math.random() * list.length)];
+    let part = '';
+    for (let guard = 0; guard < 10; guard++) {
+      const parts = [pick(keywords)];
+      if (keywords.length > 1 && Math.random() < 0.35) {
+        const other = pick(keywords);
+        if (other !== parts[0]) parts.push(other);
+      }
+      const fillers = parts.join('').length < 2 ? 1 + Math.floor(Math.random() * 2) : Math.floor(Math.random() * 3);
+      for (let index = 0; index < fillers; index++) parts.splice(Math.floor(Math.random() * (parts.length + 1)), 0, pick(tokens));
+      part = parts.join('');
+      if (part.length <= 8) break;
+    }
+    return part;
+  }
+
+  // 模板：{字}＝照系列亂取一段，{數}＝流水號（接在清單裡同模板最大的號碼後面）；沒填模板就整個亂取。
+  // 填了關鍵字的話，{字}（或整個名稱）改成關鍵字加系列字詞的組合
   function randomForgeNames(count, exclude, config = {}) {
     const tokens = nameSeriesTokens(config);
+    const keywords = nameKeywords(config);
+    const randomPart = () => (keywords.length ? randomKeywordPart(keywords, tokens) : randomNamePart(tokens));
     const template = String(config.randomTemplate || '').trim();
     const taken = new Set(exclude);
     let number = 0;
@@ -15763,8 +15789,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const names = [];
     for (let tries = 0; names.length < count && tries < count * 50; tries++) {
       const name = template
-        ? template.replace(/\{字\}/g, () => randomNamePart(tokens)).replace(/\{數\}/g, () => String(number + 1))
-        : randomNamePart(tokens);
+        ? template.replace(/\{字\}/g, randomPart).replace(/\{數\}/g, () => String(number + 1))
+        : randomPart();
       if (name.length > 12 || taken.has(name)) continue;
       if (template.includes('{數}')) number++;
       taken.add(name);
