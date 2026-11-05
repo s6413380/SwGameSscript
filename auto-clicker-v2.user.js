@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.32
+// @version      5.33
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1487,8 +1487,9 @@
       <textarea data-name-test="names" rows="4" placeholder="候選名稱，一行一個（或用、隔開）" style="width:100%;box-sizing:border-box;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></textarea>
       <label class="row"><input data-name-test="useForAuto" type="checkbox" style="flex:none;width:auto"> 自動換名稱、名稱推薦改用自測結果（測的是哪種裝備就只準那種）</label>
       <label class="row"><input data-name-test="autoDaily" type="checkbox" style="flex:none;width:auto"> 每天 00:00 後自動測名，測完把第一名套用到自動鍛造（要開自動鍛造的「每天自動換名稱」）</label>
-      <div class="row">亂取系列<select data-name-test="randomStyle" style="flex:none;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="common">常用字</option><option value="xianxia">仙俠</option><option value="star">星辰</option><option value="myth">神話</option><option value="beast">猛獸</option><option value="custom">自己填字詞</option></select>
-        <input data-name-test="randomTemplate" placeholder="模板，例：{字}之刃、鐵壁{數}（空白＝整個亂取）" title="{字}＝照系列亂取 2～4 字，{數}＝流水號；整個名稱 12 字以內" style="flex:1;min-width:0"></div>
+      <div class="row">亂取系列<select data-name-test="randomStyle" style="flex:none;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="common">常用字</option><option value="xianxia">仙俠</option><option value="star">星辰</option><option value="myth">神話</option><option value="beast">猛獸</option><option value="mixed">多元素混搭</option><option value="custom">自己填字詞</option></select>
+        字數<input data-name-test="randomMinLength" type="number" min="1" max="12" style="flex:none;width:40px">～<input data-name-test="randomMaxLength" type="number" min="1" max="12" style="flex:none;width:40px"></div>
+      <input data-name-test="randomTemplate" placeholder="模板，例：{字}之刃、鐵壁{數}（空白＝整個亂取）" title="{字}＝照系列亂取一段，{數}＝流水號；整個名稱不超過上面的字數（最多 12 字）" style="width:100%;box-sizing:border-box">
       <input data-name-test="randomKeywords" placeholder="關鍵字（選填）：每個名稱至少含一個，其他字照上面的系列補，例：鐵壁、守護" title="空白或、隔開；有時兩個關鍵字一起用，前後隨機加 0～2 段系列字詞" style="width:100%;box-sizing:border-box">
       <input data-name-test="randomPool" placeholder="自己填字詞（選「自己填字詞」才用）：用空白或、隔開，例：鋼、鐵壁、守護、堅" style="width:100%;box-sizing:border-box">
       <div class="row">每天亂取<input data-name-test="dailyRandom" type="number" min="0" max="50" style="flex:none;width:48px">個新名稱來測（0＝用下面的清單）</div>
@@ -15700,7 +15701,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   const nameTestRunner = { running: false, runId: 0, timerId: null, failures: 0, status: '' };
 
   function loadNameTest() {
-    return { heroId: 0, type: '短刀', recipe: '', names: '', repeat: 1, useForAuto: false, randomStyle: 'common', randomTemplate: '', randomPool: '', randomKeywords: '', started: {}, ...(readJsonStorage(NAME_TEST_KEY, null) || {}) };
+    return { heroId: 0, type: '短刀', recipe: '', names: '', repeat: 1, useForAuto: false, randomStyle: 'common', randomMinLength: 2, randomMaxLength: 12, randomTemplate: '', randomPool: '', randomKeywords: '', started: {}, ...(readJsonStorage(NAME_TEST_KEY, null) || {}) };
   }
 
   function saveNameTest(config) {
@@ -15729,24 +15730,51 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     beast: ['猛獸', ['雄獅', '猛虎', '黑豹', '蒼狼', '巨熊', '飛鷹', '仙鶴', '禿鷲', '毒蛇', '蠍', '巨鯨', '鯊', '狐', '獒', '戰馬', '犀', '牙', '爪', '鬃', '角', '鱗', '翼']],
   };
 
-  // custom 用自己填的字詞（空白、逗號、頓號隔開；沒有分隔就一個字一個字）
-  function nameSeriesTokens(config) {
+  // 混搭才用：遊戲也收英文、日文、數字，跟各系列的中文字詞交錯拼
+  const NAME_EXTRA_ELEMENTS = [
+    ['Nova', 'Zero', 'Rex', 'Ace', 'Neo', 'Zen', 'Ark', 'Sol', 'Luna', 'Alpha', 'Omega', 'Star', 'Fang', 'Blade', 'X', 'Z'],
+    ['ソラ', 'ホシ', 'カゼ', 'ユメ', 'ツキ', 'ヒカリ', 'サクラ', 'ハヤテ', 'の', 'ノ'],
+    ['1', '3', '7', '9', '13', '77', '99', '零', '壹', '參', '玖', '萬'],
+  ];
+
+  // 回傳幾組字詞；混搭時每一段換一組，名稱裡就會有不同元素
+  function nameSeriesGroups(config) {
     if (config.randomStyle === 'custom') {
       const text = String(config.randomPool || '').trim();
       const tokens = /[\s,，、]/.test(text) ? text.split(/[\s,，、]+/).filter(Boolean) : [...text];
-      if (tokens.length) return tokens;
+      if (tokens.length) return [tokens];
     }
-    return (NAME_SERIES[config.randomStyle] || NAME_SERIES.common)[1];
+    if (config.randomStyle === 'mixed') return [...Object.values(NAME_SERIES).map(([, tokens]) => tokens), ...NAME_EXTRA_ELEMENTS];
+    return [(NAME_SERIES[config.randomStyle] || NAME_SERIES.common)[1]];
   }
 
-  // 2～4 個字：一個一個加字詞，到 2 字以上有一半機會停，不超過 4 字
-  function randomNamePart(tokens) {
-    const pick = () => tokens[Math.floor(Math.random() * tokens.length)];
-    let part = pick();
-    for (let guard = 0; guard < 8 && (part.length < 2 || (part.length < 4 && Math.random() < 0.5)); guard++) {
-      const next = pick();
-      if (part.length + next.length > 4) continue;
-      part += next;
+  function nameLengthRange(config) {
+    const maxLength = Math.min(12, Math.max(1, Number(config.randomMaxLength) || 12));
+    const minLength = Math.min(maxLength, Math.max(1, Number(config.randomMinLength) || 2));
+    return { minLength, maxLength };
+  }
+
+  function pickFrom(list) {
+    return list[Math.floor(Math.random() * list.length)];
+  }
+
+  // 每段跟上一段換不同組（只有一組就同一組）
+  function pickNameToken(groups, lastGroup) {
+    const choices = groups.length > 1 ? groups.filter((group) => group !== lastGroup) : groups;
+    const group = pickFrom(choices);
+    return { group, token: pickFrom(group) };
+  }
+
+  // 先抽目標字數，再一段一段加到夠長；放不下或名稱裡已經有的那段跳過，不切字、不疊字
+  function randomNamePart(groups, minLength, maxLength) {
+    const target = minLength + Math.floor(Math.random() * (maxLength - minLength + 1));
+    let part = '';
+    let lastGroup = null;
+    for (let guard = 0; guard < 40 && part.length < target; guard++) {
+      const { group, token } = pickNameToken(groups, lastGroup);
+      if (part.length + token.length > maxLength || part.includes(token) || (!part && /^[のノ]$/.test(token))) continue;
+      part += token;
+      lastGroup = group;
     }
     return part;
   }
@@ -15755,31 +15783,42 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return [...new Set(String(config.randomKeywords || '').split(/[\s,，、]+/).map((word) => word.trim()).filter(Boolean))];
   }
 
-  // 關鍵字組合：一定有一個關鍵字（有時兩個），再隨機插 0～2 段系列的字詞在前後；太長（超過 8 字）就重抽
-  function randomKeywordPart(keywords, tokens) {
-    const pick = (list) => list[Math.floor(Math.random() * list.length)];
+  // 關鍵字組合：一定有一個關鍵字（有時兩個），再在前後隨機插系列字詞補到目標字數；超過上限就重抽
+  function randomKeywordPart(keywords, groups, minLength, maxLength) {
     let part = '';
-    for (let guard = 0; guard < 10; guard++) {
-      const parts = [pick(keywords)];
+    for (let guard = 0; guard < 20; guard++) {
+      const target = minLength + Math.floor(Math.random() * (maxLength - minLength + 1));
+      const parts = [pickFrom(keywords)];
       if (keywords.length > 1 && Math.random() < 0.35) {
-        const other = pick(keywords);
+        const other = pickFrom(keywords);
         if (other !== parts[0]) parts.push(other);
       }
-      const fillers = parts.join('').length < 2 ? 1 + Math.floor(Math.random() * 2) : Math.floor(Math.random() * 3);
-      for (let index = 0; index < fillers; index++) parts.splice(Math.floor(Math.random() * (parts.length + 1)), 0, pick(tokens));
+      let lastGroup = null;
+      for (let filler = 0; filler < 12 && parts.join('').length < target; filler++) {
+        const { group, token } = pickNameToken(groups, lastGroup);
+        if (parts.join('').length + token.length > maxLength || parts.join('').includes(token)) continue;
+        parts.splice(Math.floor(Math.random() * (parts.length + 1)), 0, token);
+        lastGroup = group;
+      }
       part = parts.join('');
-      if (part.length <= 8) break;
+      if (part.length <= maxLength) break;
     }
     return part;
   }
 
   // 模板：{字}＝照系列亂取一段，{數}＝流水號（接在清單裡同模板最大的號碼後面）；沒填模板就整個亂取。
-  // 填了關鍵字的話，{字}（或整個名稱）改成關鍵字加系列字詞的組合
+  // 填了關鍵字的話，{字}（或整個名稱）改成關鍵字加系列字詞的組合。
+  // 模板的固定字和號碼也算字數，剩下的字數平分給每個 {字}
   function randomForgeNames(count, exclude, config = {}) {
-    const tokens = nameSeriesTokens(config);
+    const groups = nameSeriesGroups(config);
     const keywords = nameKeywords(config);
-    const randomPart = () => (keywords.length ? randomKeywordPart(keywords, tokens) : randomNamePart(tokens));
+    const { minLength, maxLength } = nameLengthRange(config);
     const template = String(config.randomTemplate || '').trim();
+    const slots = (template.match(/\{字\}/g) || []).length;
+    const fixedLength = template.replace(/\{字\}/g, '').replace(/\{數\}/g, '00').length;
+    const slotMax = slots ? Math.max(1, Math.floor((maxLength - fixedLength) / slots)) : maxLength;
+    const slotMin = slots ? Math.min(slotMax, Math.max(1, Math.ceil((minLength - fixedLength) / slots))) : minLength;
+    const randomPart = () => (keywords.length ? randomKeywordPart(keywords, groups, slotMin, slotMax) : randomNamePart(groups, slotMin, slotMax));
     const taken = new Set(exclude);
     let number = 0;
     if (template.includes('{數}')) {
@@ -15794,7 +15833,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const name = template
         ? template.replace(/\{字\}/g, randomPart).replace(/\{數\}/g, () => String(number + 1))
         : randomPart();
-      if (name.length > 12 || taken.has(name)) continue;
+      if (name.length > maxLength || name.length < minLength || /の$/.test(name) || taken.has(name)) continue;
       if (template.includes('{數}')) number++;
       taken.add(name);
       names.push(name);
@@ -16023,7 +16062,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const config = loadNameTest();
     panel.querySelectorAll('[data-name-test]').forEach((input) => {
       const field = input.dataset.nameTest;
-      config[field] = input.type === 'checkbox' ? input.checked : ['heroId', 'repeat', 'dailyRandom'].includes(field) ? Number(input.value) || 0 : input.value;
+      config[field] = input.type === 'checkbox' ? input.checked : ['heroId', 'repeat', 'dailyRandom', 'randomMinLength', 'randomMaxLength'].includes(field) ? Number(input.value) || 0 : input.value;
     });
     return config;
   }
