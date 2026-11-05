@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.27
+// @version      5.28
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1487,6 +1487,9 @@
       <textarea data-name-test="names" rows="4" placeholder="候選名稱，一行一個（或用、隔開）" style="width:100%;box-sizing:border-box;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></textarea>
       <label class="row"><input data-name-test="useForAuto" type="checkbox" style="flex:none;width:auto"> 自動換名稱、名稱推薦改用自測結果（測的是哪種裝備就只準那種）</label>
       <label class="row"><input data-name-test="autoDaily" type="checkbox" style="flex:none;width:auto"> 每天 00:00 後自動測名，測完把第一名套用到自動鍛造（要開自動鍛造的「每天自動換名稱」）</label>
+      <div class="row">亂取系列<select data-name-test="randomStyle" style="flex:none;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="common">常用字</option><option value="xianxia">仙俠</option><option value="star">星辰</option><option value="myth">神話</option><option value="beast">猛獸</option><option value="custom">自己填字詞</option></select>
+        <input data-name-test="randomTemplate" placeholder="模板，例：{字}之刃、鐵壁{數}（空白＝整個亂取）" title="{字}＝照系列亂取 2～4 字，{數}＝流水號；整個名稱 12 字以內" style="flex:1;min-width:0"></div>
+      <input data-name-test="randomPool" placeholder="自己填字詞（選「自己填字詞」才用）：用空白或、隔開，例：鋼、鐵壁、守護、堅" style="width:100%;box-sizing:border-box">
       <div class="row">每天亂取<input data-name-test="dailyRandom" type="number" min="0" max="50" style="flex:none;width:48px">個新名稱來測（0＝用下面的清單）</div>
       <div class="row"><button data-action="name-test-start" style="font-weight:bold">開始測名</button><button data-action="name-test-stop">停止</button><button data-action="name-test-refresh">讀取裝備並更新結果</button></div>
       <div data-role="name-test-status" class="hint"></div>
@@ -15693,7 +15696,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   const nameTestRunner = { running: false, runId: 0, timerId: null, failures: 0, status: '' };
 
   function loadNameTest() {
-    return { heroId: 0, type: '短刀', recipe: '', names: '', repeat: 1, useForAuto: false, started: {}, ...(readJsonStorage(NAME_TEST_KEY, null) || {}) };
+    return { heroId: 0, type: '短刀', recipe: '', names: '', repeat: 1, useForAuto: false, randomStyle: 'common', randomTemplate: '', randomPool: '', started: {}, ...(readJsonStorage(NAME_TEST_KEY, null) || {}) };
   }
 
   function saveNameTest(config) {
@@ -15713,16 +15716,57 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return (config.started && config.started[localDayKey(Date.now())]) || {};
   }
 
-  // 遊戲規定 12 字以內的中、英、日文或數字；取 2～4 個常用字就好，好記、好打
-  const RANDOM_NAME_CHARACTERS = '天地日月星雲風雷雨雪山川河海林木花草石金銀鐵火水光影龍虎鳳鶴獅狼鷹熊龜蛇劍刀斧槍盾弓戰神魔聖靈幻夢真心意志勇猛剛強柔美福壽喜樂安平吉祥瑞寶玉珠王皇帝君將軍士俠仙佛道武文明晨夜春夏秋冬東西南北紅藍綠黃白黑紫青赤金玄冰炎雷霆破斬滅絕極無雙超神奇妙靜動飛翔奔騰怒吼咆哮守護永恆不朽傳說英雄';
+  // 遊戲規定 12 字以內的中、英、日文或數字。亂取的名稱照「系列」挑字詞，一次測出來的名稱風格一樣、背包裡也好認
+  const NAME_SERIES = {
+    common: ['常用字', '天地日月星雲風雷雨雪山川河海林木花草石金銀鐵火水光影龍虎鳳鶴獅狼鷹熊龜蛇劍刀斧槍盾弓戰神魔聖靈幻夢真心意志勇猛剛強柔美福壽喜樂安平吉祥瑞寶玉珠王皇帝君將軍士俠仙佛道武文明晨夜春夏秋冬東西南北紅藍綠黃白黑紫青赤玄冰炎霆破斬滅絕極無雙超奇妙靜動飛翔奔騰怒吼咆哮守護永恆不朽傳說英雄'.split('')],
+    xianxia: ['仙俠', ['劍仙', '玄天', '凌霄', '太虛', '紫霄', '逍遙', '長生', '乾坤', '九幽', '碧落', '蒼穹', '星河', '無極', '清風', '明月', '蓮華', '丹心', '御劍', '問道', '歸元', '太乙', '青冥', '流雲', '照影', '劍', '道', '玄', '靈', '仙', '虛', '真', '元']],
+    star: ['星辰', ['星辰', '北斗', '紫微', '太白', '天狼', '熒惑', '銀河', '流星', '彗星', '晨曦', '璇璣', '天樞', '天璇', '搖光', '辰', '曜', '曦', '月', '星', '光', '輝', '朔', '望', '極']],
+    myth: ['神話', ['青龍', '白虎', '朱雀', '玄武', '麒麟', '鳳凰', '鯤鵬', '九尾', '饕餮', '窮奇', '混沌', '盤古', '女媧', '伏羲', '后羿', '刑天', '夸父', '應龍', '燭龍', '神', '聖', '靈', '帝', '尊']],
+    beast: ['猛獸', ['雄獅', '猛虎', '黑豹', '蒼狼', '巨熊', '飛鷹', '仙鶴', '禿鷲', '毒蛇', '蠍', '巨鯨', '鯊', '狐', '獒', '戰馬', '犀', '牙', '爪', '鬃', '角', '鱗', '翼']],
+  };
 
-  function randomForgeNames(count, exclude) {
+  // custom 用自己填的字詞（空白、逗號、頓號隔開；沒有分隔就一個字一個字）
+  function nameSeriesTokens(config) {
+    if (config.randomStyle === 'custom') {
+      const text = String(config.randomPool || '').trim();
+      const tokens = /[\s,，、]/.test(text) ? text.split(/[\s,，、]+/).filter(Boolean) : [...text];
+      if (tokens.length) return tokens;
+    }
+    return (NAME_SERIES[config.randomStyle] || NAME_SERIES.common)[1];
+  }
+
+  // 2～4 個字：一個一個加字詞，到 2 字以上有一半機會停，不超過 4 字
+  function randomNamePart(tokens) {
+    const pick = () => tokens[Math.floor(Math.random() * tokens.length)];
+    let part = pick();
+    for (let guard = 0; guard < 8 && (part.length < 2 || (part.length < 4 && Math.random() < 0.5)); guard++) {
+      const next = pick();
+      if (part.length + next.length > 4) continue;
+      part += next;
+    }
+    return part;
+  }
+
+  // 模板：{字}＝照系列亂取一段，{數}＝流水號（接在清單裡同模板最大的號碼後面）；沒填模板就整個亂取
+  function randomForgeNames(count, exclude, config = {}) {
+    const tokens = nameSeriesTokens(config);
+    const template = String(config.randomTemplate || '').trim();
     const taken = new Set(exclude);
+    let number = 0;
+    if (template.includes('{數}')) {
+      const pattern = new RegExp(`^${template.split(/(\{字\}|\{數\})/).map((piece) => (piece === '{字}' ? '.+?' : piece === '{數}' ? '(\\d+)' : escapeRegExp(piece))).join('')}$`);
+      taken.forEach((name) => {
+        const match = pattern.exec(name);
+        if (match) number = Math.max(number, Number(match[1]) || 0);
+      });
+    }
     const names = [];
     for (let tries = 0; names.length < count && tries < count * 50; tries++) {
-      const length = 2 + Math.floor(Math.random() * 3);
-      const name = Array.from({ length }, () => RANDOM_NAME_CHARACTERS[Math.floor(Math.random() * RANDOM_NAME_CHARACTERS.length)]).join('');
-      if (taken.has(name)) continue;
+      const name = template
+        ? template.replace(/\{字\}/g, () => randomNamePart(tokens)).replace(/\{數\}/g, () => String(number + 1))
+        : randomNamePart(tokens);
+      if (name.length > 12 || taken.has(name)) continue;
+      if (template.includes('{數}')) number++;
       taken.add(name);
       names.push(name);
     }
@@ -15733,7 +15777,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const config = readNameTestForm();
     const count = Math.min(50, Math.max(1, Number(panel.querySelector('[data-role="name-test-random-count"]').value) || 10));
     const existing = nameTestCandidates(config);
-    const names = randomForgeNames(count, [...existing, ...Object.keys(nameTestStartedToday(config))]);
+    const names = randomForgeNames(count, [...existing, ...Object.keys(nameTestStartedToday(config))], config);
     config.names = [...existing, ...names].join('\n');
     saveNameTest(config);
     renderNameTest();
@@ -15859,7 +15903,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     if (!config.autoDaily) return null;
     const today = localDayKey(Date.now());
     if (config.autoDay !== today) {
-      if (Number(config.dailyRandom) > 0) config.names = randomForgeNames(Math.min(50, Number(config.dailyRandom)), []).join('\n');
+      if (Number(config.dailyRandom) > 0) config.names = randomForgeNames(Math.min(50, Number(config.dailyRandom)), Object.keys(nameTestStartedToday(config)), config).join('\n');
       config.autoDay = today;
       config.useForAuto = true;
       saveNameTest(config);
