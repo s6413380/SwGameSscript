@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.28
+// @version      5.29
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -15777,7 +15777,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const config = readNameTestForm();
     const count = Math.min(50, Math.max(1, Number(panel.querySelector('[data-role="name-test-random-count"]').value) || 10));
     const existing = nameTestCandidates(config);
-    const names = randomForgeNames(count, [...existing, ...Object.keys(nameTestStartedToday(config))], config);
+    const names = randomForgeNames(count, [...existing, ...Object.keys(nameTestStartedToday(config)), ...(config.badNames || [])], config);
     config.names = [...existing, ...names].join('\n');
     saveNameTest(config);
     renderNameTest();
@@ -15785,7 +15785,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   function nextTestName(config) {
     const started = nameTestStartedToday(config);
-    return nameTestCandidates(config).find((name) => (started[name] || 0) < nameTestRepeat(config)) || null;
+    const bad = new Set(config.badNames || []);
+    return nameTestCandidates(config).find((name) => !bad.has(name) && (started[name] || 0) < nameTestRepeat(config)) || null;
   }
 
   // 材料順序不同也算同一個配方
@@ -15903,7 +15904,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     if (!config.autoDaily) return null;
     const today = localDayKey(Date.now());
     if (config.autoDay !== today) {
-      if (Number(config.dailyRandom) > 0) config.names = randomForgeNames(Math.min(50, Number(config.dailyRandom)), Object.keys(nameTestStartedToday(config)), config).join('\n');
+      if (Number(config.dailyRandom) > 0) config.names = randomForgeNames(Math.min(50, Number(config.dailyRandom)), [...Object.keys(nameTestStartedToday(config)), ...(config.badNames || [])], config).join('\n');
       config.autoDay = today;
       config.useForAuto = true;
       saveNameTest(config);
@@ -15995,7 +15996,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const enough = recipe.length && mineStock.length ? forgesPossible(recipe, mineStock) : null;
     box.innerHTML = `${nameTestRunner.running ? '🟢 測名中' : '⚪ 沒在測'}・今天 ${done}/${total} 爐${enough === null ? '' : `・材料夠 ${enough} 爐${enough < total - done ? '（<span style="color:#f87171">不夠測完</span>）' : ''}`}${
       nameTestRunner.status ? `<br>${escapeHtml(nameTestRunner.status)}` : ''
-    }`;
+    }${(config.badNames || []).length ? `<br><span style="color:#fca5a5">遊戲不收的名稱（會跳過）：${config.badNames.map(escapeHtml).join('、')}</span>` : ''}`;
   }
 
   async function refreshNameTestEquipments() {
@@ -16132,7 +16133,20 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       }
       const { body, summary } = await buildForgeRequest({ type: config.type, recipe: config.recipe, name }, hero.id, freeShop);
       if (cancelled()) return;
-      await sendForge(body);
+      try {
+        await sendForge(body);
+      } catch (error) {
+        // 遊戲不收的名稱（「裝備名稱不合規定」）：記下來跳過，換下一個繼續測；之後亂取也不會再出現
+        if (error.status !== 400 || !/名稱/.test(error.message)) throw error;
+        const rejected = loadNameTest();
+        rejected.badNames = [...new Set([...(rejected.badNames || []), name])];
+        saveNameTest(rejected);
+        nameTestLog(`「${name}」遊戲說名稱不合規定，跳過`);
+        showToast(`測名：「${name}」遊戲說名稱不合規定，跳過換下一個`);
+        if (activeTab === 'nameTest') renderNameTest();
+        scheduleNameTest(randomGap(3000, 8000));
+        return;
+      }
       const fresh = loadNameTest();
       const started = nameTestStartedToday(fresh);
       fresh.started = { [localDayKey(Date.now())]: { ...started, [name]: (started[name] || 0) + 1 } };
