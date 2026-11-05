@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.24
+// @version      5.25
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1479,7 +1479,7 @@
     </div>
 
     <div data-tab="nameTest">
-      <div class="hint">測名表沒有今天的名稱時自己測：同一個角色、同一種裝備、同一個配方，輪流用下面的名稱各做幾件，比做出來的數值。數值先換成普通品質，再跟這個角色用這個配方做過最好的比（跟測名表的基準比同一種算法）。名稱 00:00 換效果，只比今天做的。配方挑便宜、材料少的就好，測完不要換配方</div>
+      <div class="hint">測名表沒有今天的名稱時自己測：同一個角色、同一種裝備、同一個配方，輪流用下面的名稱各做幾件，比做出來的數值。數值先換成普通品質，再跟這個角色用這個配方做過最好的比（跟測名表的基準比同一種算法）。名稱 00:00 換效果，只比今天做的。配方挑便宜、材料少的就好，測完不要換配方。測名做出來的裝備在背包名稱前標「🧪測名」、整列淡紫色，看完結果就可以刪</div>
       <div class="row">角色<select data-name-test="heroId" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
       <div class="row">裝備<select data-name-test="type" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select>每個名稱做<input data-name-test="repeat" type="number" min="1" max="5" style="flex:none;width:48px">件</div>
       <div class="row">配方<input data-name-test="recipe" placeholder="例：鐵礦×2、木頭×1" style="flex:1;min-width:0"><button data-action="name-test-recipe-from-page" title="把「配方」頁現在的類型和配方帶進來">用配方頁的</button></div>
@@ -15750,6 +15750,59 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       .join('、');
   }
 
+  // 測名表的「用途」分類（社群定義，權重高的優先）；w 順序是攻防智幸重耐。
+  // 「或接近」放寬 2%，「智幸可略低」智幸再放寬 5%
+  const NAME_USAGE_CLASSES = (() => {
+    const near = (value, threshold, extra = 0) => value >= threshold - 0.02 - extra;
+    const allAbove = (w, threshold, lenientIntLck) => [0, 1, 5].every((index) => near(w[index], threshold)) && [2, 3].every((index) => near(w[index], threshold, lenientIntLck ? 0.05 : 0));
+    const armorAbove = (w, threshold) => near(w[1], threshold) && near(w[5], threshold);
+    const light = (w) => near(w[4], 0.7);
+    return [
+      [810, '通用頂名', (w) => allAbove(w, 0.85) && light(w)],
+      [800, '通用頂名(重)', (w) => allAbove(w, 0.85)],
+      [710, '防具頂名', (w) => armorAbove(w, 0.9) && light(w)],
+      [700, '防具頂名(重)', (w) => armorAbove(w, 0.9)],
+      [510, '通用', (w) => allAbove(w, 0.75, true) && light(w)],
+      [500, '通用(重)', (w) => allAbove(w, 0.75, true)],
+      [410, '防具', (w) => armorAbove(w, 0.85) && light(w)],
+      [400, '防具(重)', (w) => armorAbove(w, 0.85)],
+      [200, '高智幸', (w) => near(w[2], 0.85) && near(w[3], 0.85)],
+    ];
+  })();
+
+  function nameUsageClass(w) {
+    const found = NAME_USAGE_CLASSES.find(([, , matches]) => matches(w));
+    return found ? { rank: found[0], label: found[1] } : { rank: 0, label: '' };
+  }
+
+  const NAME_TEST_LOG_DAYS = 30;
+  const nameTestItemsCache = { key: '', ids: new Set() };
+
+  function nameTestLogKey(day, heroId, type, recipeKey, name) {
+    return `${day}|${Number(heroId)}|${type}|${recipeKey}|${name}`;
+  }
+
+  // 測名做出來的裝備：那天、那個角色、那種裝備、那個配方、測過的名稱。同一天同角色用同配方正式做同名的也會被標到
+  function nameTestItemIds() {
+    const config = loadNameTest();
+    // 5.25 以前開的爐沒有 testLog，用 started 和現在的設定補
+    const recipeKey = recipeKeyOf(parseRecipeLoosely(config.recipe));
+    const backfill = Object.entries(config.started || {}).flatMap(([day, names]) => Object.keys(names).map((name) => nameTestLogKey(day, config.heroId, config.type, recipeKey, name)));
+    const log = [...new Set([...(config.testLog || []), ...(config.heroId && recipeKey ? backfill : [])])];
+    if (!log.length) return nameTestItemsCache.ids.size ? (nameTestItemsCache.ids = new Set()) : nameTestItemsCache.ids;
+    const records = forgedRecords();
+    const key = `${forgedRecordsCache.generation}|${log.length}|${log[log.length - 1]}`;
+    if (key === nameTestItemsCache.key) return nameTestItemsCache.ids;
+    const tested = new Set(log);
+    const ids = new Set();
+    records.forEach((item, id) => {
+      if (!item.heroId || !Array.isArray(item.materials)) return;
+      if (tested.has(nameTestLogKey(localDayKey(item.craftedTime), item.heroId, item.type, recipeKeyOf(item.materials), String(item.name || '').trim()))) ids.add(Number(id));
+    });
+    Object.assign(nameTestItemsCache, { key, ids });
+    return ids;
+  }
+
   function nameTestResults(config) {
     const key = recipeKeyOf(parseRecipeLoosely(config.recipe));
     if (!config.heroId || !config.type || !key) return null;
@@ -15759,7 +15812,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       .map((item) => ({ name: String(item.name || '').trim(), day: localDayKey(item.craftedTime), base: baseStats(item, multipliers) }));
     if (!samples.length) return null;
     const values = (field) => samples.map((sample) => sample.base[field]).filter((value) => value > 0);
-    const best = Object.fromEntries(NAME_WEIGHT_FIELDS.map((field) => [field, values(field).length ? (field === 'wgt' ? Math.min(...values(field)) : Math.max(...values(field))) : 0]));
+    const best = Object.fromEntries(NAME_WEIGHT_FIELDS.map((field) => [field, values(field).length ? Math.max(...values(field)) : 0]));
     const today = localDayKey(Date.now());
     const groups = new Map();
     samples
@@ -15768,8 +15821,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         if (!groups.has(sample.name)) groups.set(sample.name, []);
         groups.get(sample.name).push(sample.base);
       });
-    // 這種裝備本來就沒有的屬性（短刀沒智力）當 100%，不拉低六圍平均
-    const ratio = (field, value) => (!best[field] ? 1 : field === 'wgt' ? (value > 0 ? best.wgt / value : 0) : value / best[field]);
+    // 這種裝備本來就沒有的屬性（短刀沒智力）當 100%，不拉低六圍平均。
+    // 重量照測名表新式：最重的當 20%，每輕 1/10 加 10%（重量下限通常是上限的 20%，最輕約 100%）
+    const ratio = (field, value) => (!best[field] ? 1 : field === 'wgt' ? Math.max(0, 1.2 - value / best.wgt) : value / best[field]);
     const names = [...groups].map(([name, bases]) => {
       const w = NAME_WEIGHT_FIELDS.map((field) => ratio(field, bases.reduce((sum, base) => sum + base[field], 0) / bases.length));
       return { name, w, n: bases.length, good: true };
@@ -15823,16 +15877,18 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }
     const percent = (value) => `${Math.round(value * 1000) / 10}`;
     const rows = results.names
-      .map((entry) => ({ ...entry, score: score(entry), six: entry.w.reduce((sum, value) => sum + value, 0) / entry.w.length }))
-      .sort((first, second) => second.score - first.score);
-    box.innerHTML = `<table class="combat"><tr><th>名稱</th><th>件</th><th>攻</th><th>防</th><th>智</th><th>幸</th><th>重</th><th>耐</th><th>六圍</th><th title="${escapeHtml(weights ? weights.label : '六圍平均')}">分數</th><th></th></tr>${rows
+      .map((entry) => ({ ...entry, usage: nameUsageClass(entry.w), score: score(entry), six: entry.w.reduce((sum, value) => sum + value, 0) / entry.w.length }))
+      // 先照測名表的用途等級，同等級再照這種裝備的分數
+      .sort((first, second) => second.usage.rank - first.usage.rank || second.score - first.score);
+    box.innerHTML = `<table class="combat"><tr><th>名稱</th><th>用途</th><th>件</th><th>攻</th><th>防</th><th>智</th><th>幸</th><th>重</th><th>耐</th><th>六圍</th><th title="${escapeHtml(weights ? weights.label : '六圍平均')}">分數</th><th></th></tr>${rows
       .map(
-        (entry, index) => `<tr style="${index === 0 ? 'background:#16261c' : ''}"><td style="white-space:normal">${index === 0 ? '👑 ' : ''}${escapeHtml(entry.name)}</td><td>${entry.n}</td>
+        (entry, index) => `<tr style="${index === 0 ? 'background:#16261c' : ''}"><td style="white-space:normal">${index === 0 ? '👑 ' : ''}${escapeHtml(entry.name)}</td>
+          <td style="white-space:nowrap;color:${entry.usage.rank >= 700 ? '#fbbf24' : entry.usage.rank ? '#86efac' : '#78716c'}">${escapeHtml(entry.usage.label || '—')}</td><td>${entry.n}</td>
           ${entry.w.map((value) => `<td>${percent(value)}</td>`).join('')}<td>${percent(entry.six)}</td><td><b>${percent(entry.score)}</b></td>
           <td><button data-action="name-test-use" data-name="${escapeHtml(entry.name)}" title="把${escapeHtml(config.type)}的鍛造名稱換成這個">用</button></td></tr>`
       )
       .join('')}</table>
-      <div class="hint">分數照${escapeHtml(weights ? weights.label : '六圍平均')}排。% ＝ 今天這個名稱的平均（換成普通品質）÷ 這個角色用這個配方做過最好的（共 ${results.total} 件、${results.days} 天；重量是最輕的 ÷ 這個）。紀錄少時基準偏低、% 會偏高，只看名次比較準。同名稱只做 1 件時還會有隨機誤差，前幾名差不多的話每個多做 1～2 件再比${pending.length ? `；做好還沒讀到：${pending.map(escapeHtml).join('、')}` : ''}</div>`;
+      <div class="hint">先照用途排（測名表的定義：頂名＝全屬性 85%+、防具＝防耐 90%/85%+，沒有「(重)」的還要重量 70%+；差 2% 內算接近），同用途再照${escapeHtml(weights ? weights.label : '六圍平均')}的分數排。% ＝ 今天這個名稱的平均（換成普通品質）÷ 這個角色用這個配方做過最好的（共 ${results.total} 件、${results.days} 天）；重量照新表算法：1.2 − 重量 ÷ 做過最重的，越高越輕。紀錄少時基準偏低、% 會偏高，只看名次比較準。同名稱只做 1 件時還會有隨機誤差，前幾名差不多的話每個多做 1～2 件再比${pending.length ? `；做好還沒讀到：${pending.map(escapeHtml).join('、')}` : ''}</div>`;
   }
 
   function renderNameTestStatus() {
@@ -15975,6 +16031,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const fresh = loadNameTest();
       const started = nameTestStartedToday(fresh);
       fresh.started = { [localDayKey(Date.now())]: { ...started, [name]: (started[name] || 0) + 1 } };
+      // 記下測過什麼，做出來的裝備在背包標 🧪 好刪；之後改了角色、配方也認得出舊的
+      const entry = nameTestLogKey(localDayKey(Date.now()), hero.id, config.type, recipeKeyOf(parseRecipeLoosely(config.recipe)), name);
+      const cutoff = localDayKey(Date.now() - NAME_TEST_LOG_DAYS * 86400000);
+      fresh.testLog = [...new Set([...(fresh.testLog || []).filter((key) => key.slice(0, 10) >= cutoff), entry])];
       saveNameTest(fresh);
       nameTestRunner.failures = 0;
       nameTestLog(`${hero.name} 在鍛造坊 ${freeShop} 開始做「${name}」${summary}`);
@@ -17311,6 +17371,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   const ITEM_LOCKED_ATTR = 'data-ac-locked';
   const ITEM_SELL_ATTR = 'data-ac-sell';
   const ITEM_NO_AUTO_ATTR = 'data-ac-no-auto';
+  const ITEM_TEST_ATTR = 'data-ac-name-test';
   const itemSort = {};
 
   function isItemsPage() {
@@ -17400,14 +17461,18 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const locked = lockedEquipmentIds();
     const forSale = sellMarkedIds();
     const blocked = noAutoEquipIds();
+    const tested = nameTestItemIds();
     table.querySelectorAll(':scope > tbody > tr').forEach((row) => {
-      const id = locked.size || forSale.size || blocked.size ? rowEquipmentId(row) : 0;
+      const id = locked.size || forSale.size || blocked.size || tested.size ? rowEquipmentId(row) : 0;
       const isLocked = locked.has(id);
       const isForSale = !isLocked && forSale.has(id);
+      const isTest = !isLocked && !isForSale && tested.has(id);
+      if (row.hasAttribute(ITEM_TEST_ATTR) !== isTest) row.toggleAttribute(ITEM_TEST_ATTR, isTest);
       if (row.hasAttribute(ITEM_LOCKED_ATTR) !== isLocked) row.toggleAttribute(ITEM_LOCKED_ATTR, isLocked);
       const nameCell = row.children[nameColumn];
       if (nameCell && nameCell.hasAttribute(ITEM_LOCKED_ATTR) !== isLocked) nameCell.toggleAttribute(ITEM_LOCKED_ATTR, isLocked);
       if (nameCell && nameCell.hasAttribute(ITEM_SELL_ATTR) !== isForSale) nameCell.toggleAttribute(ITEM_SELL_ATTR, isForSale);
+      if (nameCell && nameCell.hasAttribute(ITEM_TEST_ATTR) !== isTest) nameCell.toggleAttribute(ITEM_TEST_ATTR, isTest);
       const isBlocked = blocked.has(id);
       if (nameCell && nameCell.hasAttribute(ITEM_NO_AUTO_ATTR) !== isBlocked) nameCell.toggleAttribute(ITEM_NO_AUTO_ATTR, isBlocked);
     });
@@ -17438,7 +17503,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       tr[${ITEM_LOCKED_ATTR}] { background:rgba(245,158,11,.12) !important; }
       td[${ITEM_LOCKED_ATTR}]::before { content:'🔒 '; }
       td[${ITEM_SELL_ATTR}]::before { content:'💰 '; }
-      td[${ITEM_NO_AUTO_ATTR}]::after { content:' 🚫'; }`;
+      td[${ITEM_NO_AUTO_ATTR}]::after { content:' 🚫'; }
+      tr[${ITEM_TEST_ATTR}] { background:rgba(168,85,247,.14) !important; }
+      td[${ITEM_TEST_ATTR}]::before { content:'🧪測名 '; color:#c084fc; font-size:11px; }`;
     document.head.appendChild(style);
     let pending = null;
     new MutationObserver(() => {
