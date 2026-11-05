@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.26
+// @version      5.27
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -16002,8 +16002,6 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     saveNameTest(config);
     if (nameTestRunner.running) return nameTestLog('已經在測了');
     if (!config.heroId) return nameTestLog('先選測名的角色');
-    // 同一個角色兩邊都管的話會互相搶著收爐、開爐
-    if (forgeByApiHeroIds(readSettingsFromPanel()).includes(Number(config.heroId))) return nameTestLog('這個角色在自動鍛造佇列裡，先移出佇列再測');
     if (!parseRecipeLoosely(config.recipe).length) return nameTestLog('先填配方');
     if (!nameTestCandidates(config).length) return nameTestLog('先填候選名稱');
     if (!nextTestName(config)) return nameTestLog('今天這些名稱都測過了，要再做就把「每個名稱做幾件」調大');
@@ -16019,6 +16017,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     nameTestRunner.runId++;
     backgroundTimer.clearTimeout(nameTestRunner.timerId);
     nameTestLog(message || '已停止');
+    // 測名角色也在鍛造佇列的話，讓自動鍛造馬上把他接回去
+    wakeForgeRunner();
   }
 
   // 同一時間只跑一輪，不然開測時順手跑的那輪和排好的那輪會各開一爐同名的
@@ -19305,7 +19305,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const heroIds = forgeByApiHeroIds(settings);
     const heroById = new Map(forgeHeroes.map((hero) => [hero.id, hero]));
     const order = [...forgeHeroes.filter((hero) => heroIds.includes(hero.id)).map((hero) => hero.id), ...heroIds.filter((id) => !heroById.has(id))];
-    const nextId = order.find((id) => heroById.has(id) && canStartForge(heroById.get(id)));
+    const testingId = nameTestRunner.running ? Number(loadNameTest().heroId) : 0;
+    const nextId = order.find((id) => id !== testingId && heroById.has(id) && canStartForge(heroById.get(id)));
     const stock = new Map(mineStock.map((mine) => [mine.name, mine.have]));
     const plans = forgeByApiPlans(settings);
     return order.map((heroId) => {
@@ -19314,7 +19315,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const recipe = parseRecipeLoosely(plan.recipe);
       const total = recipe.reduce((sum, [, quantity]) => sum + quantity, 0);
       const cap = MATERIAL_CAPS[plan.type];
-      const [statusColor, statusText] = forgeHeroStatus(hero, heroId === nextId);
+      const [statusColor, statusText] = heroId === testingId ? ['#c084fc', '🧪 測名中，測完回到佇列'] : forgeHeroStatus(hero, heroId === nextId);
       const problems = [];
       if (!recipe.length) problems.push('還沒設定配方，輪到它時會暫停');
       if (!String(plan.name || '').trim()) problems.push('沒有名稱');
@@ -19839,11 +19840,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     if (casualForgeAway(settings)) startCasualCheckin(settings, '鍛造好了回來收');
     const runId = forgeRunner.runId;
     const cancelled = () => runId !== forgeRunner.runId;
-    const heroIds = forgeByApiHeroIds(settings);
-    if (!heroIds.length) {
+    const queuedIds = forgeByApiHeroIds(settings);
+    if (!queuedIds.length) {
       pauseForgeRunner('還沒勾要鍛造的角色');
       return;
     }
+    // 測名中的角色交給測名收爐、開爐，測完再回到佇列，兩邊才不會搶同一個角色
+    const testingId = nameTestRunner.running ? Number(loadNameTest().heroId) : 0;
+    const heroIds = queuedIds.filter((heroId) => heroId !== testingId);
     try {
       let heroes = (await requestGameApi(HEROES_API)).heroes || [];
       if (cancelled()) return;
