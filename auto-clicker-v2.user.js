@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.33
+// @version      5.34
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1493,7 +1493,8 @@
       <input data-name-test="randomKeywords" placeholder="關鍵字（選填）：每個名稱至少含一個，其他字照上面的系列補，例：鐵壁、守護" title="空白或、隔開；有時兩個關鍵字一起用，前後隨機加 0～2 段系列字詞" style="width:100%;box-sizing:border-box">
       <input data-name-test="randomPool" placeholder="自己填字詞（選「自己填字詞」才用）：用空白或、隔開，例：鋼、鐵壁、守護、堅" style="width:100%;box-sizing:border-box">
       <div class="row">每天亂取<input data-name-test="dailyRandom" type="number" min="0" max="50" style="flex:none;width:48px">個新名稱來測（0＝用下面的清單）</div>
-      <div class="row"><button data-action="name-test-start" style="font-weight:bold">開始測名</button><button data-action="name-test-stop">停止</button><button data-action="name-test-refresh">讀取裝備並更新結果</button></div>
+      <div class="row"><button data-action="name-test-start" style="font-weight:bold">開始測名</button><button data-action="name-test-stop">停止</button><button data-action="name-test-refresh">讀取裝備並更新結果</button><button data-action="name-test-export" title="把這個角色、裝備、配方做過的每一件（含原始數值和名稱編碼）複製成文字">複製分析資料</button></div>
+      <textarea data-role="name-test-export" rows="4" readonly style="display:none;width:100%;box-sizing:border-box;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></textarea>
       <div data-role="name-test-status" class="hint"></div>
       <div data-role="name-test-sort"></div>
       <div data-role="name-test-result" style="font-size:12px;max-height:420px;overflow:auto"></div>
@@ -11563,6 +11564,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       startNameTest();
     } else if (action === 'name-test-stop') {
       stopNameTest();
+    } else if (action === 'name-test-export') {
+      copyNameTestAnalysis();
     } else if (action === 'name-test-refresh') {
       refreshNameTest();
     } else if (action === 'name-test-use') {
@@ -15948,6 +15951,59 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       return { name, w, n: bases.length, good: true };
     });
     return { total: samples.length, days: new Set(samples.map((sample) => sample.day)).size, names };
+  }
+
+  // 給人貼回去分析名稱和屬性的關係：同角色、同裝備、同配方的每一件都列出原始值和換成普通品質的值，
+  // 不只今天（看同一個名稱不同天有沒有變）；名稱附上 Unicode 編碼，方便比對字元和效果
+  function nameTestAnalysisText(config) {
+    const key = recipeKeyOf(parseRecipeLoosely(config.recipe));
+    if (!config.heroId || !config.type || !key) return '';
+    const multipliers = qualityMultipliers();
+    const items = [...forgedRecords().values()]
+      .filter((item) => Number(item.heroId) === Number(config.heroId) && item.type === config.type && Array.isArray(item.materials) && recipeKeyOf(item.materials) === key)
+      .sort((first, second) => String(first.craftedTime || '').localeCompare(String(second.craftedTime || '')));
+    if (!items.length) return '';
+    const hero = forgeHeroes.find((entry) => entry.id === Number(config.heroId));
+    const round = (value) => Math.round(value * 100) / 100;
+    const codes = (name) => [...name].map((char) => `U+${char.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`).join(' ');
+    const rows = items.map((item) => {
+      const name = String(item.name || '').trim();
+      const base = baseStats(item, multipliers);
+      return [localDayKey(item.craftedTime), name, item.quality || '', ...NAME_WEIGHT_FIELDS.map((field) => Number(item[field]) || 0), ...NAME_WEIGHT_FIELDS.map((field) => round(base[field])), codes(name)].join('\t');
+    });
+    const results = nameTestResults(config);
+    const summary = results ? results.names.map(({ name, w, n }) => [name, n, ...w.map((value) => `${(value * 100).toFixed(1)}%`)].join('\t')) : [];
+    return [
+      `# 自測名稱分析資料 ${new Date().toLocaleString('zh-TW', { hour12: false })}`,
+      `# 角色 ${hero ? hero.name : config.heroId}（鍛 ${hero ? hero.forge : '?'}・裁 ${hero ? hero.tailor : '?'}・工 ${hero ? hero.craft : '?'}） 裝備 ${config.type} 配方 ${key}`,
+      '# 每一件：日期 名稱 品質 原始攻防智幸重耐 普通品質攻防智幸重耐 名稱編碼',
+      ['日期', '名稱', '品質', '攻', '防', '智', '幸', '重', '耐', '普攻', '普防', '普智', '普幸', '普重', '普耐', '編碼'].join('\t'),
+      ...rows,
+      '',
+      '# 今天每個名稱的比例（跟這個角色這個配方做過最好的比；重量越高越輕）',
+      ['名稱', '件數', '攻', '防', '智', '幸', '重', '耐'].join('\t'),
+      ...summary,
+    ].join('\n');
+  }
+
+  async function copyNameTestAnalysis() {
+    const text = nameTestAnalysisText(readNameTestForm());
+    const box = panel.querySelector('[data-role="name-test-export"]');
+    if (!text) {
+      setStatus('沒有資料：先選角色、裝備、配方，再按「讀取裝備並更新結果」');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      box.style.display = 'none';
+      setStatus('已複製分析資料，直接貼給 Claude');
+    } catch {
+      // 有些環境不允許寫剪貼簿，改放到文字框讓使用者自己複製
+      box.value = text;
+      box.style.display = '';
+      box.select();
+      setStatus('無法直接複製，分析資料已放在下方文字框，請按 Ctrl+C');
+    }
   }
 
   // 勾了「自動換名稱改用自測結果」：今天測過的名稱取代測名表，挑名稱、自動換名稱都用這份
