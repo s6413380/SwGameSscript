@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.35
+// @version      5.36
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1485,8 +1485,8 @@
       <div class="row">配方<input data-name-test="recipe" placeholder="例：鐵礦×2、木頭×1" style="flex:1;min-width:0"><button data-action="name-test-recipe-from-page" title="把「配方」頁現在的類型和配方帶進來">用配方頁的</button></div>
       <div class="row">候選名稱<span style="flex:1"></span><button data-action="name-test-random" title="隨機產生中文名稱加到下面（不會跟已經有的、今天測過的重複）">亂取</button><input data-role="name-test-random-count" type="number" min="1" max="50" value="10" style="flex:none;width:48px">個<button data-action="name-test-clear-names" title="清空候選名稱">清空</button></div>
       <textarea data-name-test="names" rows="4" placeholder="候選名稱，一行一個（或用、隔開）" style="width:100%;box-sizing:border-box;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></textarea>
-      <label class="row"><input data-name-test="useForAuto" type="checkbox" style="flex:none;width:auto"> 自動換名稱、名稱推薦改用自測結果（測的是哪種裝備就只準那種）</label>
-      <label class="row"><input data-name-test="autoDaily" type="checkbox" style="flex:none;width:auto"> 每天 00:00 後自動測名，測完把第一名套用到自動鍛造（要開自動鍛造的「每天自動換名稱」）</label>
+      <label class="row"><input data-name-test="useForAuto" type="checkbox" style="flex:none;width:auto"> 自動換名稱：測名表今天這種裝備沒有到門檻的名稱時，改用自測結果（每種裝備分開，名稱效果每種不一樣）</label>
+      <label class="row"><input data-name-test="autoDaily" type="checkbox" style="flex:none;width:auto"> 每天 00:00 後自動測名：佇列裡每種裝備各測一輪（測名表已經有到門檻名稱的種類跳過），測完每種各套用自己的第一名（要開自動鍛造的「每天自動換名稱」）</label>
       <div class="row">亂取系列<select data-name-test="randomStyle" style="flex:none;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="common">常用字</option><option value="xianxia">仙俠</option><option value="star">星辰</option><option value="myth">神話</option><option value="beast">猛獸</option><option value="mixed">多元素混搭</option><option value="custom">自己填字詞</option></select>
         字數<input data-name-test="randomMinLength" type="number" min="1" max="12" style="flex:none;width:40px">～<input data-name-test="randomMaxLength" type="number" min="1" max="12" style="flex:none;width:40px"></div>
       <input data-name-test="randomTemplate" placeholder="模板，例：{字}之刃、鐵壁{數}（空白＝整個亂取）" title="{字}＝照系列亂取一段，{數}＝流水號；整個名稱不超過上面的字數（最多 12 字）" style="width:100%;box-sizing:border-box">
@@ -11509,6 +11509,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       queueHeroForForge(Number(event.target.dataset.hero));
     } else if (action === 'forge-unqueue') {
       unqueueHeroForForge(Number(event.target.dataset.hero));
+    } else if (action === 'forge-type-name-best') {
+      setForgePlanNamesByType(event.target.dataset.type, event.target.dataset.name, false);
     } else if (action === 'forge-name-unlock') {
       unlockForgePlanName(Number(event.target.dataset.hero));
     } else if (action === 'recipe-forge-once') {
@@ -16022,19 +16024,74 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }
   }
 
-  // 勾了「自動換名稱改用自測結果」：今天測過的名稱取代測名表，挑名稱、自動換名稱都用這份
-  function ownTestedNamesToday() {
+  // 這次測名要測哪些種類：每天自動測名是佇列裡的每種裝備（各用自己的配方），手動按開始就是畫面上選的那種
+  function nameTestTargets(config) {
+    const daily = config.dailyRun && config.targetsDay === localDayKey(Date.now()) && (config.targets || []).length;
+    return daily ? config.targets : [{ type: config.type, recipe: config.recipe }];
+  }
+
+  function nameTestTargetFor(config, type) {
+    const target = nameTestTargets(config).find((entry) => entry.type === type);
+    return target ? { ...config, ...target } : null;
+  }
+
+  // 勾了「自動換名稱改用自測結果」：這種裝備今天自測的排名；沒測這種回傳空的
+  function ownTestedRanking(settings, type, purpose = 'use') {
     const config = loadNameTest();
-    if (!config.useForAuto) return null;
-    const results = nameTestResults(config);
-    if (!results || !results.names.length) return null;
-    return Object.fromEntries(results.names.map(({ name, w, n }) => [name, { w, n, good: true }]));
+    if (!config.useForAuto) return [];
+    const typed = nameTestTargetFor(config, type);
+    const results = typed && nameTestResults(typed);
+    return results && results.names.length ? rankTestedNames(typed, settings, results, purpose) : [];
+  }
+
+  // 佇列裡要挑名稱的「種類｜用途」，配方頁的種類當成「用」
+  function forgeQueueKeys(settings) {
+    const keys = [`${settings.forgeRecipeType}|use`, ...forgeByApiHeroIds(settings).map((heroId) => {
+      const plan = forgeApiPlan(settings, heroId);
+      return `${plan.type}|${plan.purpose}`;
+    })].filter((key) => !key.startsWith('|'));
+    return [...new Set(keys)].map((key) => {
+      const [type, purpose] = key.split('|');
+      return { key, type, purpose };
+    });
+  }
+
+  // 測名表這種裝備今天每個用途都有到門檻的名稱，就不用自己測
+  function sheetCoversType(settings, type) {
+    return forgeQueueKeys(settings)
+      .filter((entry) => entry.type === type)
+      .every(({ purpose }) => {
+        const best = rankSheetNames(settings, type, purpose)[0];
+        return best && best.score * 100 >= settings.forgeAutoNamePercent;
+      });
+  }
+
+  // 每天自動測名的種類和配方：測名頁選的那種用測名頁的配方（通常挑便宜的），其他種類用佇列裡第一個做這種的角色的配方
+  function dailyNameTestTargets(config, settings) {
+    const recipes = new Map();
+    if (config.type && parseRecipeLoosely(config.recipe).length) recipes.set(config.type, config.recipe);
+    forgeByApiHeroIds(settings).forEach((heroId) => {
+      const plan = forgeApiPlan(settings, heroId);
+      if (plan.type && !recipes.has(plan.type) && parseRecipeLoosely(plan.recipe).length) recipes.set(plan.type, plan.recipe);
+    });
+    if (settings.forgeRecipeType && !recipes.has(settings.forgeRecipeType) && parseRecipeLoosely(settings.forgeRecipe).length) recipes.set(settings.forgeRecipeType, settings.forgeRecipe);
+    return [...new Set(forgeQueueKeys(settings).map((entry) => entry.type))].filter((type) => recipes.has(type)).map((type) => ({ type, recipe: recipes.get(type) }));
+  }
+
+  // 下一爐測什麼：照種類順序，每種的名稱都測完才換下一種；每天自動測名時測名表已經補上的種類跳過
+  function nextTestJob(config, settings) {
+    for (const target of nameTestTargets(config)) {
+      if (config.dailyRun && sheetCoversType(settings, target.type)) continue;
+      const name = nextTestName({ ...config, ...target });
+      if (name) return { target, name };
+    }
+    return null;
   }
 
   // 先照測名表的用途等級，同等級再照這種裝備的分數（表格和每天自動套用都用這個順序）
-  function rankTestedNames(config, settings, results = nameTestResults(config)) {
+  function rankTestedNames(config, settings, results = nameTestResults(config), purpose = 'use') {
     if (!results) return [];
-    const weights = nameWeightsFor(settings, config.type, 'use');
+    const weights = nameWeightsFor(settings, config.type, purpose);
     const score = (entry) => (weights ? weights.pairs.reduce((sum, [stat, share]) => sum + share * entry.w[NAME_STAT_INDEX[stat]], 0) : entry.w.reduce((sum, value) => sum + value, 0) / entry.w.length);
     const keys = nameTestSortKeys(config);
     return results.names
@@ -16100,34 +16157,45 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       if (Number(config.dailyRandom) > 0) config.names = randomForgeNames(Math.min(50, Number(config.dailyRandom)), [...Object.keys(nameTestStartedToday(config)), ...(config.badNames || [])], config).join('\n');
       config.autoDay = today;
       config.useForAuto = true;
+      config.dailyRun = true;
+      config.targets = dailyNameTestTargets(config, readSettingsFromPanel());
+      config.targetsDay = today;
       saveNameTest(config);
       startNameTest(false);
     }
-    if (nameTestRunner.running) {
-      const names = nameTestCandidates(config);
-      const started = nameTestStartedToday(config);
-      return `自測名稱中（${names.filter((name) => started[name]).length}/${names.length} 個名稱），測完自動套用第一名`;
-    }
+    if (nameTestRunner.running) return `自測名稱中（${nameTestProgressText(config)}），測完每種各套用自己的第一名`;
     return `自測名稱沒在跑：${nameTestRunner.status || '到「自測名稱」看原因'}`;
   }
 
+  // 測完不管門檻，每種裝備各用自己的第一名（測名表有到門檻的照表）；名稱效果每種不一樣，不拿一種的結果套到別種。
+  // 沒測到也沒表的種類維持原本的名稱
   function applyBestTestedName() {
-    const config = loadNameTest();
     const settings = readSettingsFromPanel();
-    const best = rankTestedNames(config, settings)[0];
-    if (!best) return;
-    // 佇列裡其他種類也換：昨天的名稱過了 00:00 效果是隨機的，用今天測到最好的比較保險
-    const keys = new Set([`${settings.forgeRecipeType}|use`, ...forgeByApiHeroIds(settings).map((heroId) => {
-      const plan = forgeApiPlan(settings, heroId);
-      return `${plan.type}|${plan.purpose}`;
-    })].filter((key) => !key.startsWith('|')));
-    applyForgeNamesByType(Object.fromEntries([...keys].map((key) => [key, best.name])));
+    const picks = forgeQueueKeys(settings).map((entry) => ({ ...entry, best: todayNamesForType(settings, entry.type, entry.purpose)[0] }));
+    const ready = picks.filter((pick) => pick.best);
+    if (!ready.length) return;
+    applyForgeNamesByType(Object.fromEntries(ready.map((pick) => [pick.key, pick.best.name])));
     writeJsonStorage(FORGE_NAME_DAY_KEY, localDayKey(Date.now()));
     forgeRunner.nameWaiting = '';
     renderForgePlanOverview();
     wakeForgeRunner();
-    forgeLog(`自測名稱完成，鍛造名稱換成「${best.name}」${best.usage.label ? `（${best.usage.label}）` : ''}，繼續鍛造`);
-    showToast(`自測名稱完成：鍛造名稱換成「${best.name}」`);
+    const text = ready.map((pick) => `${pick.type}${pick.purpose === 'sell' ? '（賣）' : ''}「${pick.best.name}」${pick.best.source === 'own' ? '自測' : '測名表'}`).join('、');
+    const missing = picks.filter((pick) => !pick.best).map((pick) => pick.type);
+    forgeLog(`自測名稱完成，換成 ${text}${missing.length ? `；${missing.join('、')}沒有名稱可挑，維持原本的` : ''}，繼續鍛造`);
+    showToast(`自測名稱完成：${text}`);
+  }
+
+  // 「盔甲 3/8・盾牌 0/8（測名表已有）」
+  function nameTestProgressText(config) {
+    const settings = readSettingsFromPanel();
+    const names = nameTestCandidates(config);
+    return nameTestTargets(config)
+      .map((target) => {
+        const started = nameTestStartedToday({ ...config, ...target });
+        const covered = config.dailyRun && sheetCoversType(settings, target.type);
+        return `${target.type} ${names.filter((name) => started[name]).length}/${names.length}${covered ? '（測名表已有）' : ''}`;
+      })
+      .join('・');
   }
 
   function readNameTestForm() {
@@ -16156,7 +16224,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     renderNameTestStatus();
     panel.querySelector('[data-role="name-test-sort"]').innerHTML = nameTestSortHtml(config);
     const box = panel.querySelector('[data-role="name-test-result"]');
-    const results = nameTestResults(config);
+    // 每天自動測名用的是佇列的配方，畫面上的種類是其中一種的話照那個配方看結果
+    const shown = nameTestTargetFor(config, config.type) || config;
+    const results = nameTestResults(shown);
     const weights = nameWeightsFor(settings, config.type, 'use');
     const started = nameTestStartedToday(config);
     const finished = new Set(results ? results.names.map((entry) => entry.name) : []);
@@ -16166,7 +16236,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       return;
     }
     const percent = (value) => `${Math.round(value * 1000) / 10}`;
-    const rows = rankTestedNames(config, settings, results);
+    const rows = rankTestedNames(shown, settings, results);
     box.innerHTML = `<table class="combat"><tr><th>名稱</th><th>用途</th><th>件</th><th>攻</th><th>防</th><th>智</th><th>幸</th><th>重</th><th>耐</th><th>六圍</th><th title="${escapeHtml(weights ? weights.label : '六圍平均')}">分數</th><th></th></tr>${rows
       .map(
         (entry, index) => `<tr style="${index === 0 ? 'background:#16261c' : ''}"><td style="white-space:normal">${index === 0 ? '👑 ' : ''}${escapeHtml(entry.name)}</td>
@@ -16183,12 +16253,15 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     if (!box) return;
     const config = loadNameTest();
     const names = nameTestCandidates(config);
-    const started = nameTestStartedToday(config);
-    const done = names.reduce((sum, name) => sum + Math.min(started[name] || 0, nameTestRepeat(config)), 0);
-    const total = names.length * nameTestRepeat(config);
+    const targets = nameTestTargets(config);
+    const done = targets.reduce((sum, target) => {
+      const started = nameTestStartedToday({ ...config, ...target });
+      return sum + names.reduce((count, name) => count + Math.min(started[name] || 0, nameTestRepeat(config)), 0);
+    }, 0);
+    const total = names.length * nameTestRepeat(config) * targets.length;
     const recipe = parseRecipeLoosely(config.recipe);
-    const enough = recipe.length && mineStock.length ? forgesPossible(recipe, mineStock) : null;
-    box.innerHTML = `${nameTestRunner.running ? '🟢 測名中' : '⚪ 沒在測'}・今天 ${done}/${total} 爐${enough === null ? '' : `・材料夠 ${enough} 爐${enough < total - done ? '（<span style="color:#f87171">不夠測完</span>）' : ''}`}${
+    const enough = targets.length === 1 && recipe.length && mineStock.length ? forgesPossible(recipe, mineStock) : null;
+    box.innerHTML = `${nameTestRunner.running ? '🟢 測名中' : '⚪ 沒在測'}・今天 ${done}/${total} 爐${targets.length > 1 ? `（${escapeHtml(nameTestProgressText(config))}）` : ''}${enough === null ? '' : `・材料夠 ${enough} 爐${enough < total - done ? '（<span style="color:#f87171">不夠測完</span>）' : ''}`}${
       nameTestRunner.status ? `<br>${escapeHtml(nameTestRunner.status)}` : ''
     }${(config.badNames || []).length ? `<br><span style="color:#fca5a5">遊戲不收的名稱（會跳過）：${config.badNames.map(escapeHtml).join('、')}</span>` : ''}`;
   }
@@ -16238,12 +16311,16 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // fromPanel：按按鈕才讀面板；自動鍛造叫的時候分頁可能還沒畫過，面板欄位是空的，要用存著的設定
   function startNameTest(fromPanel = true) {
     const config = fromPanel ? readNameTestForm() : loadNameTest();
+    // 手動按開始只測畫面上選的種類
+    if (fromPanel) config.dailyRun = false;
     saveNameTest(config);
     if (nameTestRunner.running) return nameTestLog('已經在測了');
     if (!config.heroId) return nameTestLog('先選測名的角色');
-    if (!parseRecipeLoosely(config.recipe).length) return nameTestLog('先填配方');
+    if (!nameTestTargets(config).some((target) => parseRecipeLoosely(target.recipe).length)) return nameTestLog(config.dailyRun ? '佇列裡的裝備都沒有配方' : '先填配方');
     if (!nameTestCandidates(config).length) return nameTestLog('先填候選名稱');
-    if (!nextTestName(config)) return nameTestLog('今天這些名稱都測過了，要再做就把「每個名稱做幾件」調大');
+    if (!nextTestJob(config, readSettingsFromPanel())) {
+      return nameTestLog(config.dailyRun ? '佇列裡每種裝備測名表都有到門檻的名稱，或今天都測過了' : '今天這些名稱都測過了，要再做就把「每個名稱做幾件」調大');
+    }
     nameTestRunner.running = true;
     nameTestRunner.runId++;
     nameTestRunner.failures = 0;
@@ -16302,9 +16379,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         if (cancelled()) return;
         if (activeTab === 'nameTest') renderNameTest();
       }
-      const name = nextTestName(loadNameTest());
-      if (!name) {
-        stopNameTest(`今天的 ${nameTestCandidates(config).length} 個名稱都測完了`);
+      const job = nextTestJob(loadNameTest(), readSettingsFromPanel());
+      if (!job) {
+        stopNameTest(`今天的 ${nameTestCandidates(config).length} 個名稱都測完了${nameTestTargets(config).length > 1 ? `（${nameTestProgressText(config)}）` : ''}`);
         if (config.autoDaily && readJsonStorage(FORGE_NAME_DAY_KEY, '') !== localDayKey(Date.now())) applyBestTestedName();
         else showToast('測名：都測完了，到「鍛造 → 自測名稱」看結果');
         return;
@@ -16325,7 +16402,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         scheduleNameTest(delay);
         return;
       }
-      const { body, summary } = await buildForgeRequest({ type: config.type, recipe: config.recipe, name }, hero.id, freeShop);
+      const { name, target } = job;
+      const { body, summary } = await buildForgeRequest({ type: target.type, recipe: target.recipe, name }, hero.id, freeShop);
       if (cancelled()) return;
       try {
         await sendForge(body);
@@ -16342,16 +16420,17 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         return;
       }
       const fresh = loadNameTest();
-      const started = nameTestStartedToday(config);
+      const targeted = { ...config, ...target };
+      const started = nameTestStartedToday(targeted);
       const day = localDayKey(Date.now());
-      fresh.started = { [day]: { ...((fresh.started || {})[day] || {}), [nameTestConditionKey(config)]: { ...started, [name]: (started[name] || 0) + 1 } } };
+      fresh.started = { [day]: { ...((fresh.started || {})[day] || {}), [nameTestConditionKey(targeted)]: { ...started, [name]: (started[name] || 0) + 1 } } };
       // 記下測過什麼，做出來的裝備在背包標 🧪 好刪；之後改了角色、配方也認得出舊的
-      const entry = nameTestLogKey(localDayKey(Date.now()), hero.id, config.type, recipeKeyOf(parseRecipeLoosely(config.recipe)), name);
+      const entry = nameTestLogKey(localDayKey(Date.now()), hero.id, target.type, recipeKeyOf(parseRecipeLoosely(target.recipe)), name);
       const cutoff = localDayKey(Date.now() - NAME_TEST_LOG_DAYS * 86400000);
       fresh.testLog = [...new Set([...(fresh.testLog || []).filter((key) => key.slice(0, 10) >= cutoff), entry])];
       saveNameTest(fresh);
       nameTestRunner.failures = 0;
-      nameTestLog(`${hero.name} 在鍛造坊 ${freeShop} 開始做「${name}」${summary}`);
+      nameTestLog(`${hero.name} 在鍛造坊 ${freeShop} 開始做${nameTestTargets(config).length > 1 ? target.type : ''}「${name}」${summary}`);
       scheduleNameTest(randomGap(15000, 30000));
     } catch (error) {
       if (cancelled()) return;
@@ -18456,9 +18535,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 用「名稱＋鍛造日期」對到當天的比例，就能把名稱造成的加減成除掉，剩下的才是材料與鍛造師的效果
   const NAME_SHEET_URL =
     'https://docs.google.com/spreadsheets/d/1AQgO3da4OrSQk6Jwpm9wUkNfI1a0OYKwDyDuf_dwhaM/export?format=csv&gid=321318328';
-  // 「今天」分頁：基準比是對今天樣本的最高值算的，跟歷史分頁（對歷史最高值）不同尺度；大家看的「通用 88%」是這頁的數字
+  // 「今日名稱」分頁：基準比是對今天樣本的最高值算的，跟歷史分頁（對歷史最高值）不同尺度；大家看的「通用 88%」是這頁的數字。
+  // 名稱效果每種裝備不一樣以後換了新分頁，多一欄「裝備類型」（舊分頁 2031406039 只剩短刀的舊資料）
   const NAME_TODAY_SHEET_URL =
-    'https://docs.google.com/spreadsheets/d/1AQgO3da4OrSQk6Jwpm9wUkNfI1a0OYKwDyDuf_dwhaM/export?format=csv&gid=2031406039';
+    'https://docs.google.com/spreadsheets/d/1AQgO3da4OrSQk6Jwpm9wUkNfI1a0OYKwDyDuf_dwhaM/export?format=csv&gid=37096851';
   const NAME_WEIGHTS_KEY = 'autoClickerV2NameWeights';
   const NAME_SHEET_REFRESH_MILLISECONDS = 30 * 60000;
   const NAME_WEIGHT_DAYS = 60;
@@ -18579,20 +18659,27 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const nameColumn = header.indexOf('名子');
     const ratioColumn = header.reduce((found, cell, index) => (cell === '攻擊' ? [...found, index] : found), [])[2];
     if (ratioColumn === undefined) throw new Error('測名表「今天」分頁找不到基準比欄');
+    const typeColumn = header.indexOf('裝備類型');
     const sums = {};
+    const typeSums = {};
+    const add = (bucket, name, ratios) => {
+      const entry = bucket[name] || (bucket[name] = { total: [0, 0, 0, 0, 0, 0], count: 0 });
+      ratios.forEach((ratio, index) => (entry.total[index] += ratio));
+      entry.count++;
+    };
     rows.slice(headerIndex + 1).forEach((row) => {
       const name = String(row[nameColumn] || '').trim();
       const ratios = NAME_WEIGHT_FIELDS.map((_, offset) => percentValue(row[ratioColumn + offset]));
       // 理論上限、下限那兩列是給表格計算用的，不是名稱
       if (!name || /^理論[上下]限值$/.test(name) || ratios.some((ratio) => ratio === null)) return;
-      const entry = sums[name] || (sums[name] = { total: [0, 0, 0, 0, 0, 0], count: 0 });
-      ratios.forEach((ratio, index) => (entry.total[index] += ratio));
-      entry.count++;
+      add(sums, name, ratios);
+      const type = typeColumn >= 0 ? String(row[typeColumn] || '').trim() : '';
+      if (type) add(typeSums[type] || (typeSums[type] = {}), name, ratios);
     });
-    const names = Object.fromEntries(
-      Object.entries(sums).map(([name, { total, count }]) => [name, { w: total.map((sum) => Math.round((sum / count) * 1000) / 1000), n: count, good: true }])
-    );
-    return { day: `${dayMatch[1]}-${pad2(dayMatch[2])}-${pad2(dayMatch[3])}`, names };
+    const averaged = (bucket) =>
+      Object.fromEntries(Object.entries(bucket).map(([name, { total, count }]) => [name, { w: total.map((sum) => Math.round((sum / count) * 1000) / 1000), n: count, good: true }]));
+    const byType = typeColumn >= 0 ? Object.fromEntries(Object.entries(typeSums).map(([type, bucket]) => [type, averaged(bucket)])) : null;
+    return { day: `${dayMatch[1]}-${pad2(dayMatch[2])}-${pad2(dayMatch[3])}`, names: averaged(sums), byType };
   }
 
   const nameWeightsCache = { raw: undefined, value: null };
@@ -18714,14 +18801,23 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return { pairs, label: `${purposeLabel} ${pairs.map(([stat, share]) => `${stat}${Math.round(share * 100)}%`).join(' ')}` };
   }
 
-  // 這種裝備今天的名稱排名
-  function todayNamesForType(settings, type, purpose = 'use') {
+  // 測名表這種裝備今天的名稱排名（照這種裝備、這種用途的權重算分數）
+  function rankSheetNames(settings, type, purpose = 'use') {
     const weights = nameWeightsFor(settings, type, purpose);
-    const names = todayNames('six');
-    if (!weights) return names;
-    return names
-      .map((entry) => ({ ...entry, score: weights.pairs.reduce((sum, [stat, share]) => sum + share * entry.w[NAME_STAT_INDEX[stat]], 0) }))
+    const score = (w) => (weights ? weights.pairs.reduce((sum, [stat, share]) => sum + share * w[NAME_STAT_INDEX[stat]], 0) : w.reduce((sum, value) => sum + value, 0) / w.length);
+    return Object.entries(sheetNamesToday(type))
+      .filter(([, entry]) => entry.good)
+      .map(([name, entry]) => ({ name, ...entry, score: score(entry.w), source: 'sheet' }))
       .sort((first, second) => second.score - first.score);
+  }
+
+  // 這種裝備今天的名稱排名：測名表有到門檻的照表（樣本多、大家同一個尺度）；沒有才用自測的
+  // （自測的 % 是跟自己做過最好的比，紀錄少時偏高，不跟表混在一起排）
+  function todayNamesForType(settings, type, purpose = 'use') {
+    const sheet = rankSheetNames(settings, type, purpose);
+    if (sheet.length && sheet[0].score * 100 >= settings.forgeAutoNamePercent) return sheet;
+    const own = ownTestedRanking(settings, type, purpose);
+    return own.length ? own.map((entry) => ({ ...entry, good: true, source: 'own' })) : sheet;
   }
 
   function renderNameWeightTable() {
@@ -18742,40 +18838,45 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     box.innerHTML = `${table(using)}${others.length ? `<details><summary>其他裝備（${others.length} 種）</summary>${table(others)}</details>` : ''}`;
   }
 
-  // 排名稱、自動換名稱門檻都用「今天」分頁的數字，跟大家在表上看到的一樣；那頁還停在昨天才用歷史分頁
+  // 排名稱、自動換名稱門檻都用「今日名稱」分頁的數字，跟大家在表上看到的一樣；那頁還停在昨天就當今天還沒有。
+  // 新分頁照裝備類型分開；沒有類型欄的舊格式才全部混用
   // （扣名稱影響的材料統計還是用歷史分頁，各天同一個尺度才能比）
-  function todayNames(goal) {
+  function sheetNamesToday(type) {
     const weights = loadNameWeights();
-    const day = localDayKey(Date.now());
-    const today = ownTestedNamesToday() || (!weights ? {} : weights.today && weights.today.day === day ? weights.today.names : weights.days[day] || {});
+    const today = weights && weights.today;
+    if (!today || today.day !== localDayKey(Date.now())) return {};
+    return today.byType ? today.byType[type] || {} : today.names;
+  }
+
+  // 配方頁的名稱推薦：這種裝備今天的名稱，照選的目標排
+  function todayNames(goal, type) {
     const fieldIndex = (field) => NAME_WEIGHT_FIELDS.indexOf(field);
     const score = ({ w }) => (goal === 'six' ? w.reduce((sum, value) => sum + value, 0) / w.length : goal === 'total' ? (w[0] + w[1] + w[2] + w[3]) / 4 : w[fieldIndex(goal)]);
-    // 只有次等以下（或上等以上）測過的名稱不準，不拿來挑（測名表「今天」分頁也不列）
-    return Object.entries(today)
-      .filter(([, entry]) => entry.good)
-      .map(([name, entry]) => ({ name, ...entry, score: score(entry) }))
+    return todayNamesForType(readSettingsFromPanel(), type)
+      .map((entry) => ({ ...entry, score: score(entry) }))
       .sort((first, second) => second.score - first.score);
   }
 
   function renderNameSuggestions() {
     const goal = panel.querySelector('[data-role="recipe-goal"]').value;
-    const names = todayNames(goal);
+    const recipeType = readSettingsFromPanel().forgeRecipeType;
+    const names = todayNames(goal, recipeType);
     const weights = loadNameWeights();
     const percent = (value) => `${Math.round(value * 100)}`;
     // 每個角色的名稱欄共用這份清單，打字時會跳出今天測過的名稱
     panel.querySelector('#autoClickerTodayNames').innerHTML = names.map(({ name }) => `<option value="${escapeHtml(name)}">`).join('');
     panel.querySelector('[data-role="name-suggest"]').innerHTML = names.length
-      ? `<table class="combat"><tr><th>今天的名稱</th><th>攻</th><th>防</th><th>智</th><th>幸</th><th>耐</th><th>次</th><th></th></tr>${names
+      ? `<table class="combat"><tr><th>今天的${escapeHtml(recipeType)}名稱${names[0].source === 'own' ? '（自測）' : ''}</th><th>攻</th><th>防</th><th>智</th><th>幸</th><th>耐</th><th>次</th><th></th></tr>${names
           .slice(0, 8)
           .map(
             ({ name, w, n, good }) => `<tr style="${good ? '' : 'opacity:.6'}"><td style="white-space:normal">${escapeHtml(name)}</td>
               <td>${percent(w[0])}</td><td>${percent(w[1])}</td><td>${percent(w[2])}</td><td>${percent(w[3])}</td><td>${percent(w[5])}</td><td>${n}</td>
               <td><button data-action="name-use" data-name="${escapeHtml(name)}">用</button></td></tr>`
           )
-          .join('')}</table><div class="hint">社群測名表今天各屬性是上限的幾 %，依上面選的目標排序；淡色＝只有低品質樣本，比較不準${
+          .join('')}</table><div class="hint">社群測名表今天這種裝備各屬性是上限的幾 %（名稱效果每種裝備不一樣，只列這種），依上面選的目標排序；淡色＝只有低品質樣本，比較不準${
           weights ? `；${new Date(weights.fetchedAt).toLocaleTimeString('zh-TW', { hour12: false })} 更新` : ''
         }</div>`
-      : `<div class="hint">${weights ? '測名表今天還沒有資料' : '按「更新測名表」讀取'}</div>`;
+      : `<div class="hint">${weights ? `測名表今天還沒有${escapeHtml(recipeType)}的資料` : '按「更新測名表」讀取'}</div>`;
     const settings = readSettingsFromPanel();
     const typeWeights = nameWeightsFor(settings, settings.forgeRecipeType);
     const best = names.length && typeWeights ? todayNamesForType(settings, settings.forgeRecipeType)[0] : null;
@@ -19399,6 +19500,49 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return text;
   }
 
+  // 佇列裡這種裝備的角色一次改同一個名稱（名稱效果看種類，同種類用同一個名稱就好）；
+  // lock＝當成手動改的，今天自動換名稱不蓋掉
+  function setForgePlanNamesByType(type, name, lock = true) {
+    const trimmed = String(name || '').trim();
+    if (!trimmed) return;
+    const settings = readSettingsFromPanel();
+    const plans = forgeByApiPlans(settings);
+    const heroIds = forgeByApiHeroIds(settings).filter((heroId) => forgeApiPlan(settings, heroId).type === type);
+    heroIds.forEach((heroId) => {
+      const plan = { ...(plans[heroId] || {}), name: trimmed };
+      if (lock) plan.nameManualDay = localDayKey(Date.now());
+      else delete plan.nameManualDay;
+      plans[heroId] = plan;
+    });
+    setPanelField('forgeByApiPlans', JSON.stringify(plans));
+    saveSettings(readSettingsFromPanel());
+    renderForgePlanOverview();
+    renderRecipeHeroes();
+    const text = `${type}的 ${heroIds.length} 個角色名稱改成「${trimmed}」${lock ? '（今天自動換名稱不會蓋掉）' : ''}`;
+    forgeLog(text);
+    setStatus(text);
+  }
+
+  // 佇列上方：每種裝備一列，一次改這種的所有角色，附今天這種最好的名稱
+  function forgeTypeNamesHtml(settings, rows) {
+    const types = [...new Set(rows.map((row) => row.type).filter(Boolean))];
+    if (!types.length) return '';
+    return `<div style="border:1px solid #3b2f5c;border-radius:8px;padding:4px 6px;margin:4px 0">
+      <div class="hint" style="margin:0 0 2px">同種類一次改名（名稱效果每種裝備不一樣）：打好按 Enter，這種的角色全部換掉，今天自動換名稱不會蓋掉</div>
+      ${types
+        .map((type) => {
+          const sameType = rows.filter((row) => row.type === type);
+          const names = [...new Set(sameType.map((row) => row.itemName).filter(Boolean))];
+          const best = todayNamesForType(settings, type)[0];
+          return `<div style="display:flex;gap:4px;align-items:center;margin:2px 0;flex-wrap:wrap">
+            <span style="flex:none;padding:0 6px;border-radius:9px;background:#3b2f5c;color:#ddd6fe">${escapeHtml(type)}</span><span style="flex:none;color:#a0a0aa">${sameType.length} 人</span>
+            <input data-forge-type-name="${escapeHtml(type)}" placeholder="${escapeHtml(names.join('、') || '輸入名稱')}" title="目前：${escapeHtml(names.join('、') || '沒有名稱')}" style="flex:1;min-width:80px;padding:1px 4px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px">
+            ${best ? `<button data-action="forge-type-name-best" data-type="${escapeHtml(type)}" data-name="${escapeHtml(best.name)}" style="flex:none;padding:0 6px" title="換成今天${escapeHtml(type)}最好的名稱（不鎖定，之後有更好的還會自動換）">${best.source === 'own' ? '自測' : '表'}最好：${escapeHtml(best.name)} ${(best.score * 100).toFixed(1)}%</button>` : '<span style="flex:none;color:#78716c">今天還沒有這種的名稱</span>'}
+          </div>`;
+        })
+        .join('')}</div>`;
+  }
+
   function unlockForgePlanName(heroId) {
     const settings = readSettingsFromPanel();
     const plans = forgeByApiPlans(settings);
@@ -19611,7 +19755,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       box.innerHTML = `${shopLine}<div class="hint">佇列是空的：到「配方」頁編好配方，在「④ 給誰用」按「加入」</div>`;
       return;
     }
-    box.innerHTML = shopLine + rows
+    box.innerHTML = shopLine + forgeTypeNamesHtml(settings, rows) + rows
       .map((row) => {
         const chips = row.materials
           .map(({ name, quantity, have }) => {
@@ -19840,20 +19984,12 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       return `讀取測名表失敗（${error.message}）`;
     }
     // 佇列裡每種裝備、每種用途（用／賣）各挑各的；全部都到門檻才換
-    const keys = [
-      ...new Set(
-        [`${settings.forgeRecipeType}|use`, ...forgeByApiHeroIds(settings).map((heroId) => {
-          const plan = forgeApiPlan(settings, heroId);
-          return `${plan.type}|${plan.purpose}`;
-        })].filter((key) => !key.startsWith('|'))
-      ),
-    ];
-    const picks = keys.map((key) => {
-      const [type, purpose] = key.split('|');
+    const picks = forgeQueueKeys(settings).map(({ key, type, purpose }) => {
       const weights = nameWeightsFor(settings, type, purpose);
       return { key, type, purpose, label: weights ? weights.label : '六圍', best: todayNamesForType(settings, type, purpose)[0] };
     });
-    if (picks.some((pick) => !pick.best)) return '測名表今天還沒有資料';
+    const empty = [...new Set(picks.filter((pick) => !pick.best).map((pick) => pick.type))];
+    if (empty.length) return `測名表今天還沒有${empty.join('、')}的名稱`;
     const pickText = (pick) => `${pick.type}「${pick.best.name}」${pick.label} ${(pick.best.score * 100).toFixed(1)}%`;
     const short = picks.filter((pick) => pick.best.score * 100 < settings.forgeAutoNamePercent);
     if (short.length) return `今天最高 ${short.map(pickText).join('、')}，還沒到 ${settings.forgeAutoNamePercent}%`;
@@ -21510,10 +21646,12 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   panel.addEventListener('change', (event) => {
     const heroId = event.target.dataset && event.target.dataset.forgeName;
     if (heroId) setForgePlanName(Number(heroId), event.target.value);
+    const type = event.target.dataset && event.target.dataset.forgeTypeName;
+    if (type) setForgePlanNamesByType(type, event.target.value);
   });
 
   panel.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && event.target.dataset && event.target.dataset.forgeName) event.target.blur();
+    if (event.key === 'Enter' && event.target.dataset && (event.target.dataset.forgeName || event.target.dataset.forgeTypeName)) event.target.blur();
   });
 
   panel.addEventListener('change', (event) => {
