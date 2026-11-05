@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.34
+// @version      5.35
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -15704,7 +15704,17 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   const nameTestRunner = { running: false, runId: 0, timerId: null, failures: 0, status: '' };
 
   function loadNameTest() {
-    return { heroId: 0, type: '短刀', recipe: '', names: '', repeat: 1, useForAuto: false, randomStyle: 'common', randomMinLength: 2, randomMaxLength: 12, randomTemplate: '', randomPool: '', randomKeywords: '', started: {}, ...(readJsonStorage(NAME_TEST_KEY, null) || {}) };
+    const config = { heroId: 0, type: '短刀', recipe: '', names: '', repeat: 1, useForAuto: false, randomStyle: 'common', randomMinLength: 2, randomMaxLength: 12, randomTemplate: '', randomPool: '', randomKeywords: '', started: {}, ...(readJsonStorage(NAME_TEST_KEY, null) || {}) };
+    // 5.34 以前只照日期記 {名稱: 爐數}，當成是當時設定的角色、裝備、配方開的
+    Object.entries(config.started || {}).forEach(([day, counts]) => {
+      if (Object.values(counts).some((value) => typeof value === 'number')) config.started[day] = { [nameTestConditionKey(config)]: counts };
+    });
+    return config;
+  }
+
+  // 同一個名稱換裝備或配方要重測，開過幾爐照「角色｜裝備｜配方」分開記
+  function nameTestConditionKey(config) {
+    return `${Number(config.heroId)}|${config.type}|${recipeKeyOf(parseRecipeLoosely(config.recipe))}`;
   }
 
   function saveNameTest(config) {
@@ -15719,9 +15729,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return Math.min(5, Math.max(1, Math.round(Number(config.repeat) || 1)));
   }
 
-  // 今天每個名稱開過幾爐（開了就算，不等做好）；過了 00:00 名稱效果換了，重新算
+  // 今天這個角色、裝備、配方每個名稱開過幾爐（開了就算，不等做好）；過了 00:00 名稱效果換了，重新算
   function nameTestStartedToday(config) {
-    return (config.started && config.started[localDayKey(Date.now())]) || {};
+    const today = (config.started && config.started[localDayKey(Date.now())]) || {};
+    return today[nameTestConditionKey(config)] || {};
   }
 
   // 遊戲規定 12 字以內的中、英、日文或數字。亂取的名稱照「系列」挑字詞，一次測出來的名稱風格一樣、背包裡也好認
@@ -15909,7 +15920,12 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const config = loadNameTest();
     // 5.25 以前開的爐沒有 testLog，用 started 和現在的設定補
     const recipeKey = recipeKeyOf(parseRecipeLoosely(config.recipe));
-    const backfill = Object.entries(config.started || {}).flatMap(([day, names]) => Object.keys(names).map((name) => nameTestLogKey(day, config.heroId, config.type, recipeKey, name)));
+    const backfill = Object.entries(config.started || {}).flatMap(([day, conditions]) =>
+      Object.entries(conditions).flatMap(([condition, names]) => {
+        const [heroId, type, conditionRecipe] = condition.split('|');
+        return Object.keys(names).map((name) => nameTestLogKey(day, heroId, type, conditionRecipe, name));
+      })
+    );
     const log = [...new Set([...(config.testLog || []), ...(config.heroId && recipeKey ? backfill : [])])];
     if (!log.length) return nameTestItemsCache.ids.size ? (nameTestItemsCache.ids = new Set()) : nameTestItemsCache.ids;
     const records = forgedRecords();
@@ -16326,8 +16342,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         return;
       }
       const fresh = loadNameTest();
-      const started = nameTestStartedToday(fresh);
-      fresh.started = { [localDayKey(Date.now())]: { ...started, [name]: (started[name] || 0) + 1 } };
+      const started = nameTestStartedToday(config);
+      const day = localDayKey(Date.now());
+      fresh.started = { [day]: { ...((fresh.started || {})[day] || {}), [nameTestConditionKey(config)]: { ...started, [name]: (started[name] || 0) + 1 } } };
       // 記下測過什麼，做出來的裝備在背包標 🧪 好刪；之後改了角色、配方也認得出舊的
       const entry = nameTestLogKey(localDayKey(Date.now()), hero.id, config.type, recipeKeyOf(parseRecipeLoosely(config.recipe)), name);
       const cutoff = localDayKey(Date.now() - NAME_TEST_LOG_DAYS * 86400000);
