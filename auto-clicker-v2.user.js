@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.40
+// @version      5.41
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -238,6 +238,7 @@
   const AREA_PRESET_VERSION = 4;
   const LOOT_RARE_PAUSE_OFF_KEY = 'autoClickerV2LootRarePauseOff';
   const RELAY_OFF_ONCE_KEY = 'autoClickerV2RelayOffOnce';
+  const SEVERE_POISON_RULE_KEY = 'autoClickerV2SeverePoisonRule';
   const PLAYER_IGNORE_DEFAULT = '大草原1-3、黑暗山洞1-3';
   const PLAYER_IGNORE_DEFAULT_KEY = 'autoClickerV2PlayerIgnoreDefault';
   const SLEEP_MERGED_KEY = 'autoClickerV2SleepMergedIntoOff';
@@ -320,7 +321,7 @@
     huntCureLevel: 3,
     // 燒傷（火）另外設：輕度就吃蘆薈，不用等到重度
     huntCureBurnLevel: 1,
-    huntCureItems: '中毒=解毒劑、重度燒傷=應急急救包、中度燒傷=應急急救包、輕度燒傷=蘆薈',
+    huntCureItems: '中毒=解毒劑、劇毒=解毒劑、重度燒傷=應急急救包、中度燒傷=應急急救包、輕度燒傷=蘆薈',
     huntCureMaxUses: 4,
     // 執行中不在狩獵頁／鍛造頁就自動切過去
     autoNavigateEnabled: true,
@@ -510,7 +511,7 @@
     miningConditionRestMinutes: 60,
     // 有異常先吃對應的道具（異常名稱=道具名稱，可加程度），吃到上限還沒好才照上面去休息
     miningCureEnabled: true,
-    miningCureItems: '中毒=解毒劑、重度燒傷=應急急救包、中度燒傷=應急急救包、輕度燒傷=蘆薈、燃燒=蘆薈',
+    miningCureItems: '中毒=解毒劑、劇毒=解毒劑、重度燒傷=應急急救包、中度燒傷=應急急救包、輕度燒傷=蘆薈、燃燒=蘆薈',
     miningCureMaxUses: 4,
     miningIntervalHours: 6,
     miningIntervalJitterPercent: 15,
@@ -877,6 +878,15 @@
       if (merged.miningCureItems === '中毒=解毒劑、燒傷=蘆薈、燃燒=蘆薈') merged.miningCureItems = defaultSettings.miningCureItems;
       saveSettings(merged);
     }
+    // v5.41：劇毒名稱裡沒有「中毒」，舊的對照表對不到；沒寫劇毒的補一條一次，之後自己刪掉就照自己的
+    if (saved && !readJsonStorage(SEVERE_POISON_RULE_KEY, false)) {
+      ['huntCureItems', 'miningCureItems'].forEach((key) => {
+        const rules = cureRules(merged[key]);
+        if (rules.length && !rules.some(([condition]) => condition.includes('劇毒'))) merged[key] = `${String(merged[key]).trim()}、劇毒=解毒劑`;
+      });
+      saveSettings(merged);
+    }
+    writeJsonStorage(SEVERE_POISON_RULE_KEY, true);
     // v2.82～2.84 預設不理會的關卡是空的；還是空的就補上新預設一次，之後自己清空就照自己的
     if (saved && !readJsonStorage(PLAYER_IGNORE_DEFAULT_KEY, false) && !merged.playerIgnoreStages) {
       merged.playerIgnoreStages = PLAYER_IGNORE_DEFAULT;
