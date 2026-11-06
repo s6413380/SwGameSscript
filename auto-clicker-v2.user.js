@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.43
+// @version      5.44
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -9171,7 +9171,9 @@
   function noteBenchedHeroes() {
     const team = huntTeam();
     const resting = team.filter((hero) => hero.actionState === 2);
-    if (resting.length < team.length) state.benchedHeroIds = new Set(resting.map((hero) => hero.id));
+    // 為了移動先結束休息的人還算不出戰，到了再讓它休息回去
+    const away = team.filter((hero) => (state.unbenchedForMove || new Set()).has(hero.id));
+    if (resting.length < team.length) state.benchedHeroIds = new Set([...resting, ...away].map((hero) => hero.id));
   }
 
   function benchedHeroes() {
@@ -9201,13 +9203,57 @@
     }
   }
 
-  // 前進、後退、換地圖要全隊閒置；有手動休息的人就停在原地等，不幫它結束休息
+  // 前進、後退、換地圖要全隊閒置：手動休息（不出戰）的人先結束休息，到了目的地再讓它休息回去（restAfterMove）。
+  // 休息還沒滿最短時間就等到可以結束；結束失敗才停在原地等人處理
   function waitForBenchedBeforeMove(settings) {
     const benched = benchedHeroes();
     if (!benched.length) return false;
-    setStatus(`要移動，但 ${benched.map((hero) => hero.name).join('、')} 在休息（你手動讓它休息的），移動要全隊閒置：到遊戲完成它的休息，或把它移出隊伍`);
-    state.heroStatsAt = 0;
-    state.timerId = planTick(() => tick(settings), randomGap(20000, 40000));
+    const names = benched.map((hero) => hero.name).join('、');
+    const readyAt = Math.max(...benched.map((hero) => (hero.canComplete ? 0 : Date.parse(hero.actionCompleteTime) || 0)));
+    if (readyAt > Date.now()) {
+      setStatus(`要移動：${names} 在休息，${Math.ceil((readyAt - Date.now()) / 1000)} 秒後才能結束休息`);
+      state.timerId = planTick(() => tick(settings), readyAt - Date.now() + randomGap(1000, 3000));
+      return true;
+    }
+    const runId = state.runId;
+    setStatus(`要移動：先讓 ${names} 結束休息，到了再讓它休息回去`);
+    endBenchedRest(benched, runId)
+      .then(() => {
+        if (runId === state.runId) state.timerId = planTick(() => tick(settings), randomGap(1500, 4000));
+      })
+      .catch((error) => {
+        if (runId !== state.runId) return;
+        if (error.captchaRequired) return pauseForCaptcha(settings);
+        setStatus(`要移動，但 ${names} 結束休息失敗（${error.message}）：到遊戲完成它的休息，或把它移出隊伍`);
+        state.heroStatsAt = 0;
+        state.timerId = planTick(() => tick(settings), randomGap(20000, 40000));
+      });
+    return true;
+  }
+
+  async function endBenchedRest(heroes, runId) {
+    for (const hero of heroes) {
+      const reply = await requestGameApi(`${HEROES_API}/${hero.id}/completeAction`, { method: 'POST' });
+      if (runId !== state.runId) return;
+      syncGameCompleteAction(reply, hero.id);
+      state.heroStats.set(hero.id, { ...state.heroStats.get(hero.id), ...(reply && reply.hero), actionState: 0 });
+      state.unbenchedForMove = new Set([...(state.unbenchedForMove || []), hero.id]);
+    }
+  }
+
+  // 到了目的地（不用再移動）才讓剛才結束休息的人休息回去，之後照常不出戰
+  function restAfterMove(settings) {
+    if (!(state.unbenchedForMove || new Set()).size) return false;
+    state.unbenchedForMove = new Set();
+    const runId = state.runId;
+    setStatus('到了，讓剛才結束休息的人休息回去');
+    restBenchedHeroes(runId)
+      .catch((error) => {
+        if (runId === state.runId && error.captchaRequired) pauseForCaptcha(settings);
+      })
+      .then(() => {
+        if (runId === state.runId) state.timerId = planTick(() => tick(settings), randomGap(1500, 4000));
+      });
     return true;
   }
 
@@ -10709,6 +10755,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         } else if (waitForBusyHuntTeam(settings)) {
           return;
         } else if (move && waitForBenchedBeforeMove(settings)) {
+          return;
+        } else if (!move && restAfterMove(settings)) {
           return;
         } else if ((!move || move.type) && waitForTeammateReady(settings)) {
           return;
