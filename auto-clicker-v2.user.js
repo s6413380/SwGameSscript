@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.42
+// @version      5.43
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -367,6 +367,7 @@
     partyLowHpPauseSeconds: 60,
     // 打怪中自動暫停（死人、血低、異常、稀有掉落…）就順便解除組隊，隊友那邊不會被拖著打或一直等
     partyLeaveOnPause: true,
+    partyLeaveResume: true,
     // 雲端組隊：等待組隊時，雲端有人邀請自己就自動把對方設成隊友（只收名單裡的人；空白＝誰都收）
     partyInviteWait: false,
     partyInviteFrom: '',
@@ -1147,6 +1148,8 @@
       <div class="hint">要勾上面的「等隊友補好」才會檢查。剛打完隊友腳本還沒喝水是正常的，所以要持續一段時間才算</div>
       <label class="row"><input data-field="partyLeaveOnPause" type="checkbox" style="flex:none;width:auto"> 打怪中自動暫停時順便<b>離開隊伍</b></label>
       <div class="hint">把隊友暱稱清空（跟遊戲裡設成空白一樣）。活人驗證、同帳號另一個分頁在打的暫停不離隊；自己按停止也不會。要再組隊得重新設定隊友</div>
+      <label class="row"><input data-field="partyLeaveResume" type="checkbox" style="flex:none;width:auto"> 隊友造成的暫停（隊友角色血低、倒下）離隊後<b>自己繼續掛機</b></label>
+      <div class="hint">要勾上面的「離開隊伍」。自己角色死亡、體力不夠、異常、裝備壞這些照舊停下等你</div>
       <div class="row"><b>雲端組隊</b> 邀請<input data-role="party-invite-to" placeholder="對方暱稱" style="flex:1;min-width:0"><button data-action="party-invite" style="flex:none">邀請</button></div>
       <label class="row"><input data-field="partyInviteWait" type="checkbox" style="flex:none;width:auto"> <b>等待組隊</b>：有人邀請就自動設成隊友</label>
       <div class="row">只收<input data-field="partyInviteFrom" placeholder="暱稱或 id，用、分開；空白＝誰都收" style="flex:1;min-width:0">的邀請</div>
@@ -9634,8 +9637,30 @@
     partyWait.lowSince = 0;
     const who = (data.teammate && data.teammate.nickname) || '隊友';
     const detail = low.map((hero) => `${hero.name} ${Number(hero.hp) <= 0 ? '倒下' : `血 ${hero.hp}/${hero.fullHp}`}`).join('、');
-    pauseWithAlert(`${who}的角色血量過低（${detail}），${Math.floor(seconds)} 秒沒補上來，已暫停`);
+    const message = `${who}的角色血量過低（${detail}），${Math.floor(seconds)} 秒沒補上來`;
+    if (settings.partyLeaveOnPause && settings.partyLeaveResume) {
+      leavePartyAndContinue(settings, message);
+      return true;
+    }
+    pauseWithAlert(`${message}，已暫停`);
     return true;
+  }
+
+  // 問題出在隊友：離隊後自己繼續打；離不掉才照原本暫停
+  function leavePartyAndContinue(settings, message) {
+    const runId = state.runId;
+    setStatus(`${message}，離開隊伍後自己繼續打`);
+    leaveParty(message).then(() => {
+      if (runId !== state.runId) return;
+      if (inPartyNow()) {
+        pauseWithAlert(`${message}，離開隊伍失敗，已暫停`);
+        return;
+      }
+      partyWait.since = 0;
+      partyWait.soloUntil = Date.now() + PARTY_SOLO_RECHECK_MILLISECONDS;
+      setStatus('已離開隊伍，自己繼續打');
+      state.timerId = planTick(() => tick(settings), randomGap(2000, 5000));
+    });
   }
 
   function waitForTeammateReady(settings) {
