@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.37
+// @version      5.38
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -20431,7 +20431,13 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   function loadMining() {
     const saved = readJsonStorage(MINING_KEY, null);
-    return { rates: {}, active: {}, log: [], heroes: [], heroesAt: 0, ...(saved || {}) };
+    const data = { rates: {}, active: {}, log: [], heroes: [], heroesAt: 0, foremen: {}, ...(saved || {}) };
+    if (data.foreman) {
+      const { heroId, ...record } = data.foreman;
+      if (heroId) data.foremen = { ...data.foremen, [heroId]: record };
+      delete data.foreman;
+    }
+    return data;
   }
 
   function saveMining(data) {
@@ -20484,7 +20490,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return Number(settings.miningForemanParkSite) === FOREMAN_TRAIN_SITE;
   }
 
-  // 平時修練的工頭：要收礦時先結束修練（遊戲要閒置才能進礦場）；還不能結束就這次不帶工頭
+  // 平時修練的工頭：要收礦時先結束修練（遊戲要閒置才能進礦場）；還不能結束的這次不帶
   async function foremanFromTraining(settings, foreman, data, opened) {
     if (!foreman || foreman.actionState !== 7 || !foremanTrains(settings)) return foreman;
     if (!canCompleteNow(foreman, Date.now())) return null;
@@ -20494,8 +20500,22 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return after;
   }
 
-  function miningForemanId(settings) {
-    return Number(settings.miningForemanId) || 0;
+  async function foremenFromTraining(settings, foremen, data, opened) {
+    const ready = [];
+    for (const foreman of foremen) {
+      const after = await foremanFromTraining(settings, foreman, data, opened);
+      if (after) ready.push(after);
+    }
+    return ready;
+  }
+
+  // miningForemanId 存逗號分隔的角色 id（舊版只存一個 id，一樣讀得懂）
+  function miningForemanIds(settings) {
+    return [...new Set(String(settings.miningForemanId || '').split(',').map(Number).filter(Boolean))];
+  }
+
+  function foremanRecord(data, foreman) {
+    return (foreman && data.foremen && data.foremen[foreman.id]) || null;
   }
 
   function canSendForeman(settings, hero) {
@@ -20509,73 +20529,106 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     if (!canSendForeman(settings, pageHero)) return false;
     await drinkForemanPotions(settings, pageHero);
     syncGameHeroAction(await requestGameApi(`${HEROES_API}/${foreman.id}/mining/${site}`, { method: 'POST' }), 'mine');
-    data.foreman = { heroId: foreman.id, at: Date.now(), site, ...(parked ? { parked: true } : {}) };
+    data.foremen = { ...data.foremen, [foreman.id]: { at: Date.now(), site, ...(parked ? { parked: true } : {}) } };
     saveMining(data);
     return true;
   }
 
   // 遊戲要滿 3 分鐘才能收；不到就等到時間再收
   async function collectForeman(settings, foreman, data, opened) {
-    const left = ((data.foreman && data.foreman.at) || 0) + MINING_MIN_MINUTES * 60000 - Date.now();
+    const left = ((foremanRecord(data, foreman) || {}).at || 0) + MINING_MIN_MINUTES * 60000 - Date.now();
     if (left > 0) await wait(left + randomGap(3000, 10000));
     const pageHero = await openGameHeroPage(foreman, opened);
     const after = await completeMiningAction(settings, pageHero, data, 'foreman');
-    delete data.foreman;
+    delete data.foremen[foreman.id];
     saveMining(data);
     return after;
   }
 
-  // 一個地點一個地點收：工頭先進這個地點，滿 3 分鐘後把這裡的人全部收掉（不管各自挖了多久），
-  // 收回工頭，再換下一個地點。沒有工頭（沒設、不能出門）就直接收
+  // 收回一批工頭；收不回來的跳出提醒、這輪不再帶，回傳收回來的
+  async function collectForemen(settings, foremen, data, opened, warning, rethrowCaptcha = true) {
+    const back = [];
+    for (const foreman of foremen) {
+      try {
+        back.push(await collectForeman(settings, foreman, data, opened));
+      } catch (error) {
+        if (rethrowCaptcha && error.captchaRequired) throw error;
+        alertUser(`挖礦：工頭 ${foreman.name} 收不回來（${error.message}），${warning}`);
+      }
+    }
+    return back;
+  }
+
+  // 一批工頭一起進同一個地點；不能進場的這輪不帶，回傳進去的
+  async function sendForemen(settings, foremen, data, opened, site, done) {
+    const sent = [];
+    for (const foreman of foremen) {
+      let ok = false;
+      try {
+        ok = await sendForeman(settings, foreman, data, opened, site);
+      } catch (error) {
+        if (error.captchaRequired) throw error;
+        done.push(`工頭 ${foreman.name}：${error.message}`);
+      }
+      if (ok) {
+        sent.push(foreman);
+      } else if (!miningNotified.has(`foreman:${foreman.id}`)) {
+        miningNotified.add(`foreman:${foreman.id}`);
+        showToast(`挖礦：工頭 ${foreman.name} 現在不能進場（打怪、鍛造、休息、異常…），這次不帶他`);
+      }
+    }
+    return sent;
+  }
+
+  function foremanNames(foremen) {
+    return foremen.map((foreman) => foreman.name).join('、');
+  }
+
+  // 一個地點一個地點收：工頭們一起進這個地點，滿 3 分鐘後把這裡的人全部收掉（不管各自挖了多久），
+  // 收回工頭，再換下一個地點。沒有工頭（沒設、都不能出門）就直接收
   function foremanParked(data, foreman) {
-    return Boolean(foreman && foreman.actionState === 4 && data.foreman && data.foreman.parked && data.foreman.heroId === foreman.id);
+    const record = foremanRecord(data, foreman);
+    return Boolean(foreman && foreman.actionState === 4 && record && record.parked);
+  }
+
+  // 掛機的工頭都在同一個地點（parkForeman 只送去設定的那一個）
+  function parkedForemanSite(data, foremen) {
+    const parked = foremen.find((foreman) => foremanParked(data, foreman));
+    return parked ? Number(foremanRecord(data, parked).site) || 0 : 0;
   }
 
   // afterSite(collectedHeroes)：收完一個地點馬上呼叫（自動挖礦用來讓工頭掛機那裡的人直接再進去挖）
-  async function collectMiningSites(settings, targets, data, opened, { foreman = null, byId = null, afterSite = null } = {}) {
+  async function collectMiningSites(settings, targets, data, opened, { foremen = [], byId = null, afterSite = null } = {}) {
     const done = [];
     let sites = [...new Set(targets.map((hero) => Number(hero.actionTarget) || 0))];
-    let foremanNow = foreman;
+    let crew = foremen.filter(Boolean);
     // 工頭在某地掛機：那個地點排第一個收（工頭本來就在，不用再等 3 分鐘）
-    let parkedAt = foremanParked(data, foremanNow) ? Number(data.foreman.site) : 0;
+    let parkedAt = parkedForemanSite(data, crew);
     if (parkedAt && sites.includes(parkedAt)) sites = [parkedAt, ...sites.filter((site) => site !== parkedAt)];
     for (const [siteIndex, site] of sites.entries()) {
       const group = targets.filter((hero) => (Number(hero.actionTarget) || 0) === site);
       const siteName = MINING_SITES[site] || '不明地點';
-      let sent = false;
+      let sent = [];
       if (parkedAt && site !== parkedAt) {
-        // 掛機的地點沒人要收（或已經收完）：先收回工頭，再帶他去這裡
-        try {
-          foremanNow = await collectForeman(settings, foremanNow, data, opened);
-          done.push(`收回在${MINING_SITES[parkedAt]}掛機的工頭`);
-        } catch (error) {
-          if (error.captchaRequired) throw error;
-          alertUser(`挖礦：工頭 ${foremanNow.name} 收不回來（${error.message}），請手動收`);
-          foremanNow = null;
-        }
+        // 掛機的地點沒人要收（或已經收完）：先收回掛機的工頭，再帶全部工頭去這裡
+        const parked = crew.filter((foreman) => foremanParked(data, foreman));
+        const back = await collectForemen(settings, parked, data, opened, '請手動收');
+        if (back.length) done.push(`收回在${MINING_SITES[parkedAt]}掛機的工頭`);
+        crew = [...crew.filter((foreman) => !parked.includes(foreman)), ...back];
         parkedAt = 0;
       }
       if (parkedAt && site === parkedAt) {
-        sent = true;
-        const left = (data.foreman.at || 0) + MINING_MIN_MINUTES * 60000 - Date.now();
+        // 沒在掛機的工頭不叫進來：多等 3 分鐘不划算，下一個地點再一起帶
+        sent = crew.filter((foreman) => foremanParked(data, foreman));
+        const left = Math.max(...sent.map((foreman) => (foremanRecord(data, foreman).at || 0) + MINING_MIN_MINUTES * 60000 - Date.now()));
         if (left > 0) await wait(left + randomGap(3000, 10000));
-        miningLog(`工頭 ${foremanNow.name} 已在${siteName}掛機，直接收這裡的 ${group.length} 人`);
-      } else if (foremanNow && site) {
-        try {
-          sent = await sendForeman(settings, foremanNow, data, opened, site);
-        } catch (error) {
-          if (error.captchaRequired) throw error;
-          done.push(`工頭 ${foremanNow.name}：${error.message}`);
-        }
-        if (sent) {
-          miningLog(`工頭 ${foremanNow.name} 進${siteName}，3 分鐘後收這裡的 ${group.length} 人`);
+        miningLog(`工頭 ${foremanNames(sent)} 已在${siteName}掛機，直接收這裡的 ${group.length} 人`);
+      } else if (crew.length && site) {
+        sent = await sendForemen(settings, crew, data, opened, site, done);
+        crew = sent;
+        if (sent.length) {
+          miningLog(`工頭 ${foremanNames(sent)} 進${siteName}，3 分鐘後收這裡的 ${group.length} 人`);
           await wait(MINING_MIN_MINUTES * 60000 + randomGap(5000, 20000));
-        } else {
-          if (!miningNotified.has(`foreman:${foremanNow.id}`)) {
-            miningNotified.add(`foreman:${foremanNow.id}`);
-            showToast(`挖礦：工頭 ${foremanNow.name} 現在不能進場（打怪、鍛造、休息、異常…），這次沒有工頭照常收礦`);
-          }
-          foremanNow = null;
         }
       }
       try {
@@ -20596,20 +20649,16 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
             done.push(`${hero.name}：${error.message}`);
           }
         }
-        if (collected.length) done.push(`${siteName}${sent ? '（有工頭）' : ''}收 ${collected.join('、')}`);
+        if (collected.length) done.push(`${siteName}${sent.length ? `（有工頭 ${sent.length} 人）` : ''}收 ${collected.join('、')}`);
         if (afterSite && collected.length) await afterSite(group.filter((hero) => collected.includes(hero.name)));
       } finally {
         // 掛機的地點是最後一個：工頭就留著繼續掛機
         const stayParked = parkedAt === site && siteIndex === sites.length - 1;
         if (parkedAt === site && !stayParked) parkedAt = 0;
         // 工頭放太久會死：這個地點收到一半出錯也要收回來
-        if (sent && !stayParked) {
-          try {
-            foremanNow = await collectForeman(settings, foremanNow, data, opened);
-          } catch (error) {
-            alertUser(`挖礦：工頭 ${foremanNow.name} 收不回來（${error.message}），請手動收，放太久會死`);
-            foremanNow = null;
-          }
+        if (sent.length && !stayParked) {
+          const back = await collectForemen(settings, sent, data, opened, '請手動收，放太久會死', false);
+          crew = [...crew.filter((foreman) => !sent.includes(foreman)), ...back];
         }
       }
     }
@@ -20619,7 +20668,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 上一輪留在場上的工頭（例如中途重整、出錯）：時間到就先收回來；回傳收完的工頭，還不能收回傳 null
   async function recoverForeman(settings, foreman, data, opened, waits) {
     if (foremanParked(data, foreman)) return foreman;
-    if (!foreman || foreman.actionState !== 4 || !data.foreman || data.foreman.heroId !== foreman.id) return foreman;
+    if (!foreman || foreman.actionState !== 4 || !foremanRecord(data, foreman)) return foreman;
     if (!canCompleteNow(foreman, Date.now())) {
       if (waits) waits.push(Date.parse(foreman.actionCompleteTime) || Date.now() + 60000);
       return null;
@@ -20641,18 +20690,21 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       // 自動挖礦正在跑那一輪就等它跑完
       for (let tries = 0; miningRunner.ticking && tries < 600; tries++) await wait(1000);
       const heroes = await readMiningHeroes(settings, { statuses: false });
-      const foremanId = miningForemanId(settings);
+      const foremanIds = miningForemanIds(settings);
       const order = miningOrderedIds(settings, plannedMiningIds(settings));
       const rank = (hero) => (order.includes(hero.id) ? order.indexOf(hero.id) : order.length);
       const targets = heroes
-        .filter((hero) => hero.actionState === 4 && hero.id !== foremanId && (!site || Number(hero.actionTarget) === Number(site)))
+        .filter((hero) => hero.actionState === 4 && !foremanIds.includes(hero.id) && (!site || Number(hero.actionTarget) === Number(site)))
         .sort((first, second) => rank(first) - rank(second));
       if (!targets.length) return `${siteName}沒有人在挖`;
-      let foreman = foremanId ? heroes.find((hero) => hero.id === foremanId) || null : null;
-      if (foreman) miningNotified.delete(`foreman:${foreman.id}`);
-      foreman = await recoverForeman(settings, foreman, data, opened, null);
-      if (withForeman) foreman = await foremanFromTraining(settings, foreman, data, opened);
-      done = await collectMiningSites(settings, targets, data, opened, { foreman: withForeman ? foreman : null });
+      let foremen = [];
+      for (const foreman of heroes.filter((hero) => foremanIds.includes(hero.id))) {
+        miningNotified.delete(`foreman:${foreman.id}`);
+        const ready = await recoverForeman(settings, foreman, data, opened, null);
+        if (ready) foremen.push(ready);
+      }
+      if (withForeman) foremen = await foremenFromTraining(settings, foremen, data, opened);
+      done = await collectMiningSites(settings, targets, data, opened, { foremen: withForeman ? foremen : [] });
       return `主動收礦（${siteName}）：${done.join('、') || '沒有收到'}`;
     } finally {
       miningRunner.manualBusy = '';
@@ -21218,11 +21270,11 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const runId = miningRunner.runId;
     const cancelled = () => runId !== miningRunner.runId;
     const plans = miningPlans(settings);
-    const foremanId = miningForemanId(settings);
+    const foremanIds = miningForemanIds(settings);
     const heroIds = Object.keys(plans)
       .filter((id) => MINING_SITES[plans[id]])
       .map(Number)
-      .filter((id) => id !== foremanId);
+      .filter((id) => !foremanIds.includes(id));
     if (!heroIds.length) {
       stopMiningRunner('還沒選要挖礦的角色（挖礦頁每個角色選地點）');
       return;
@@ -21249,22 +21301,27 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const mining = free.filter((hero) => hero.actionState === 4);
       const due = mining.some((hero) => miningCollectAt(settings, hero, data, now) <= now);
       // 一起收：照地點一組一組收，有工頭就先進那個地點 3 分鐘（collectMiningSites）
-      const foreman = foremanId ? byId.get(foremanId) : null;
-      if (foreman && foreman.actionState === 0) miningNotified.delete(`foreman:${foreman.id}`);
-      const foremanBefore = foreman && foreman.actionState;
-      const foremanReady = await recoverForeman(settings, foreman, data, opened, waits);
-      if (foreman && foremanBefore === 4 && foremanReady) actions.push(`收回上一輪的工頭 ${foreman.name}`);
-      if (cancelled()) return;
+      const foremen = foremanIds.map((id) => byId.get(id)).filter(Boolean);
+      const foremenReady = [];
+      for (const foreman of foremen) {
+        if (foreman.actionState === 0) miningNotified.delete(`foreman:${foreman.id}`);
+        const foremanBefore = foreman.actionState;
+        const foremanReady = await recoverForeman(settings, foreman, data, opened, waits);
+        if (foremanBefore === 4 && foremanReady && !foremanParked(data, foremanReady)) actions.push(`收回上一輪的工頭 ${foreman.name}`);
+        if (foremanReady) foremenReady.push(foremanReady);
+        if (cancelled()) return;
+      }
       // 同一輪出發的挖一樣久，下次才會一起到時間
       const jitter = Math.min(50, Math.max(0, Number(settings.miningIntervalJitterPercent) || 0)) / 100;
       const roundHours = miningHours(settings) * (1 + (Math.random() * 2 - 1) * jitter);
       const startedEarly = new Set();
       // 工頭掛機的地點收完的人，不等其他地點收完就直接再進去挖
       const afterSite = async (collectedHeroes) => {
-        if (!foremanParked(data, foreman)) return;
+        const parkedAt = parkedForemanSite(data, foremen);
+        if (!parkedAt) return;
         for (const collectedHero of collectedHeroes) {
           const hero = byId.get(collectedHero.id);
-          if (!hero || Number(collectedHero.actionTarget) !== Number(data.foreman && data.foreman.site)) continue;
+          if (!hero || Number(collectedHero.actionTarget) !== parkedAt) continue;
           try {
             actions.push(...(await miningHeroStep(settings, hero, plans, data, Date.now(), waits, opened, roundHours)));
             startedEarly.add(hero.id);
@@ -21275,9 +21332,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         }
       };
       if (due) {
-        const siteForeman = await foremanFromTraining(settings, foremanReady, data, opened);
+        const siteForemen = await foremenFromTraining(settings, foremenReady, data, opened);
         if (cancelled()) return;
-        actions.push(...(await collectMiningSites(settings, mining, data, opened, { foreman: siteForeman, byId, afterSite })));
+        actions.push(...(await collectMiningSites(settings, mining, data, opened, { foremen: siteForemen, byId, afterSite })));
         if (cancelled()) return;
       } else {
         mining.forEach((hero) => waits.push(miningCollectAt(settings, hero, data, now)));
@@ -21291,7 +21348,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         }
         if (cancelled()) return;
       }
-      actions.push(...(await parkForeman(settings, foreman, data, opened, waits)));
+      for (const foreman of foremen) {
+        actions.push(...(await parkForeman(settings, foreman, data, opened, waits)));
+        if (cancelled()) return;
+      }
       if (cancelled()) return;
       miningRunner.failures = 0;
       // 有動作就很快再讀一次，看清楚新的狀態再排下一次；沒事就睡到最早該收的時間
@@ -21322,16 +21382,17 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     if (!foreman || !MINING_SITES[site]) return [];
     try {
       if (foremanParked(data, foreman)) {
-        const until = (data.foreman.at || 0) + miningHours(settings) * 3600000;
+        const record = foremanRecord(data, foreman);
+        const until = (record.at || 0) + miningHours(settings) * 3600000;
         if (Date.now() < until) {
           waits.push(until);
           return [];
         }
         if (!canCompleteNow(foreman, Date.now())) return [];
         await collectForeman(settings, foreman, data, opened);
-        return [`工頭 ${foreman.name} 在${MINING_SITES[data.foreman ? data.foreman.site : site] || ''}掛太久，先收回來`];
+        return [`工頭 ${foreman.name} 在${MINING_SITES[record.site] || ''}掛太久，先收回來`];
       }
-      if (data.foreman || foreman.actionState !== 0) return [];
+      if (foremanRecord(data, foreman) || foreman.actionState !== 0) return [];
       if (!(await sendForeman(settings, foreman, data, opened, site, true))) return [];
       return [`工頭 ${foreman.name} 去${MINING_SITES[site]}掛機`];
     } catch (error) {
@@ -21341,7 +21402,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   }
 
   async function trainForeman(settings, foreman, data, opened) {
-    if (data.foreman || foreman.actionState !== 0) return [];
+    if (foremanRecord(data, foreman) || foreman.actionState !== 0) return [];
     try {
       const pageHero = await openGameHeroPage(foreman, opened);
       if (!canSendForeman(settings, pageHero)) return [];
@@ -21479,7 +21540,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           conditions: heroConditions(hero).map((condition) => `${condition.name}${condition.level}${miningIgnoredConditions(settings).includes(condition.name) ? '（不理會）' : ''}`),
           site: hero.actionState === 4 ? Number(hero.actionTarget) || 0 : 0,
         })),
-      foreman: ((data.heroes || []).find((hero) => hero.id === miningForemanId(settings)) || {}).name || '',
+      foreman: (data.heroes || [])
+        .filter((hero) => miningForemanIds(settings).includes(hero.id))
+        .map((hero) => hero.name)
+        .join('、'),
       busy: miningRunner.manualBusy || '',
       last: data.log[0] || null,
       conditionNames: knownConditionNames(settings),
@@ -21507,17 +21571,18 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const now = Date.now();
     const order = miningOrderedIds(settings, plannedMiningIds(settings));
     const rank = (hero) => (order.includes(hero.id) ? order.indexOf(hero.id) : Infinity);
-    const foremanId = miningForemanId(settings);
+    const foremanIds = miningForemanIds(settings);
     const selectStyle = 'flex:none;max-width:130px;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px';
-    const foremanRow = `<div class="row" style="margin:0 0 4px">工頭
-        <select data-mining-foreman style="${selectStyle}"><option value="">不用</option>${data.heroes
-          .map((hero) => `<option value="${hero.id}" ${hero.id === foremanId ? 'selected' : ''}>${escapeHtml(hero.name)}</option>`)
+    const foremanRow = `<div class="row" style="margin:0 0 4px">工頭 ${foremanIds.length} 人
+        <select data-mining-foreman style="${selectStyle}"><option value="">＋加工頭</option>${data.heroes
+          .filter((hero) => !foremanIds.includes(hero.id))
+          .map((hero) => `<option value="${hero.id}">${escapeHtml(hero.name)}</option>`)
           .join('')}</select>
         平時<select data-mining-foreman-park style="${selectStyle}"><option value="0">回城</option><option value="${FOREMAN_TRAIN_SITE}" ${foremanTrains(settings) ? 'selected' : ''}>修練</option>${Object.entries(MINING_SITES)
           .map(([site, name]) => `<option value="${site}" ${Number(site) === Number(settings.miningForemanParkSite) ? 'selected' : ''}>在${name}掛機</option>`)
           .join('')}</select>
 </div>
-      <div class="hint" style="margin-top:0">收礦時一個地點一個地點收：工頭先進那個地點 3 分鐘，把那裡的人全部收完（不管挖了多久）就收回工頭，再換下一個地點。工頭不算挖礦角色。<br>選「平時在某地掛機」：沒事時工頭待在那裡；收礦時先收那裡的人（工頭本來就在，不用等）並讓他們馬上再進去挖，再收回工頭帶去別的地點，最後回去掛機；掛太久（超過收礦間隔）也會收回來再進去。<br>選「平時修練」：沒事時工頭去修練，要收礦才結束修練帶進礦場，收完再回去修練</div>`;
+      <div class="hint" style="margin-top:0">收礦時一個地點一個地點收：所有工頭一起先進那個地點 3 分鐘，把那裡的人全部收完（不管挖了多久）就收回工頭，再換下一個地點。工頭可以設好幾個，不能進場的（打怪、鍛造、異常…）那次就不帶；工頭不算挖礦角色。<br>選「平時在某地掛機」：沒事時工頭待在那裡；收礦時先收那裡的人（工頭本來就在，不用等）並讓他們馬上再進去挖，再收回工頭帶去別的地點，最後回去掛機；掛太久（超過收礦間隔）也會收回來再進去。<br>選「平時修練」：沒事時工頭去修練，要收礦才結束修練帶進礦場，收完再回去修練</div>`;
     box.innerHTML = data.heroes.length
       ? foremanRow + data.heroes
           .slice()
@@ -21533,10 +21598,11 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
             const blocked = inHuntTeam(hero) ? '狩獵隊伍（不會被拿去挖）' : queued.includes(hero.id) ? '鍛造佇列（不會被拿去挖）' : heldText;
             const ignored = miningIgnoredConditions(settings);
             const conditions = heroConditions(hero).map((condition) => `${condition.name}${condition.level}${ignored.includes(condition.name) ? '（不理會）' : ''}`);
-            if (hero.id === foremanId) {
+            if (foremanIds.includes(hero.id)) {
               return `<div class="row" style="margin:0;padding:3px 0;border-bottom:1px solid #2e2e34">
                 <div style="flex:1;min-width:0"><b>${escapeHtml(hero.name)}</b> <span style="color:#facc15">工頭</span>
-                  <div style="color:${hero.actionState === 4 ? '#60a5fa' : '#a0a0aa'}">${escapeHtml(miningHeroText(hero, data, now, settings))}</div></div></div>`;
+                  <div style="color:${hero.actionState === 4 ? '#60a5fa' : '#a0a0aa'}">${escapeHtml(miningHeroText(hero, data, now, settings))}</div></div>
+                <button data-mining-foreman-remove="${hero.id}" style="flex:none">不當工頭</button></div>`;
             }
             const options = [['', '不挖'], ...Object.entries(MINING_SITES)]
               .map(([value, name]) => `<option value="${value}" ${String(plans[hero.id] || '') === value ? 'selected' : ''}>${name}</option>`)
@@ -21684,6 +21750,16 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     saveSettings(readSettingsFromPanel());
   });
 
+  panel.addEventListener('click', (event) => {
+    const button = event.target.closest && event.target.closest('[data-mining-foreman-remove]');
+    if (!button) return;
+    const heroId = Number(button.dataset.miningForemanRemove);
+    setPanelField('miningForemanId', miningForemanIds(readSettingsFromPanel()).filter((id) => id !== heroId).join(','));
+    saveSettings(readSettingsFromPanel());
+    renderMiningHeroes();
+    wakeMiningRunner();
+  });
+
   let miningRenderPending = false;
   panel.addEventListener('focusout', (event) => {
     if (miningRenderPending && event.target.dataset && (event.target.dataset.miningHero || event.target.dataset.miningForeman !== undefined)) setTimeout(renderMiningHeroes, 0);
@@ -21694,10 +21770,12 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     if (event.target.dataset.miningForemanPark !== undefined) {
       setPanelField('miningForemanParkSite', Number(event.target.value) || 0);
     } else if (event.target.dataset.miningForeman !== undefined) {
-      setPanelField('miningForemanId', event.target.value);
+      const heroId = Number(event.target.value);
+      if (!heroId) return;
+      setPanelField('miningForemanId', [...miningForemanIds(readSettingsFromPanel()), heroId].join(','));
       // 工頭不當挖礦角色
       const plans = miningPlans(readSettingsFromPanel());
-      delete plans[event.target.value];
+      delete plans[heroId];
       setPanelField('miningPlans', JSON.stringify(plans));
     } else {
       return;
