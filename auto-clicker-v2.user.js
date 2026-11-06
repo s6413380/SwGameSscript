@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.39
+// @version      5.40
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -21620,6 +21620,12 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           .map(([site, name]) => `<option value="${site}" ${Number(site) === Number(settings.miningForemanParkSite) ? 'selected' : ''}>在${name}掛機</option>`)
           .join('')}</select>
 </div>
+      ${foremanIds.length ? `<div style="margin:0 0 4px">${foremanIds
+        .map((id) => {
+          const hero = data.heroes.find((item) => item.id === id);
+          return `<span style="display:inline-block;margin:1px 4px 1px 0;padding:0 2px 0 7px;border-radius:9px;background:#3a3420;color:#facc15">${escapeHtml(hero ? hero.name : `#${id}`)}<button data-mining-foreman-remove="${id}" title="不當工頭" style="margin-left:3px;padding:0 5px;border:0;background:none;color:#facc15;cursor:pointer">✕</button></span>`;
+        })
+        .join('')}</div>` : ''}
       <div class="hint" style="margin-top:0">收礦時一個地點一個地點收：所有工頭一起先進那個地點 3 分鐘，把那裡的人全部收完（不管挖了多久）就收回工頭，再換下一個地點。工頭可以設好幾個，不能進場的（打怪、鍛造、異常…）那次就不帶；工頭不算挖礦角色。<br>選「平時在某地掛機」：沒事時工頭待在那裡；收礦時先收那裡的人（工頭本來就在，不用等）並讓他們馬上再進去挖，再收回工頭帶去別的地點，最後回去掛機；掛太久（超過收礦間隔）也會收回來再進去。<br>選「平時修練」：沒事時工頭去修練，要收礦才結束修練帶進礦場，收完再回去修練</div>`;
     box.innerHTML = data.heroes.length
       ? foremanRow + data.heroes
