@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.38
+// @version      5.39
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -17072,39 +17072,40 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 鍛造預估：這個配方（從鍛造紀錄學的、扣掉名稱影響的基本值）× 名稱今天各屬性的倍率（測名表的 %）＝ 普通品質大概的數值。
   // 鍊金價用同類型裝備「數值 → 鍊金價」配出來的關係算
   const ESTIMATE_MIN_SAMPLES = 5;
-  const RECYCLE_FIELDS = ['atk', 'def', 'int', 'lck', 'fullDur'];
-  const recycleModels = { at: 0, byType: {} };
+  // 鍊金（回收）價公式（玩家整理）：攻防、智幸分段，最後乘耐久² / (耐久² + 125²)。
+  // 原式的「−0.4×重量 + 0.6×耐久」用雲端 3000 筆鍛造紀錄驗證會少算 6～12%，重新擬合成下面三個數（中位誤差約 2%）。
+  // 不含特效、強化：鍛造預估算不出特效
+  const RECYCLE_WEIGHT_RATE = 0.23;
+  const RECYCLE_DURABILITY_RATE = 0.616;
+  const RECYCLE_BASE = 130;
+  const RECYCLE_DURABILITY_HALF = 125;
 
-  function recycleModel(...args) {
-    return perfTimed('recycleModel', () => recycleModelUntimed(...args));
+  function recycleAttackDefense(total) {
+    return total <= 1000 ? 1.26 * total : 1260 * (1 + Math.log(total / 1000));
   }
 
-  function recycleModelUntimed(type) {
-    const records = forgedRecords();
-    if (Date.now() - recycleModels.at > 60000 || recycleModels.generation !== forgedRecordsCache.generation) {
-      Object.assign(recycleModels, { at: Date.now(), generation: forgedRecordsCache.generation, byType: {} });
-    }
-    if (type in recycleModels.byType) return recycleModels.byType[type];
-    const items = [...records.values()].filter((equipment) => equipment.type === type && Number(equipment.recyclePrice) > 0);
-    let model = null;
-    if (items.length >= 8) {
-      const rows = items.map((equipment) => [1, ...RECYCLE_FIELDS.map((field) => Number(equipment[field]) || 0)]);
-      const prices = items.map((equipment) => Number(equipment.recyclePrice));
-      const size = rows[0].length;
-      const gram = Array.from({ length: size }, (_, first) =>
-        Array.from({ length: size }, (__, second) => rows.reduce((sum, row) => sum + row[first] * row[second], 0) + (first === second && first ? 1 : 0))
-      );
-      const moment = Array.from({ length: size }, (_, index) => rows.reduce((sum, row, rowIndex) => sum + row[index] * prices[rowIndex], 0));
-      const beta = invertMatrix(gram).map((row) => row.reduce((sum, value, index) => sum + value * moment[index], 0));
-      model = { beta, count: items.length };
-    }
-    recycleModels.byType[type] = model;
-    return model;
+  function recycleIntelligenceLuck(total) {
+    return total <= 500 ? 2.8 * total : 1400 * (1 + Math.log(total / 500));
   }
 
-  function predictRecycle(model, stats) {
-    if (!model) return null;
-    return Math.max(0, RECYCLE_FIELDS.reduce((sum, field, index) => sum + model.beta[index + 1] * (stats[field] || 0), model.beta[0]));
+  function recycleDurabilityFactor(durability) {
+    return durability ** 2 / (durability ** 2 + RECYCLE_DURABILITY_HALF ** 2);
+  }
+
+  function recycleLinearPrice(stats) {
+    const value = (field) => Math.max(0, Number(stats[field]) || 0);
+    return (
+      recycleAttackDefense(value('atk') + value('def')) +
+      recycleIntelligenceLuck(value('int') + value('lck')) +
+      RECYCLE_WEIGHT_RATE * value('wgt') +
+      RECYCLE_DURABILITY_RATE * value('fullDur') +
+      RECYCLE_BASE
+    );
+  }
+
+  function recycleFormulaPrice(stats) {
+    const durability = Math.max(0, Number(stats.fullDur) || 0);
+    return Math.max(0, Math.round(recycleLinearPrice(stats) * recycleDurabilityFactor(durability)));
   }
 
   function forgeEstimate(...args) {
@@ -17139,8 +17140,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     Object.keys(stats).forEach((field) => (stats[field] = Math.max(0, stats[field])));
     // 精良：數值 ×1.5、重量 ×0.9（品質倍率表）
     const fine = Object.fromEntries(Object.entries(stats).map(([field, value]) => [field, value * (field === 'wgt' ? 0.9 : 1.5)]));
-    const priceModel = recycleModel(type);
-    return { stats, samples, nameApplied, nameKnown: Boolean(nameEntry), price: predictRecycle(priceModel, stats), finePrice: predictRecycle(priceModel, fine), priceSamples: priceModel ? priceModel.count : 0 };
+    return { stats, samples, nameApplied, nameKnown: Boolean(nameEntry), price: recycleFormulaPrice(stats), finePrice: recycleFormulaPrice(fine) };
   }
 
   function forgeEstimateHtml(type, recipe, name, explain = false) {
@@ -17148,7 +17148,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     if (!estimate) return explain ? '<div class="hint" style="margin:2px 0 0">預估：這種裝備的鍛造紀錄不到 5 件，還算不出來</div>' : '';
     const { stats } = estimate;
     const statText = REGRESSION_FIELDS.map(([field, label]) => `${label} ${Math.round(stats[field]).toLocaleString()}`).join('・');
-    const price = estimate.price !== null ? `・鍊金約 <b style="color:#fbbf24">$${Math.round(estimate.price).toLocaleString()}</b>（精良約 $${Math.round(estimate.finePrice).toLocaleString()}）` : '';
+    const price = estimate.price ? `・鍊金約 <b style="color:#fbbf24">$${Math.round(estimate.price).toLocaleString()}</b>（精良約 $${Math.round(estimate.finePrice).toLocaleString()}）` : '';
     const note = estimate.nameApplied ? `已乘上「${escapeHtml(name)}」今天的倍率` : name ? `「${escapeHtml(name)}」今天測名表沒有普通／精良的測試，用過去名稱的平均` : '還沒取名稱';
     return `<div style="margin:2px 0 0;font-size:11px;color:#c4b5fd">預估成品（普通品質）：${statText}${price}</div>${
       explain ? `<div class="hint" style="margin:0">${note}；依 ${estimate.samples} 件鍛造紀錄。測名表的 % 是名稱讓這項屬性有上限的幾成，這裡已經幫你換成數字</div>` : ''
@@ -18774,8 +18774,46 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     大衣: [['智', 0.3], ['防', 0.3], ['幸', 0.25], ['重', 0.15]],
     armor: [['防', 0.5], ['重', 0.3], ['攻', 0.2]],
   };
-  // 賣（鍊金）：看攻防智幸耐的總和，不管重量
+  // 賣（鍊金）：這種裝備還沒有鍛造紀錄時的權重；有紀錄就用 sellNameWeights 照鍊金公式算
   const SELL_NAME_WEIGHTS = [['攻', 0.2], ['防', 0.2], ['智', 0.2], ['幸', 0.2], ['耐', 0.2]];
+  const SELL_WEIGHT_MIN_RECORDS = 5;
+  const sellWeightsCache = { generation: -1, byType: {} };
+
+  function medianOf(values) {
+    const sorted = values.slice().sort((first, second) => first - second);
+    return sorted[sorted.length >> 1];
+  }
+
+  // 名稱倍率乘在屬性上，所以每個屬性的比重＝這個屬性放大 1% 時鍊金價多幾 %（照這種裝備鍛造紀錄的中位數值算）。
+  // 重量不算：測名表的「重」是越高越輕，輕一點鍊金價反而少一點點（係數只有 0.23），影響很小
+  function sellNameWeights(type) {
+    forgedRecords();
+    if (sellWeightsCache.generation !== forgedRecordsCache.generation) Object.assign(sellWeightsCache, { generation: forgedRecordsCache.generation, byType: {} });
+    if (type in sellWeightsCache.byType) return sellWeightsCache.byType[type];
+    const items = [...forgedRecords().values()].filter((equipment) => equipment.type === type && Number(equipment.fullDur) > 0);
+    let pairs = SELL_NAME_WEIGHTS;
+    if (items.length >= SELL_WEIGHT_MIN_RECORDS) {
+      const stats = Object.fromEntries(['atk', 'def', 'int', 'lck', 'wgt', 'fullDur'].map((field) => [field, medianOf(items.map((equipment) => Number(equipment[field]) || 0))]));
+      const attackDefense = stats.atk + stats.def;
+      const intelligenceLuck = stats.int + stats.lck;
+      const attackDefenseSlope = attackDefense <= 1000 ? 1.26 : 1260 / attackDefense;
+      const intelligenceLuckSlope = intelligenceLuck <= 500 ? 2.8 : 1400 / intelligenceLuck;
+      const durability = stats.fullDur;
+      // 耐久除了線性那項，還會讓「耐久² / (耐久² + 125²)」變大
+      const durabilityElasticity = (2 * RECYCLE_DURABILITY_HALF ** 2) / (durability ** 2 + RECYCLE_DURABILITY_HALF ** 2);
+      const gains = [
+        ['攻', attackDefenseSlope * stats.atk],
+        ['防', attackDefenseSlope * stats.def],
+        ['智', intelligenceLuckSlope * stats.int],
+        ['幸', intelligenceLuckSlope * stats.lck],
+        ['耐', RECYCLE_DURABILITY_RATE * durability + recycleLinearPrice(stats) * durabilityElasticity],
+      ];
+      const total = gains.reduce((sum, [, gain]) => sum + gain, 0);
+      if (total > 0) pairs = gains.filter(([, gain]) => gain > 0).map(([stat, gain]) => [stat, gain / total]);
+    }
+    sellWeightsCache.byType[type] = pairs;
+    return pairs;
+  }
   const FORGE_PURPOSES = { use: '用', sell: '賣' };
 
   function forgePurposeOf(value) {
@@ -18783,7 +18821,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   }
 
   function purposeNameWeights(type, purpose) {
-    if (purpose === 'sell') return SELL_NAME_WEIGHTS;
+    if (purpose === 'sell') return sellNameWeights(type);
     if (USE_NAME_WEIGHTS[type]) return USE_NAME_WEIGHTS[type];
     if (WEAPON_TYPES.includes(type)) return USE_NAME_WEIGHTS.weapon;
     if (ARMOR_TYPES.includes(type)) return USE_NAME_WEIGHTS.armor;
