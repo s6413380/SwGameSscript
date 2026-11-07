@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.44
+// @version      5.45
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -239,6 +239,7 @@
   const LOOT_RARE_PAUSE_OFF_KEY = 'autoClickerV2LootRarePauseOff';
   const RELAY_OFF_ONCE_KEY = 'autoClickerV2RelayOffOnce';
   const SEVERE_POISON_RULE_KEY = 'autoClickerV2SeverePoisonRule';
+  const MINING_BURN_ALOE_KEY = 'autoClickerV2MiningBurnAloe';
   const PLAYER_IGNORE_DEFAULT = '大草原1-3、黑暗山洞1-3';
   const PLAYER_IGNORE_DEFAULT_KEY = 'autoClickerV2PlayerIgnoreDefault';
   const SLEEP_MERGED_KEY = 'autoClickerV2SleepMergedIntoOff';
@@ -512,8 +513,9 @@
     miningConditionRestMinutes: 60,
     // 有異常先吃對應的道具（異常名稱=道具名稱，可加程度），吃到上限還沒好才照上面去休息
     miningCureEnabled: true,
-    miningCureItems: '中毒=解毒劑、劇毒=解毒劑、重度燒傷=應急急救包、中度燒傷=應急急救包、輕度燒傷=蘆薈、燃燒=蘆薈',
-    miningCureMaxUses: 4,
+    miningCureItems: '中毒=解毒劑、劇毒=解毒劑、重度燒傷=應急急救包、中度燒傷=蘆薈、輕度燒傷=蘆薈、燃燒=蘆薈',
+    // 中度燒傷吃蘆薈 4～5 次降到輕度，再 4～5 次才消失
+    miningCureMaxUses: 12,
     miningIntervalHours: 6,
     miningIntervalJitterPercent: 15,
     miningPotionEnabled: true,
@@ -888,6 +890,13 @@
       saveSettings(merged);
     }
     writeJsonStorage(SEVERE_POISON_RULE_KEY, true);
+    // v5.45：挖礦中度燒傷改吃蘆薈（吃到輕度再吃到消失要 8～10 次），上限還是舊預設 4 次的一起放寬
+    if (saved && !readJsonStorage(MINING_BURN_ALOE_KEY, false)) {
+      merged.miningCureItems = String(merged.miningCureItems || '').replace(/中度燒傷s*[=＝]s*應急急救包/, '中度燒傷=蘆薈');
+      if (Number(merged.miningCureMaxUses) === 4) merged.miningCureMaxUses = defaultSettings.miningCureMaxUses;
+      saveSettings(merged);
+    }
+    writeJsonStorage(MINING_BURN_ALOE_KEY, true);
     // v2.82～2.84 預設不理會的關卡是空的；還是空的就補上新預設一次，之後自己清空就照自己的
     if (saved && !readJsonStorage(PLAYER_IGNORE_DEFAULT_KEY, false) && !merged.playerIgnoreStages) {
       merged.playerIgnoreStages = PLAYER_IGNORE_DEFAULT;
@@ -21219,9 +21228,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       : '<span style="color:#a0a0aa">還沒看過異常（自己角色中過的、雲端同步下來別人遇過的，都會列在這裡）</span>';
   }
 
-  // 挖礦前先吃藥解異常（中毒吃解毒劑、燒傷先吃應急急救包到輕度再吃蘆薈）；吃了沒好就再吃，到上限還沒好才照原本的去休息
+  // 挖礦前先吃藥解異常（中毒吃解毒劑、中度燒傷吃蘆薈到輕度再吃到消失）；吃了沒好就再吃，到上限還沒好才照原本的去休息
   function miningCureMaxUses(settings) {
-    return Math.max(1, Number(settings.miningCureMaxUses) || 4);
+    return Math.max(1, Number(settings.miningCureMaxUses) || 12);
   }
 
   function cureRules(text) {
