@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.49
+// @version      5.50
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -242,6 +242,7 @@
   const RELAY_OFF_ONCE_KEY = 'autoClickerV2RelayOffOnce';
   const SEVERE_POISON_RULE_KEY = 'autoClickerV2SeverePoisonRule';
   const MINING_BURN_ALOE_KEY = 'autoClickerV2MiningBurnAloe';
+  const HUNT_CURE_USES_KEY = 'autoClickerV2HuntCureUses';
   const PLAYER_IGNORE_DEFAULT = '大草原1-3、黑暗山洞1-3';
   const PLAYER_IGNORE_DEFAULT_KEY = 'autoClickerV2PlayerIgnoreDefault';
   const SLEEP_MERGED_KEY = 'autoClickerV2SleepMergedIntoOff';
@@ -325,7 +326,7 @@
     // 燒傷（火）另外設：輕度就吃蘆薈，不用等到重度
     huntCureBurnLevel: 1,
     huntCureItems: '中毒=解毒劑、劇毒=解毒劑、重度燒傷=應急急救包、中度燒傷=應急急救包、輕度燒傷=蘆薈',
-    huntCureMaxUses: 4,
+    huntCureMaxUses: 12,
     // 執行中不在狩獵頁／鍛造頁就自動切過去
     autoNavigateEnabled: true,
     // 打怪改直接打 API：不用停在狩獵頁，同一個分頁可以同時 API 鍛造
@@ -901,6 +902,12 @@
       saveSettings(merged);
     }
     writeJsonStorage(MINING_BURN_ALOE_KEY, true);
+    // v5.50：重度劇毒、燒傷要吃好幾次才降一級，打怪的舊預設 4 次吃不完就放棄跳提醒
+    if (saved && !readJsonStorage(HUNT_CURE_USES_KEY, false)) {
+      if (Number(merged.huntCureMaxUses) === 4) merged.huntCureMaxUses = defaultSettings.huntCureMaxUses;
+      saveSettings(merged);
+    }
+    writeJsonStorage(HUNT_CURE_USES_KEY, true);
     // v2.82～2.84 預設不理會的關卡是空的；還是空的就補上新預設一次，之後自己清空就照自己的
     if (saved && !readJsonStorage(PLAYER_IGNORE_DEFAULT_KEY, false) && !merged.playerIgnoreStages) {
       merged.playerIgnoreStages = PLAYER_IGNORE_DEFAULT;
@@ -1360,7 +1367,7 @@
       <div class="row">晚點再通報<input data-field="statusDelayRules" placeholder="疫病=5" style="flex:1;min-width:0"></div>
       <div class="hint">異常名稱=場數，「、」分隔：連續打這麼多場都還沒解掉才提醒／暫停。例「疫病=5」＝第 5 場打完還有疫病才通報</div>
       <div class="row"><label style="flex:none;display:flex;align-items:center;gap:4px"><input data-field="huntCureEnabled" type="checkbox" style="flex:none;width:auto"> 打怪時（含手動）先吃藥</label></div>
-      <div class="row">　中毒等：<select data-field="huntCureLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select>才吃　燒傷：<select data-field="huntCureBurnLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select>就吃</div>
+      <div class="row">　中毒、劇毒等：<select data-field="huntCureLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select>才吃　燒傷：<select data-field="huntCureBurnLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select>就吃</div>
       <div class="row">吃什麼<input data-field="huntCureItems" placeholder="中毒=解毒劑、輕度燒傷=蘆薈" style="flex:1;min-width:0"></div>
       <label>每種異常最多吃 ${numberInput('huntCureMaxUses', 'min="1" max="20"')} 次</label>
       <div class="hint">異常名稱=道具名稱，「、」分隔；名稱前加「重度／中度／輕度」就只在那個程度吃。開始吃之後降到較輕的程度也會繼續照表吃。吃到上限還沒好、或沒有藥，才照上面的提醒／暫停</div>
@@ -6043,7 +6050,7 @@
   const huntCureTries = new Map();
 
   function huntCureMaxUses(settings) {
-    return Math.max(1, Number(settings.huntCureMaxUses) || 4);
+    return Math.max(1, Number(settings.huntCureMaxUses) || 12);
   }
 
   function huntCureKey(hero, condition) {
@@ -20787,8 +20794,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return !(settings.miningConditionRest && miningConditions(settings, hero).length);
   }
 
-  async function sendForeman(settings, foreman, data, opened, site, parked = false) {
+  // 工頭中了異常（劇毒、燒傷…）也照挖礦頁的對照表先吃藥，解掉才能進場
+  async function openCuredForeman(settings, foreman, opened) {
     const pageHero = await openGameHeroPage(foreman, opened);
+    return (await cureMiningConditions(settings, pageHero)).hero;
+  }
+
+  async function sendForeman(settings, foreman, data, opened, site, parked = false) {
+    const pageHero = await openCuredForeman(settings, foreman, opened);
     if (!canSendForeman(settings, pageHero)) return false;
     await drinkForemanPotions(settings, pageHero);
     syncGameHeroAction(await requestGameApi(`${HEROES_API}/${foreman.id}/mining/${site}`, { method: 'POST' }), 'mine');
@@ -21287,19 +21300,22 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return after;
   }
 
-  // 同一個角色同一種異常只通知一次；好了之後再中才會再通知
-  function notifyMiningConditions(settings, hero) {
+  // 同一個角色同一種異常只通知一次；好了之後再中才會再通知。
+  // 對照表有藥的異常先吃藥不提醒（cure＝吃藥的結果，還沒吃就是 null），吃過還沒好才提醒
+  function notifyMiningConditions(settings, hero, cure = null) {
     if (!settings.miningConditionRest) return;
-    const conditions = miningConditions(settings, hero);
+    const curable = (condition) => settings.miningCureEnabled && cureItemName(miningCureRules(settings), condition);
+    const conditions = miningConditions(settings, hero).filter((condition) => cure || !curable(condition));
     const current = new Set(conditions.map((condition) => `${hero.id}:${condition.name}:${condition.level}`));
     [...miningNotified].filter((key) => key.startsWith(`${hero.id}:`) && !key.includes(':potion') && !current.has(key)).forEach((key) => miningNotified.delete(key));
     conditions.forEach((condition) => {
       const key = `${hero.id}:${condition.name}:${condition.level}`;
       if (miningNotified.has(key)) return;
       miningNotified.add(key);
-      const cureItem = settings.miningCureEnabled ? cureItemName(miningCureRules(settings), condition) : '';
-      const plan = cureItem ? `先吃${cureItem}，${miningCureMaxUses(settings)} 次沒好${settings.miningConditionRestCure ? '再去休息' : '就先不出發'}` : settings.miningConditionRestCure ? '先去休息，好了才再挖礦' : '好了之前不出發挖礦';
-      alertUser(`挖礦：${hero.name} ${condition.name}${condition.level}，${hero.actionState === 4 ? '提早收礦，' : ''}${plan}`);
+      const cureItem = curable(condition);
+      const tried = !cureItem ? '' : cure.missing.includes(cureItem) ? `沒有${cureItem}，` : `吃了 ${cure.used.length} 次還沒好，`;
+      const plan = settings.miningConditionRestCure ? '先去休息，好了才再挖礦' : '好了之前不出發挖礦';
+      alertUser(`挖礦：${hero.name} ${condition.name}${condition.level}，${hero.actionState === 4 ? '提早收礦，' : ''}${tried}${plan}`);
     });
   }
 
@@ -21507,7 +21523,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     hero = cure.hero;
     if (cure.used.length) done.push(`${hero.name} 吃了 ${cure.used.join('、')}`);
     if (cure.missing.length) done.push(`${hero.name} 沒有${cure.missing.join('、')}`);
-    notifyMiningConditions(settings, hero);
+    notifyMiningConditions(settings, hero, cure);
     const conditions = settings.miningConditionRest ? miningConditions(settings, hero) : [];
     if (conditions.length && settings.miningConditionRestCure) {
       // 休息完回到上面「休息完」那段收掉，再重讀狀態：還有異常就再休息一輪
@@ -21700,7 +21716,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   async function trainForeman(settings, foreman, data, opened) {
     if (foremanRecord(data, foreman) || foreman.actionState !== 0) return [];
     try {
-      const pageHero = await openGameHeroPage(foreman, opened);
+      const pageHero = await openCuredForeman(settings, foreman, opened);
       if (!canSendForeman(settings, pageHero)) return [];
       syncGameHeroAction(await requestGameApi(`${HEROES_API}/${foreman.id}/training`, { method: 'POST' }), 'train');
       return [`工頭 ${foreman.name} 去修練`];
