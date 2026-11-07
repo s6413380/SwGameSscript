@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.53
+// @version      5.54
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -6391,12 +6391,15 @@
     return '';
   }
 
-  // 部位指定了裝備就只看那些，沒指定照共用的條件或勾選清單
+  // 部位指定了裝備就只看那些；部位自己設了數值或附魔門檻就照自己的，不再疊共用的條件
+  // （以前會疊：客製化防禦 >8000 的太刀，因為共用條件沒過一樣抓不到）；都沒設才照共用的條件或勾選清單
   function isAllowedForPart(settings, plan, part, equipment) {
-    if (partStatShortfall(plan.parts[part.id], equipment)) return false;
-    if (!hasRequiredEnchant(plan.parts[part.id], equipment)) return false;
-    const names = plan.parts[part.id].names;
+    const partPlan = plan.parts[part.id];
+    if (partStatShortfall(partPlan, equipment)) return false;
+    if (!hasRequiredEnchant(partPlan, equipment)) return false;
+    const names = partPlan.names;
     if (names.length) return isAllowedEquipment(names, equipment);
+    if (partHasStatRule(partPlan) || partPlan.needEnchant) return true;
     return settings.equipRuleEnabled ? matchesEquipRule(settings, equipment) : isAllowedEquipment(equipAllowedNames(settings), equipment);
   }
 
