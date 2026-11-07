@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.50
+// @version      5.51
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -413,6 +413,7 @@
     huntExcludedHeroIds: '',
     equipApiEnabled: false,
     equipApiMinDurability: 10,
+    equipDurabilityRules: '',
     equipApiSameName: false,
     equipApiPauseWhenEmpty: true,
     // 組隊時沒有可替換的裝備就離開隊伍：隊友打怪時自己的腳本沒在掛機（不會暫停），沒裝備還被拖著打會壞光
@@ -1294,6 +1295,8 @@
           <b>用 API 自動換裝</b>（只換勾選的角色，不用選按鈕）</label>
         <div data-equip-mode="api">
           <div class="row">耐久低於 ${numberInput('equipApiMinDurability', 'min="0"')} 就換</div>
+          <div class="row">個別裝備<input data-field="equipDurabilityRules" placeholder="項鍊=3、短刀=5、某某之劍=2" style="flex:1;min-width:0"></div>
+          <div class="hint">本身耐久就低的裝備另外設門檻：類型或裝備名稱=耐久，「、」分隔；名稱寫一部分就對得到，名稱比類型優先。有寫到的裝備不管角色個別設定，都照這裡的換</div>
           <label class="row"><input data-field="equipApiSameName" type="checkbox" style="flex:none;width:auto"> 只換同名裝備（不勾＝同類型都可以）</label>
           <label class="row"><input data-field="equipApiPauseWhenEmpty" type="checkbox" style="flex:none;width:auto"> 沒有可替換的裝備就暫停</label>
           <label class="row"><input data-field="equipEmptyLeaveParty" type="checkbox" style="flex:none;width:auto"> 組隊中沒有可替換的裝備就<b>離開隊伍</b>（隊友在打、自己沒開掛機也會）</label>
@@ -5389,6 +5392,24 @@
     return plan && plan.minDur > 0 ? plan.minDur : settings.equipApiMinDurability;
   }
 
+  function equipDurabilityRules(settings) {
+    return String(settings.equipDurabilityRules || '')
+      .split(/[、,，\n]+/)
+      .map((entry) => entry.split(/[=＝]/).map((part) => part.trim()))
+      .filter(([key, value]) => key && value !== undefined && value !== '' && Number.isFinite(Number(value)))
+      .map(([key, value]) => [key, Math.max(0, Number(value))]);
+  }
+
+  // 有些裝備本身耐久上限就很低，照共用或角色的門檻會一穿上就被換掉：名稱、類型有寫的照那件自己的門檻
+  function equipmentMinDurability(settings, heroId, equipment) {
+    const rules = equipDurabilityRules(settings);
+    const byName = rules.find(([key]) => String(equipment.name || '').includes(key));
+    const byType = rules.find(([key]) => key === equipment.type);
+    const rule = byName || byType;
+    if (rule) return rule[1];
+    return heroId ? heroMinDurability(settings, heroId) : settings.equipApiMinDurability;
+  }
+
   // 個別設定的角色只看有開的部位；沒開個別設定的照舊全部都看
   function isMonitoredEquipment(settings, equipment) {
     if (!equipHeroIds(settings).includes(equipment.equipped)) return false;
@@ -5593,7 +5614,7 @@
       : '<span class="hint" style="margin:0">裝備清單裡沒有附魔過的裝備</span>';
     const blocked = noAutoEquipIds();
     const idle = state.equipments.filter((equipment) => equipment.equipped === null && equipment.state === 0 && !blocked.has(equipment.id));
-    const matched = idle.filter((equipment) => matchesEquipRule(settings, equipment) && equipment.dur >= settings.equipApiMinDurability);
+    const matched = idle.filter((equipment) => matchesEquipRule(settings, equipment) && equipment.dur >= equipmentMinDurability(settings, null, equipment));
     const byType = new Map();
     matched.forEach((equipment) => byType.set(equipment.type, [...(byType.get(equipment.type) || []), equipment]));
     const partCounts = EQUIP_PARTS.map((part) => `${part.name} ${matched.filter((equipment) => part.types.includes(equipment.type)).length}`).join('、');
@@ -6323,11 +6344,11 @@
     const worn = state.equipments.filter((equipment) => isMonitoredEquipment(settings, equipment));
     if (!worn.length) return '換裝：勾選的角色身上沒有要監控的裝備';
     // 每個角色門檻可能不同，挑離自己門檻最近的那件
-    const margin = (equipment) => equipment.dur - heroMinDurability(settings, equipment.equipped);
+    const margin = (equipment) => equipment.dur - equipmentMinDurability(settings, equipment.equipped, equipment);
     const lowest = worn.reduce((best, equipment) => (margin(equipment) < margin(best) ? equipment : best));
     const hero = state.heroStats.get(lowest.equipped);
     const planned = equipHeroIds(settings).filter((heroId) => equipHeroPlan(settings, heroId)).length;
-    return `換裝：監控 ${worn.length} 件${planned ? `（${planned} 人用個別設定）` : ''}，最危險 ${hero ? hero.name : lowest.equipped} 的${lowest.type} 耐久 ${lowest.dur}，低於 ${heroMinDurability(settings, lowest.equipped)} 換`;
+    return `換裝：監控 ${worn.length} 件${planned ? `（${planned} 人用個別設定）` : ''}，最危險 ${hero ? hero.name : lowest.equipped} 的${lowest.type} 耐久 ${lowest.dur}，低於 ${equipmentMinDurability(settings, lowest.equipped, lowest)} 換`;
   }
 
   function findWornEquipmentNeedingSwap(settings) {
@@ -6335,7 +6356,7 @@
       state.equipments.find(
         (equipment) =>
           isMonitoredEquipment(settings, equipment) &&
-          equipment.dur < heroMinDurability(settings, equipment.equipped) &&
+          equipment.dur < equipmentMinDurability(settings, equipment.equipped, equipment) &&
           !state.equipApiSkipped.has(equipment.id)
       ) || null
     );
@@ -6385,8 +6406,7 @@
     const heroId = worn.equipped;
     const plan = equipHeroPlan(settings, heroId);
     const part = plan && equipPartOf(worn.type);
-    const minimum = heroMinDurability(settings, heroId);
-    if (part) return pickIdleEquipment(settings, plan, part, minimum, worn.type);
+    if (part) return pickIdleEquipment(settings, plan, part, heroId, worn.type);
     const blocked = noAutoEquipIds();
     return state.equipments
       .filter((equipment) => isReplacementCandidate(settings, worn, equipment, blocked))
@@ -6397,7 +6417,7 @@
   function isReplacementCandidate(settings, worn, equipment, blocked = noAutoEquipIds()) {
     const heroId = worn.equipped;
     if (equipment.equipped !== null || equipment.state !== 0 || blocked.has(equipment.id)) return false;
-    if (equipment.dur < heroMinDurability(settings, heroId)) return false;
+    if (equipment.dur < equipmentMinDurability(settings, heroId, equipment)) return false;
     const plan = equipHeroPlan(settings, heroId);
     const part = plan && equipPartOf(worn.type);
     if (part) return equipPartTypes(plan, part, worn.type).includes(equipment.type) && isAllowedForPart(settings, plan, part, equipment);
@@ -6413,7 +6433,6 @@
     const heroId = worn.equipped;
     const plan = equipHeroPlan(settings, heroId);
     const part = equipPartOf(worn.type);
-    const minimum = heroMinDurability(settings, heroId);
     const blocked = noAutoEquipIds();
     const types = plan && part ? equipPartTypes(plan, part, worn.type) : [worn.type];
     const reasonOf = (equipment) => {
@@ -6430,6 +6449,7 @@
         if (settings.equipApiSameName && equipment.name !== worn.name) return '有勾「只換同名」';
         if (!(settings.equipRuleEnabled ? matchesEquipRule(settings, equipment) : isAllowedEquipment(equipAllowedNames(settings), equipment))) return settings.equipRuleEnabled ? '不符合換裝條件（屬性／重量／附魔）' : '不在勾選清單裡';
       }
+      const minimum = equipmentMinDurability(settings, heroId, equipment);
       if (equipment.dur < minimum) return `耐久 ${equipment.dur} 低於門檻 ${minimum}`;
       return '看起來可以用（請回報）';
     };
@@ -6452,7 +6472,7 @@
       .join('；');
   }
 
-  function pickIdleEquipment(settings, plan, part, minimum, preferredType) {
+  function pickIdleEquipment(settings, plan, part, heroId, preferredType) {
     const types = equipPartTypes(plan, part, preferredType);
     const rank = (equipment) => [equipment.type === preferredType ? 1 : 0, equipment.dur];
     const blocked = noAutoEquipIds();
@@ -6464,7 +6484,7 @@
           !blocked.has(equipment.id) &&
           types.includes(equipment.type) &&
           isAllowedForPart(settings, plan, part, equipment) &&
-          equipment.dur >= minimum
+          equipment.dur >= equipmentMinDurability(settings, heroId, equipment)
       )
       .reduce((best, equipment) => {
         if (!best) return equipment;
@@ -6500,7 +6520,7 @@
         if (worn >= expectedPartCount(plan, part, heroId)) continue;
         // 雙持少一把：照另一手拿的類型補（兩把太刀的就補太刀）
         const held = state.equipments.find((equipment) => equipment.equipped === heroId && part.types.includes(equipment.type));
-        return { heroId, part, worn, replacement: pickIdleEquipment(settings, plan, part, heroMinDurability(settings, heroId), held ? held.type : null) };
+        return { heroId, part, worn, replacement: pickIdleEquipment(settings, plan, part, heroId, held ? held.type : null) };
       }
     }
     return null;
@@ -10228,9 +10248,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           issues.push({ text: `${hero.name} ${condition.level}${condition.name}${gaveUp ? '（解不掉，去看看）' : ''}`, serious: gaveUp || !supplying });
         });
       const checked = equipHeroIds(settings).includes(hero.id);
-      const minimum = checked ? heroMinDurability(settings, hero.id) : 1;
       state.equipments
-        .filter((equipment) => equipment.equipped === hero.id && equipment.dur < minimum)
+        .filter((equipment) => equipment.equipped === hero.id && equipment.dur < (checked ? equipmentMinDurability(settings, hero.id, equipment) : 1))
         .forEach((equipment) => {
           const why = manualEquipBlocker(settings, equipment, checked);
           issues.push({ text: `${hero.name} ${equipment.type}耐久 ${equipment.dur}（${why || '沒換掉'}）`, serious: Boolean(why) || !supplying });
@@ -17839,7 +17858,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const group = groupOf(equipment.type || '?');
       const forecast = track[equipment.id] ? durabilityForecast(track[equipment.id]) : null;
       group.worn.push({ equipment, average: forecast ? forecast.average : null });
-      const minimum = autoSwapped(equipment) ? heroMinDurability(settings, Number(equipment.equipped)) : 0;
+      const minimum = autoSwapped(equipment) ? equipmentMinDurability(settings, Number(equipment.equipped), equipment) : 0;
       group.usable += Math.max(0, Number(equipment.dur) - minimum);
     });
     if (known) {
@@ -17854,7 +17873,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           // 先給穿同類型的人；個別設定允許別類型（例如雙持的副手）的排後面，不然同類型的會被別類搶走
           const canUse = (piece) => isReplacementCandidate(settings, piece, equipment, blocked);
           const wearer = swappable.find((piece) => piece.type === equipment.type && canUse(piece)) || swappable.find(canUse);
-          if (wearer) target = { group: groups.get(wearer.type || '?'), minimum: heroMinDurability(settings, wearer.equipped) };
+          if (wearer) target = { group: groups.get(wearer.type || '?'), minimum: equipmentMinDurability(settings, wearer.equipped, equipment) };
           else if (manualTypes.has(equipment.type)) target = { group: groups.get(equipment.type), minimum: 0 };
           if (!target || Number(equipment.dur) <= target.minimum) {
             if (groups.has(equipment.type)) groups.get(equipment.type).skipped.push({ equipment, reason: target ? `耐久 ${equipment.dur} 不到門檻 ${target.minimum}` : '' });
