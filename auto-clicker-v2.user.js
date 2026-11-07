@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.51
+// @version      5.52
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -6509,8 +6509,22 @@
     return `fill:${heroId}:${part.id}`;
   }
 
-  // 開了「空著就補上」的角色，部位件數不夠就找一件閒置的穿上；找不到也回傳，讓換裝流程記一次就不再找
+  // 補不上的部位以前要等到下一輪休息或重新開始才再找，自動打怪一直打就一直空著（中途做好、買到的也不會補）：
+  // 隔幾分鐘重找一次
+  const FILL_RETRY_MILLISECONDS = 5 * 60000;
+  let fillSkipClearedAt = Date.now();
+  // 穿上去件數沒變＝這個部位穿不了更多，重找只會一直換來換去，不重找
+  const fillStuckKeys = new Set();
+
+  function retrySkippedFills() {
+    if (Date.now() - fillSkipClearedAt < FILL_RETRY_MILLISECONDS) return;
+    fillSkipClearedAt = Date.now();
+    [...state.equipApiSkipped].filter((key) => String(key).startsWith('fill:') && !fillStuckKeys.has(key)).forEach((key) => state.equipApiSkipped.delete(key));
+  }
+
+  // 開了「空著就補上」的角色，部位件數不夠就找一件閒置的穿上；找不到也回傳，讓換裝流程記一次，過幾分鐘再找
   function findMissingEquipment(settings) {
+    retrySkippedFills();
     for (const heroId of equipHeroIds(settings)) {
       const plan = equipHeroPlan(settings, heroId);
       if (!plan || !plan.fill || !state.heroStats.has(heroId)) continue;
@@ -6650,7 +6664,7 @@
     const who = `[補裝] ${hero ? hero.name : heroId} 的${part.name}`;
     state.equipApiSkipped.add(fillKey(heroId, part));
     if (!replacement) {
-      setStatus(`${who}：空著但沒有可穿的閒置裝備，本輪不再補`);
+      setStatus(`${who}：空著但沒有可穿的閒置裝備，5 分鐘後再找`);
       logItemUse(`${who} ✗ 空著但沒有可穿的閒置裝備`);
       finish();
       return;
@@ -6662,7 +6676,7 @@
     if (cancelled()) return;
     if (problem) {
       state.equipmentsAt = 0;
-      setStatus(`${who}：${problem}，本輪不再補`);
+      setStatus(`${who}：${problem}，5 分鐘後再試`);
       logItemUse(`${who} ✗ ${problem}`);
       finish();
       return;
@@ -6672,6 +6686,7 @@
       ? `${who} → 補上「${replacement.name}」(耐久 ${replacement.dur}/${replacement.fullDur})`
       : `${who} → 穿上「${replacement.name}」但件數沒變（遊戲換下了同部位的舊裝備），本輪不再補`;
     if (now > worn) state.equipApiSkipped.delete(fillKey(heroId, part));
+    else fillStuckKeys.add(fillKey(heroId, part));
     setStatus(message);
     logItemUse(message);
     finish();
