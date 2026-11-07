@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.52
+// @version      5.53
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -6582,10 +6582,10 @@
         return;
       }
       if (!manual && settings.equipApiPauseWhenEmpty) {
-        pauseWithAlert(`${reason}，已暫停`);
+        pauseWithAlert(`${reason}，已暫停（${detail}）`);
         return;
       }
-      setStatus(`${who}：沒有可替換的閒置裝備，本輪不再換`);
+      setStatus(`${who}：沒有可替換的閒置裝備，本輪不再換（${detail}）`);
       finish();
       return;
     }
