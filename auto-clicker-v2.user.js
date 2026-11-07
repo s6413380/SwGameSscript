@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.47
+// @version      5.48
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -85,6 +85,8 @@
   const KEEP_STORED_BIG_STORAGE_KEYS = new Set(STATS_BIG_STORAGE_KEYS);
   // 自己的鍛造紀錄沒辦法重抓：資料庫開好之前讀到的是空的，這段時間寫進來的只有新的幾件，開好時要跟資料庫裡的合併（同一件以新的為準）
   const MERGED_BIG_STORAGE_KEYS = new Set(['autoClickerV2ForgedEquipments', 'autoClickerV2ForgeMaterials']);
+  // 成長紀錄一隻角色好幾筆（含雲端分享進來的別人的角色），上萬筆加起來把 localStorage 擠滿：整組前綴都搬過去
+  const GROWTH_STORAGE_PREFIX = 'autoClickerV2Growth:';
   const bigStorage = {
     values: new Map(),
     db: null,
@@ -3020,7 +3022,15 @@
     } catch {
       storage = 'localStorage 讀不到';
     }
-    const bigSizes = [...bigStorage.values.entries()].map(([key, raw]) => [key, (raw || '').length]).sort((first, second) => second[1] - first[1]);
+    const grouped = new Map();
+    bigStorage.values.forEach((raw, key) => {
+      const group = key.startsWith(GROWTH_STORAGE_PREFIX) ? `${GROWTH_STORAGE_PREFIX}*` : key;
+      const [size, count] = grouped.get(group) || [0, 0];
+      grouped.set(group, [size + (raw || '').length, count + 1]);
+    });
+    const bigSizes = [...grouped.entries()]
+      .map(([key, [size, count]]) => [count > 1 ? `${key}（${count} 筆）` : key, size])
+      .sort((first, second) => second[1] - first[1]);
     if (bigSizes.length) storage += `\nIndexedDB（不佔 localStorage）：\n${bigSizes.map(([key, size]) => `  ${round(size / 1024)} KB ${key}`).join('\n')}`;
     return [
       `v${SCRIPT_VERSION} ${location.pathname} 統計 ${Math.round(seconds)} 秒（${time(perfProbe.since)} 起）`,
@@ -12201,7 +12211,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 角色成長值紀錄：原本是獨立的「我的攻略組 角色成長值紀錄 7.2」，併進來共用同一個 fetch 攔截。
   // 這支是 @grant none，沒有 GM_setValue，改存 localStorage；舊資料從 Tampermonkey 的儲存空間貼到「紀錄」頁匯入
   function createGrowthTracker() {
-    const STORAGE_PREFIX = 'autoClickerV2Growth:';
+    const STORAGE_PREFIX = GROWTH_STORAGE_PREFIX;
     const STAT_MAP = {
       '力量': 'str', '韌性': 'tou', '敏捷': 'agi', '技巧': 'tec',
       '智力': 'int', '幸運': 'lck', '狩獵': 'hunt', '鍛造': 'forge',
@@ -12247,7 +12257,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
     function getValue(key, fallback) {
       try {
-        const raw = localStorage.getItem(STORAGE_PREFIX + key);
+        const raw = readGrowthRaw(STORAGE_PREFIX + key);
         return raw === null ? fallback : JSON.parse(raw);
       } catch {
         return fallback;
@@ -12256,7 +12266,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
     function setValue(key, value) {
       try {
-        localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(value));
+        writeGrowthRaw(STORAGE_PREFIX + key, JSON.stringify(value));
       } catch {
         // 存不進去（空間滿了）就只影響紀錄，不影響掛機
       }
@@ -12266,14 +12276,15 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     // （遊戲切角色時不一定會重新呼叫 API，可能直接用快取）
     let snapshotCache = null;
     function getSnapshots() {
-      if (!snapshotCache) {
-        snapshotCache = new Map();
-        for (const id of getValue('hero_index', [])) {
-          const snap = getValue(`hero_${id}_snapshot`, null);
-          if (snap) snapshotCache.set(id, snap);
-        }
+      if (snapshotCache) return snapshotCache;
+      const snaps = new Map();
+      for (const id of getValue('hero_index', [])) {
+        const snap = getValue(`hero_${id}_snapshot`, null);
+        if (snap) snaps.set(id, snap);
       }
-      return snapshotCache;
+      // 資料庫還沒開好時讀到的是空的，先不留
+      if (!bigStorage.ready || bigStorage.db || bigStorage.failed) snapshotCache = snaps;
+      return snaps;
     }
 
     function saveSnapshot(heroId, snap) {
@@ -13016,11 +13027,11 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
     return {
       heroIdFromUrl,
-      processHeroData,
+      processHeroData: afterBigStorageReady(processHeroData),
       importStorage,
       observe,
-      noticeTeamLevels,
-      rememberHeroList,
+      noticeTeamLevels: afterBigStorageReady(noticeTeamLevels),
+      rememberHeroList: afterBigStorageReady(rememberHeroList),
       cardSummaries,
       comparePlaces,
       placeSummaries,
@@ -14352,6 +14363,70 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }
   }
 
+  function growthLocalKeys() {
+    try {
+      return Object.keys(localStorage).filter((key) => key.startsWith(GROWTH_STORAGE_PREFIX));
+    } catch {
+      return [];
+    }
+  }
+
+  // localStorage 裡還有的成長紀錄比資料庫新（舊版分頁、資料庫還沒開好時寫的）；
+  // 但舊版分頁在搬走之後讀到的是空的，寫回來的升級紀錄、角色索引可能只剩一兩筆：紀錄取比較長的、索引取聯集
+  function mergeGrowthValue(key, stored, local) {
+    if (typeof stored !== 'string') return local;
+    try {
+      const older = JSON.parse(stored);
+      const newer = JSON.parse(local);
+      if (!Array.isArray(older) || !Array.isArray(newer)) return local;
+      if (key.endsWith('_history')) return newer.length >= older.length ? local : stored;
+      if (key.endsWith('hero_index')) return JSON.stringify([...new Set([...older, ...newer].map(String))]);
+      return local;
+    } catch {
+      return local;
+    }
+  }
+
+  function loadGrowthStorage(store) {
+    const cursor = store.openCursor(IDBKeyRange.bound(GROWTH_STORAGE_PREFIX, `${GROWTH_STORAGE_PREFIX}\uffff`));
+    cursor.onsuccess = () => {
+      const entry = cursor.result;
+      if (entry) {
+        if (typeof entry.value === 'string') bigStorage.values.set(entry.key, entry.value);
+        entry.continue();
+        return;
+      }
+      growthLocalKeys().forEach((key) => {
+        const local = localStorage.getItem(key);
+        if (local === null) return;
+        const value = mergeGrowthValue(key, bigStorage.values.get(key), local);
+        if (value === bigStorage.values.get(key)) return;
+        bigStorage.values.set(key, value);
+        store.put(value, key);
+      });
+    };
+  }
+
+  // 成長紀錄的讀寫：資料庫開好之後都在記憶體＋資料庫；開不了資料庫就照舊用 localStorage
+  function readGrowthRaw(key) {
+    if (bigStorage.db) return bigStorage.values.has(key) ? bigStorage.values.get(key) : null;
+    return localStorage.getItem(key);
+  }
+
+  function writeGrowthRaw(key, raw) {
+    if (bigStorage.db) writeBigStorage(key, raw);
+    else localStorage.setItem(key, raw);
+  }
+
+  // 會寫成長紀錄的動作等資料庫開好才做：開好之前讀到的是空的，寫下去會蓋掉原本的紀錄
+  function afterBigStorageReady(action) {
+    return (...args) => {
+      if (!bigStorage.ready || bigStorage.db || bigStorage.failed) return action(...args);
+      bigStorage.ready.then(() => action(...args));
+      return undefined;
+    };
+  }
+
   // 開資料庫，把舊版放在 localStorage 的大資料搬過去，搬完才從 localStorage 刪掉
   function openBigStorage() {
     bigStorage.ready = new Promise((resolve) => {
@@ -14398,8 +14473,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
             if (value !== undefined && value !== get.result) store.put(value, key);
           };
         });
+        loadGrowthStorage(store);
         transaction.oncomplete = () => {
           BIG_STORAGE_KEYS.forEach((key) => localStorage.removeItem(key));
+          growthLocalKeys().forEach((key) => localStorage.removeItem(key));
           bigStorage.db = db;
           resolve();
         };
@@ -14409,7 +14486,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     if (bigStorage.channel) {
       bigStorage.channel.onmessage = (event) => {
         const key = event.data && event.data.key;
-        if (!bigStorage.db || !BIG_STORAGE_KEYS.has(key)) return;
+        if (!bigStorage.db || !(BIG_STORAGE_KEYS.has(key) || String(key).startsWith(GROWTH_STORAGE_PREFIX))) return;
         const get = bigStorage.db.transaction('kv').objectStore('kv').get(key);
         get.onsuccess = () => {
           if (typeof get.result === 'string') bigStorage.values.set(key, get.result);
