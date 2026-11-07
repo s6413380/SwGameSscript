@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.46
+// @version      5.47
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -20786,7 +20786,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return new Set(foremen.map((foreman) => foremanParkedSite(data, foreman)).filter(Boolean));
   }
 
-  // afterSite(collectedHeroes)：收完一個地點馬上呼叫（自動挖礦用來讓工頭掛機那裡的人直接再進去挖）
+  // afterSite(collectedHeroes)：有工頭掛機的地點收完馬上呼叫（自動挖礦用來讓那裡的人直接再進去挖）
   async function collectMiningSites(settings, targets, data, opened, { foremen = [], byId = null, afterSite = null } = {}) {
     const done = [];
     let sites = [...new Set(targets.map((hero) => Number(hero.actionTarget) || 0))];
@@ -20798,13 +20798,25 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const group = targets.filter((hero) => (Number(hero.actionTarget) || 0) === site);
       const siteName = MINING_SITES[site] || '不明地點';
       let sent = [];
-      const here = crew.filter((foreman) => foremanParkedSite(data, foreman) === site);
-      if (here.length && site) {
-        // 沒在這裡掛機的工頭不叫進來：多等 3 分鐘不划算，沒有工頭的地點再一起帶
-        sent = here;
-        const left = Math.max(...sent.map((foreman) => (foremanRecord(data, foreman).at || 0) + MINING_MIN_MINUTES * 60000 - Date.now()));
-        if (left > 0) await wait(left + randomGap(3000, 10000));
-        miningLog(`工頭 ${foremanNames(sent)} 已在${siteName}掛機，直接收這裡的 ${group.length} 人`);
+      const here = site ? crew.filter((foreman) => foremanParkedSite(data, foreman) === site) : [];
+      if (here.length) {
+        // 其他工頭先進來接手，再收回在這裡掛機的工頭（他早就滿 3 分鐘），這裡的人收完馬上再進去挖；
+        // 之後全部工頭一起去下一個地點，一輪收完 parkForeman 再讓他回來掛機
+        const mobile = crew.filter((foreman) => !foremanParkedSite(data, foreman));
+        const joined = mobile.length ? await sendForemen(settings, mobile, data, opened, site, done) : [];
+        crew = crew.filter((foreman) => !mobile.includes(foreman) || joined.includes(foreman));
+        if (joined.length) {
+          miningLog(`工頭 ${foremanNames(joined)} 進${siteName}，收回在這裡掛機的 ${foremanNames(here)}`);
+          const back = await collectForemen(settings, here, data, opened, '請手動收，放太久會死');
+          crew = [...crew.filter((foreman) => !here.includes(foreman)), ...back];
+          sent = joined;
+        } else {
+          // 沒人能接手：掛機的工頭顧到這裡的人收完才收回來
+          sent = here;
+          const left = Math.max(...sent.map((foreman) => (foremanRecord(data, foreman).at || 0) + MINING_MIN_MINUTES * 60000 - Date.now()));
+          if (left > 0) await wait(left + randomGap(3000, 10000));
+        }
+        miningLog(`工頭 ${foremanNames(sent)} 在${siteName}，收這裡的 ${group.length} 人`);
       } else if (crew.length && site) {
         // 掛機地點已經收完（或那裡沒人要收）的工頭收回來一起帶；後面還要收的地點的工頭留在原地
         const pending = new Set(sites.slice(siteIndex));
@@ -20842,12 +20854,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           }
         }
         if (collected.length) done.push(`${siteName}${sent.length ? `（有工頭 ${sent.length} 人）` : ''}收 ${collected.join('、')}`);
-        if (afterSite && collected.length) await afterSite(group.filter((hero) => collected.includes(hero.name)));
+        if (afterSite && here.length && collected.length) await afterSite(group.filter((hero) => collected.includes(hero.name)));
       } finally {
-        // 在這裡掛機的工頭留著繼續掛機；後面沒工頭的地點要用到才收回來帶過去
-        const stayParked = sent.length > 0 && sent === here;
         // 工頭放太久會死：這個地點收到一半出錯也要收回來
-        if (sent.length && !stayParked) {
+        if (sent.length) {
           const back = await collectForemen(settings, sent, data, opened, '請手動收，放太久會死', false);
           crew = [...crew.filter((foreman) => !sent.includes(foreman)), ...back];
         }
@@ -21508,11 +21518,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const startedEarly = new Set();
       // 工頭掛機的地點收完的人，不等其他地點收完就直接再進去挖
       const afterSite = async (collectedHeroes) => {
-        const parkedSites = parkedForemanSites(data, foremen);
-        if (!parkedSites.size) return;
         for (const collectedHero of collectedHeroes) {
           const hero = byId.get(collectedHero.id);
-          if (!hero || !parkedSites.has(Number(collectedHero.actionTarget))) continue;
+          if (!hero) continue;
           try {
             actions.push(...(await miningHeroStep(settings, hero, plans, data, Date.now(), waits, opened, roundHours)));
             startedEarly.add(hero.id);
@@ -21786,7 +21794,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           return `<span style="display:inline-block;margin:1px 4px 1px 0;padding:0 2px 0 7px;border-radius:9px;background:#3a3420;color:#facc15">${escapeHtml(hero ? hero.name : `#${id}`)}<button data-mining-foreman-remove="${id}" title="不當工頭" style="margin-left:3px;padding:0 5px;border:0;background:none;color:#facc15;cursor:pointer">✕</button></span>`;
         })
         .join('')}</div>` : ''}
-      <div class="hint" style="margin-top:0">收礦時一個地點一個地點收：所有工頭一起先進那個地點 3 分鐘，把那裡的人全部收完（不管挖了多久）就收回工頭，再換下一個地點。工頭可以設好幾個，不能進場的（打怪、鍛造、異常…）那次就不帶；工頭不算挖礦角色。<br>每個工頭的「平時」在下面工頭那一列各自選。平時在某地掛機：沒事時待在那裡；收礦時有工頭掛機的地點先收（工頭本來就在，不用等），那裡的人馬上再進去挖；沒有工頭掛機的地點，由其他工頭一起帶進去（已經收完的地點的掛機工頭也會被叫過來），最後各自回去掛機；掛太久（超過收礦間隔）也會收回來再進去。<br>平時修練：沒事時去修練，要收礦才結束修練帶進礦場，收完再回去修練</div>`;
+      <div class="hint" style="margin-top:0">收礦時一個地點一個地點收：所有工頭一起先進那個地點 3 分鐘，把那裡的人全部收完（不管挖了多久）就收回工頭，再換下一個地點。工頭可以設好幾個，不能進場的（打怪、鍛造、異常…）那次就不帶；工頭不算挖礦角色。<br>每個工頭的「平時」在下面工頭那一列各自選。平時在某地掛機：沒事時待在那裡；收礦時有工頭掛機的地點先收：其他工頭先進去接手、收回掛機的工頭，再收那裡的人（不用等 3 分鐘），收完馬上再進去挖；接著全部工頭一起去其他地點，一輪收完才各自回去掛機；掛太久（超過收礦間隔）也會收回來再進去。<br>平時修練：沒事時去修練，要收礦才結束修練帶進礦場，收完再回去修練</div>`;
     box.innerHTML = data.heroes.length
       ? foremanRow + data.heroes
           .slice()
