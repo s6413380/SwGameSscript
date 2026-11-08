@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.55
+// @version      5.56
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -12005,6 +12005,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const isScratchCard = !growthOnly && SCRATCH_CARD_PATTERN.test(url);
       const marketGoodsMatch = !growthOnly && url.match(MARKET_GOODS_PATTERN);
       const reportDetailMatch = !growthOnly && REPORT_DETAIL_PATTERN.test(url) ? url.match(REPORT_DETAIL_PATTERN) : null;
+      const reportListMatch = !growthOnly ? REPORT_LIST_PATTERN.exec(url) : null;
       const isCardMarket = !growthOnly && (MARKET_HEROES_PATTERN.test(url) || RELEASED_MARKET_PATTERN.test(url));
       const isOtherSite = /^https?:/i.test(url) && !url.startsWith(location.origin);
       const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
@@ -12115,6 +12116,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
             if (response.ok && ownTradesMatch) noticeOwnTrades(ownTradesMatch[1], parseJsonText(responseText));
             if (response.ok && isSaleAction && readSettingsFromPanel().marketSalesEnabled) noteSaleAction(url);
             if (response.ok && reportDetailMatch && method === 'GET') noticeReportDetail(Number(reportDetailMatch[1]), parseJsonText(responseText));
+            if (response.ok && reportListMatch && method === 'GET') noticeReportList(reportListMatch[1], parseJsonText(responseText));
             if (response.ok && method === 'POST' && PVP_ATTACK_PATTERN.test(url)) {
               const data = parseJsonText(responseText);
               if (data) recordLootLedger('pvp', data.report);
@@ -18239,6 +18241,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     ['action', '挖礦伐木', 'lootSourceAction'],
   ];
   const REPORT_DETAIL_PATTERN = /\/api\/reports\/(\d+)(?:[?#]|$)/;
+  const REPORT_LIST_PATTERN = /\/api\/reports\?(?:[^#]*&)?type=(\w+)/;
   const PVP_ATTACK_PATTERN = /\/api\/users\/\d+\/attack(?:[?#]|$)/;
   const ACTION_COMPLETE_PATTERN = /\/api\/heroes\/\d+\/completeAction(?:[?#]|$)/;
   const reportLootSeen = new Set();
@@ -18350,6 +18353,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   const pageReport = { hunt: null, detail: {}, signature: '', showGame: false, open: { loot: true, battle: true, log: true }, openMembers: new Set(), current: null, history: [], viewIndex: 0 };
   // 狩獵頁可以往回翻：這個分頁打過的最近幾場（新的在前），加上遊戲自己存的最近 5 場
   const HUNT_REPORT_HISTORY_LIMIT = 30;
+  // 戰報詳情頁的上一則／下一則：照遊戲讀到的戰報列表（狩獵、塔、攻擊、防守、Boss 各一份）排
+  const reportLists = {};
+  let reportListFetched = false;
   // 遊戲戰報每行的樣式名 → 顏色（跟遊戲一樣）
   const REPORT_COLORS = {
     default: '#d6d3d1', info: '#67e8f9', exp: '#14b8a6', subInfo: '#fed7aa', sub: '#78716c', skill: '#5eead4',
@@ -18488,6 +18494,54 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       .then(() => (button.textContent = '已複製'))
       .catch(() => (button.textContent = '瀏覽器不讓複製'))
       .finally(() => setTimeout(() => (button.textContent = '複製符合的行'), 1500));
+  }
+
+  function noticeReportList(type, data) {
+    const reports = data && Array.isArray(data.reports) ? data.reports : null;
+    if (!reports) return;
+    reportLists[type] = reports.map((report) => Number(report.id)).filter(Boolean);
+    if (/^\/reports\/\d+/.test(location.pathname)) renderPageReport();
+  }
+
+  // 新的在前：「上一則」＝列表下一個（比較舊），「下一則」＝列表上一個（比較新）
+  function reportNeighbors(id) {
+    for (const [type, ids] of Object.entries(reportLists)) {
+      const index = ids.indexOf(id);
+      if (index >= 0) return { type, index, total: ids.length, older: ids[index + 1] || 0, newer: index > 0 ? ids[index - 1] : 0 };
+    }
+    return null;
+  }
+
+  // 直接打開詳情頁（沒先經過列表）就讀一次狩獵戰報列表，跟遊戲列表頁讀的一樣
+  function ensureReportList(id) {
+    if (reportNeighbors(id) || reportListFetched) return;
+    reportListFetched = true;
+    requestGameApi('/api/reports?type=hunt').then((data) => noticeReportList('hunt', data)).catch(() => {});
+  }
+
+  const REPORT_TYPE_NAMES = { hunt: '狩獵', tower: '塔', attack: '攻擊', defend: '防守', boss: 'Boss' };
+
+  function reportDetailNavHtml(id) {
+    const neighbors = reportNeighbors(id);
+    if (!neighbors) return '';
+    const button = (target, label) =>
+      `<button type="button" data-ac-detail-nav="${target}" ${target ? '' : 'disabled'} style="padding:1px 10px;border:1px solid #57534e;border-radius:4px;background:#292524;color:${target ? '#d6d3d1' : '#57534e'};cursor:${target ? 'pointer' : 'default'}">${label}</button>`;
+    return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:2px 0 4px">
+        ${button(neighbors.older, '◀ 上一則')}
+        <span style="color:#a8a29e">${REPORT_TYPE_NAMES[neighbors.type] || neighbors.type}戰報 第 ${neighbors.index + 1}／${neighbors.total} 則（1＝最新）</span>
+        ${button(neighbors.newer, '下一則 ▶')}
+      </div>`;
+  }
+
+  function goToReportDetail(id) {
+    const link = [...document.querySelectorAll('a[href]')].find((anchor) => !anchor.closest(`#${PAGE_REPORT_ID}`) && new URL(anchor.href, location.href).pathname === `/reports/${id}`);
+    if (link) {
+      link.click();
+      return;
+    }
+    // 遊戲的路由聽 popstate，改網址就會換頁、自己去讀那一則
+    history.pushState(null, '', `/reports/${id}`);
+    window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
   }
 
   function noticeReportDetail(id, data) {
@@ -18689,6 +18743,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     if (detailMatch) {
       const parts = detailReportParts();
       report = pageReport.detail[Number(detailMatch[1])] || null;
+      ensureReportList(Number(detailMatch[1]));
+      nav = reportDetailNavHtml(Number(detailMatch[1]));
       if (parts) {
         anchor = parts.label;
         hide = [parts.label, parts.messages].filter(Boolean);
@@ -18709,7 +18765,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       if (block && !document.body.contains(anchor)) block.remove();
       return;
     }
-    const signature = `${location.pathname}|${report.id || report.time || ''}|${pageReport.showGame}|${settings.pageReportHideGame}|${nav ? `${pageReport.viewIndex}/${huntReportHistory().length}` : ''}`;
+    const signature = `${location.pathname}|${report.id || report.time || ''}|${pageReport.showGame}|${settings.pageReportHideGame}|${nav}`;
     if (!block || block.nextElementSibling !== anchor) {
       if (block) block.remove();
       block = document.createElement('div');
@@ -18797,6 +18853,13 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       reportFilter.hideOthers = event.target.checked;
       refreshReportLog();
       saveReportFilter();
+    }, true);
+    document.addEventListener('click', (event) => {
+      const button = event.target.closest && event.target.closest(`#${PAGE_REPORT_ID} [data-ac-detail-nav]`);
+      if (!button || button.disabled) return;
+      event.preventDefault();
+      event.stopPropagation();
+      goToReportDetail(Number(button.dataset.acDetailNav));
     }, true);
     document.addEventListener('click', (event) => {
       const button = event.target.closest && event.target.closest(`#${PAGE_REPORT_ID} [data-ac-report-nav]`);
