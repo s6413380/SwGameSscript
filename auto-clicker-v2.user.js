@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.54
+// @version      5.55
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -6308,6 +6308,7 @@
     recordLootLedger('hunt', data.report);
     if (data.report) {
       pageReport.hunt = { report: data.report, at: Date.now() };
+      rememberHuntReport(data.report);
       renderPageReport();
     }
     if (settings.huntStatsEnabled) recordHuntStats(data, requestBody, settings, url);
@@ -18346,7 +18347,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 頁面上的戰報：狩獵頁顯示最新一場，戰報詳情頁顯示那一份。用遊戲回應裡的戰報資料畫，不多發請求
   const PAGE_REPORT_ID = 'ac-page-report';
   const PAGE_HIDDEN_ATTR = 'data-ac-hidden';
-  const pageReport = { hunt: null, detail: {}, signature: '', showGame: false, open: { loot: true, battle: true, log: true }, openMembers: new Set(), current: null };
+  const pageReport = { hunt: null, detail: {}, signature: '', showGame: false, open: { loot: true, battle: true, log: true }, openMembers: new Set(), current: null, history: [], viewIndex: 0 };
+  // 狩獵頁可以往回翻：這個分頁打過的最近幾場（新的在前），加上遊戲自己存的最近 5 場
+  const HUNT_REPORT_HISTORY_LIMIT = 30;
   // 遊戲戰報每行的樣式名 → 顏色（跟遊戲一樣）
   const REPORT_COLORS = {
     default: '#d6d3d1', info: '#67e8f9', exp: '#14b8a6', subInfo: '#fed7aa', sub: '#78716c', skill: '#5eead4',
@@ -18493,6 +18496,50 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     renderPageReport();
   }
 
+  function huntReportKey(report) {
+    return String(report.id || report.time || '');
+  }
+
+  function reportTime(report) {
+    return Date.parse(report.time) || 0;
+  }
+
+  // 收進紀錄（新的在前）；遊戲存的那 5 場也收進來，滾出遊戲的清單之後還翻得到
+  function addHuntReports(reports) {
+    const seen = new Set(pageReport.history.map(huntReportKey));
+    const fresh = reports.filter((report) => report && Array.isArray(report.messages) && !seen.has(huntReportKey(report)) && seen.add(huntReportKey(report)));
+    if (!fresh.length) return 0;
+    pageReport.history = [...pageReport.history, ...fresh].sort((first, second) => reportTime(second) - reportTime(first)).slice(0, HUNT_REPORT_HISTORY_LIMIT);
+    return fresh.length;
+  }
+
+  function rememberHuntReport(report) {
+    // 正在看舊的就停在那一場，不要被新打完的拉回最新
+    const viewing = pageReport.viewIndex > 0 ? pageReport.history[pageReport.viewIndex] : null;
+    addHuntReports([report]);
+    if (viewing) pageReport.viewIndex = Math.max(0, pageReport.history.indexOf(viewing));
+  }
+
+  function huntReportHistory() {
+    const saved = readJsonStorage('huntReports', null);
+    if (Array.isArray(saved)) {
+      const viewing = pageReport.viewIndex > 0 ? pageReport.history[pageReport.viewIndex] : null;
+      if (addHuntReports(saved) && viewing) pageReport.viewIndex = Math.max(0, pageReport.history.indexOf(viewing));
+    }
+    return pageReport.history;
+  }
+
+  function huntReportNavHtml(index, total) {
+    const button = (action, label, disabled) =>
+      `<button type="button" data-ac-report-nav="${action}" ${disabled ? 'disabled' : ''} style="padding:1px 10px;border:1px solid #57534e;border-radius:4px;background:#292524;color:${disabled ? '#57534e' : '#d6d3d1'};cursor:${disabled ? 'default' : 'pointer'}">${label}</button>`;
+    return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:2px 0 4px">
+        ${button('older', '◀ 上一場', index >= total - 1)}
+        <span style="color:${index ? '#fbbf24' : '#a8a29e'}">第 ${index + 1}／${total} 場（${index ? `往前第 ${index} 場` : '最新'}）</span>
+        ${button('newer', '下一場 ▶', index <= 0)}
+        ${index > 1 ? button('latest', '回到最新', false) : ''}
+      </div>`;
+  }
+
   function storedHuntReport() {
     // 剛打開頁面還沒打過：用遊戲自己存的最近幾場戰報
     const saved = readJsonStorage('huntReports', null);
@@ -18580,7 +18627,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       <div style="color:#a8a29e">全隊 傷害 ${formatAmount(totals.damage)}・爆擊 ${percentText(totals.crits, totals.hits)}${totals.healthHealing ? `・回血 ${formatAmount(totals.healthHealing)}` : ''}${totals.controls ? `・控制 ${totals.controls}` : ''}${totals.buffs ? `・增益 ${totals.buffs}` : ''}${totals.cleanses ? `・解除 ${totals.cleanses}` : ''}・擊殺 ${totals.kills}${totals.damageTaken ? `・承受傷害 ${formatAmount(totals.damageTaken)}` : ''}</div>`;
   }
 
-  function pageReportHtml(report, withStatus) {
+  function pageReportHtml(report, withStatus, nav = '') {
     const messages = report.messages.filter((message) => String(message.m || '').trim());
     const loot = parseLoot(messages);
     const money = huntMessageMoney(messages);
@@ -18615,7 +18662,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         <summary style="cursor:pointer;padding:4px 8px;font-weight:bold">${title}<span style="float:right;font-weight:normal;color:#a8a29e">${extra}</span></summary>
         <div style="padding:4px 8px 6px">${body}</div></details>`;
     const battle = pageBattleHtml(members);
-    return `${section('loot', '🎁 本場掉落・狀態', [place, time].filter(Boolean).join('・'), `<div>${lootHtml}</div>${expText ? `<div style="color:#93c5fd">經驗 ${escapeHtml(expText)}</div>` : ''}${moneyText ? `<div style="color:#fcd34d">${escapeHtml(moneyText)}</div>` : ''}${withStatus ? `<div data-ac-status>${teamStatusHtml()}</div>` : ''}`)}
+    return `${nav}${section('loot', '🎁 本場掉落・狀態', [place, time].filter(Boolean).join('・'), `<div>${lootHtml}</div>${expText ? `<div style="color:#93c5fd">經驗 ${escapeHtml(expText)}</div>` : ''}${moneyText ? `<div style="color:#fcd34d">${escapeHtml(moneyText)}</div>` : ''}${withStatus ? `<div data-ac-status>${teamStatusHtml()}</div>` : ''}`)}
       ${battle ? section('battle', '⚔️ 傷害・技能', '點角色看各招式', battle) : ''}
       ${section('log', '📜 戰報內容', `${messages.length} 行 <button type="button" data-ac-toggle-game style="margin-left:6px;padding:0 6px;border:1px solid #57534e;border-radius:4px;background:#292524;color:#d6d3d1">${pageReport.showGame ? '收起原本的' : '顯示原本的'}</button>`, `${tools}<div data-ac-log-body>${reportLogBodyHtml()}</div>`)}`;
   }
@@ -18638,6 +18685,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     let hide = [];
     let report = null;
     let withStatus = false;
+    let nav = '';
     if (detailMatch) {
       const parts = detailReportParts();
       report = pageReport.detail[Number(detailMatch[1])] || null;
@@ -18647,8 +18695,11 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       }
     } else if (/^\/(?:hunt)?$/.test(location.pathname) || location.pathname.startsWith('/hunt')) {
       const area = huntReportArea();
-      report = (pageReport.hunt && pageReport.hunt.report) || storedHuntReport();
+      const history = huntReportHistory();
+      pageReport.viewIndex = Math.max(0, Math.min(pageReport.viewIndex, history.length - 1));
+      report = history[pageReport.viewIndex] || (pageReport.hunt && pageReport.hunt.report) || storedHuntReport();
       withStatus = true;
+      if (history.length > 1) nav = huntReportNavHtml(pageReport.viewIndex, history.length);
       if (area) {
         anchor = area;
         hide = [area];
@@ -18658,7 +18709,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       if (block && !document.body.contains(anchor)) block.remove();
       return;
     }
-    const signature = `${location.pathname}|${report.id || report.time || ''}|${pageReport.showGame}|${settings.pageReportHideGame}`;
+    const signature = `${location.pathname}|${report.id || report.time || ''}|${pageReport.showGame}|${settings.pageReportHideGame}|${nav ? `${pageReport.viewIndex}/${huntReportHistory().length}` : ''}`;
     if (!block || block.nextElementSibling !== anchor) {
       if (block) block.remove();
       block = document.createElement('div');
@@ -18684,7 +18735,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     block.dataset.signature = signature;
     const active = document.activeElement;
     const typing = active && active.matches && active.matches(`#${PAGE_REPORT_ID} [data-ac-search]`) ? active.selectionStart : null;
-    block.innerHTML = pageReportHtml(report, withStatus);
+    block.innerHTML = pageReportHtml(report, withStatus, nav);
     if (typing !== null) {
       const search = block.querySelector('[data-ac-search]');
       search.focus();
@@ -18746,6 +18797,15 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       reportFilter.hideOthers = event.target.checked;
       refreshReportLog();
       saveReportFilter();
+    }, true);
+    document.addEventListener('click', (event) => {
+      const button = event.target.closest && event.target.closest(`#${PAGE_REPORT_ID} [data-ac-report-nav]`);
+      if (!button || button.disabled) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const action = button.dataset.acReportNav;
+      pageReport.viewIndex = action === 'latest' ? 0 : Math.max(0, pageReport.viewIndex + (action === 'older' ? 1 : -1));
+      renderPageReport(true);
     }, true);
     document.addEventListener('click', (event) => {
       if (!event.target.closest || !event.target.closest('[data-ac-toggle-game]')) return;
