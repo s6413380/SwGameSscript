@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.59
+// @version      5.60
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -21167,6 +21167,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const done = [];
     let sites = [...new Set(targets.map((hero) => Number(hero.actionTarget) || 0))];
     let crew = foremen.filter(Boolean);
+    // 掛機的工頭收回來時後面還有地點要收，就先跟著去，全部收完再回原本的地點掛機：{ id, site }
+    const repark = [];
     // 有工頭掛機的地點排前面先收（工頭本來就在，不用再等 3 分鐘）
     const parkedSites = parkedForemanSites(data, crew);
     sites = [...sites.filter((site) => parkedSites.has(site)), ...sites.filter((site) => !parkedSites.has(site))];
@@ -21184,13 +21186,16 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         if (joined.length) {
           miningLog(`工頭 ${foremanNames(joined)} 進${siteName}，收回在這裡掛機的 ${foremanNames(here)}`);
           const back = await collectForemen(settings, here, data, opened, '請手動收，放太久會死');
-          const reparked = await reparkForemen(settings, back, data, opened, site, done);
+          const lastSite = siteIndex === sites.length - 1;
+          const reparked = lastSite ? await reparkForemen(settings, back, data, opened, site, done) : [];
           if (reparked.length) done.push(`工頭 ${foremanNames(reparked)} 收完馬上再進${siteName}掛機`);
+          if (!lastSite) back.forEach((foreman) => repark.push({ id: foreman.id, site }));
           crew = [...crew.filter((foreman) => !here.includes(foreman)), ...back.filter((foreman) => !reparked.includes(foreman))];
           sent = joined;
         } else {
           // 沒人能接手：掛機的工頭顧到這裡的人收完才收回來
           sent = here;
+          here.forEach((foreman) => repark.push({ id: foreman.id, site }));
           const left = Math.max(...sent.map((foreman) => (foremanRecord(data, foreman).at || 0) + MINING_MIN_MINUTES * 60000 - Date.now()));
           if (left > 0) await wait(left + randomGap(3000, 10000));
         }
@@ -21240,6 +21245,12 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           crew = [...crew.filter((foreman) => !sent.includes(foreman)), ...back];
         }
       }
+    }
+    for (const { id, site } of repark) {
+      const foreman = crew.find((item) => item.id === id);
+      if (!foreman) continue;
+      const reparked = await reparkForemen(settings, [foreman], data, opened, site, done);
+      if (reparked.length) done.push(`工頭 ${foreman.name} 跟著收完其他地點，回${MINING_SITES[site] || '不明地點'}掛機`);
     }
     return done;
   }
