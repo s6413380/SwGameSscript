@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.58
+// @version      5.59
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -560,6 +560,7 @@
     cloudUrl: '',
     cloudName: '',
     qualityPickMinMilliseconds: 300,
+    pickLowDurMax: 100,
     qualityPickMaxMilliseconds: 800,
     dashboardEnabled: false,
     // 中繼站總開關：關掉就完全不連（總覽、全體暫停、多開輪流、同步、成長備份、帳號轉移都不會動）；單開也能開著用
@@ -1479,6 +1480,7 @@
       <div class="hint">只處理畫面上這一頁；已經是目標狀態的不會再點</div>
       <div class="row"><button data-action="pick-sell-marked" style="font-weight:bold">勾選 💰 要賣的</button><span data-role="sell-marked-count" class="hint" style="flex:1"></span></div>
       <div class="hint">自動鍛造用途選「賣」的角色做出來的裝備會自動標 💰（背包表格名稱前也看得到）；在裝備詳細資料也能手動按「💰 標記要賣」。勾好再用遊戲的鍊金或販賣，鎖定的不會勾</div>
+      <div class="row"><button data-action="pick-low-dur" style="font-weight:bold">勾選耐久低於</button>${numberInput('pickLowDurMax', 'min="1" style="flex:none;width:70px"')}<span class="hint" style="flex:1">的裝備（沒鎖定、沒穿在身上）</span></div>
       <fieldset class="group">
         <legend>背包表格</legend>
         <label class="row"><input data-field="itemTableSortEnabled" type="checkbox" style="flex:none;width:auto"> 點表頭排序（再點一次反向；品質照品質高低）</label>
@@ -11805,6 +11807,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       pickItemsByQuality(readSettingsFromPanel());
     } else if (action === 'pick-sell-marked') {
       pickSellMarked(readSettingsFromPanel());
+    } else if (action === 'pick-low-dur') {
+      pickLowDurability(readSettingsFromPanel());
     } else if (action === 'quality-pick-stop') {
       if (qualityPick.running) qualityPick.runId++;
     } else if (action === 'growth-sync-now') {
@@ -13404,22 +13408,66 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         setStatus(sellMarkedIds().size ? '這一頁沒有還沒勾的 💰 要賣裝備（換頁再按一次）' : '還沒有標記 💰 要賣的裝備');
         return;
       }
-      const minimum = Math.min(settings.qualityPickMinMilliseconds, settings.qualityPickMaxMilliseconds);
-      const maximum = Math.max(settings.qualityPickMinMilliseconds, settings.qualityPickMaxMilliseconds);
-      let done = 0;
-      for (const { checkbox } of targets) {
-        if (runId !== qualityPick.runId) {
-          setStatus(`已停止勾選，完成 ${done}／${targets.length} 個`);
-          return;
-        }
-        if (!checkbox.isConnected || isBoxChecked(checkbox)) continue;
-        if (done) await wait(randomGap(minimum, maximum));
-        if (runId !== qualityPick.runId || isBoxChecked(checkbox)) continue;
-        checkbox.click();
-        done++;
-        setStatus(`勾選 💰 要賣的 ${done}／${targets.length}`);
+      const done = await clickPickTargets(settings, runId, targets, '💰 要賣的');
+      if (done !== null) setStatus(`已勾選 ${done} 件 💰 要賣的，用遊戲的鍊金或販賣就好`);
+    } catch (error) {
+      setStatus(`勾選失敗（${error.message}）`);
+    } finally {
+      qualityPick.running = false;
+    }
+  }
+
+  // 中途按停止回傳 null
+  async function clickPickTargets(settings, runId, targets, label) {
+    const minimum = Math.min(settings.qualityPickMinMilliseconds, settings.qualityPickMaxMilliseconds);
+    const maximum = Math.max(settings.qualityPickMinMilliseconds, settings.qualityPickMaxMilliseconds);
+    let done = 0;
+    for (const { checkbox } of targets) {
+      if (runId !== qualityPick.runId) {
+        setStatus(`已停止勾選，完成 ${done}／${targets.length} 個`);
+        return null;
       }
-      setStatus(`已勾選 ${done} 件 💰 要賣的，用遊戲的鍊金或販賣就好`);
+      if (!checkbox.isConnected || isBoxChecked(checkbox)) continue;
+      if (done) await wait(randomGap(minimum, maximum));
+      if (runId !== qualityPick.runId || isBoxChecked(checkbox)) continue;
+      checkbox.click();
+      done++;
+      setStatus(`勾選 ${label} ${done}／${targets.length}`);
+    }
+    return done;
+  }
+
+  // 單獨的「裝備鎖定」腳本鎖的也算，免得勾去賣掉
+  const EQUIP_LOCK_SCRIPT_KEY = 'equipLockIds';
+
+  async function pickLowDurability(settings) {
+    if (qualityPick.running) return;
+    const limit = Number(settings.pickLowDurMax) || 0;
+    if (limit <= 0) {
+      setStatus('耐久門檻要大於 0');
+      return;
+    }
+    const runId = ++qualityPick.runId;
+    qualityPick.running = true;
+    try {
+      const rows = await scanItemRows();
+      if (!rows.length) {
+        setStatus(`畫面上找不到物品，請先切到遊戲「物品」頁（${rows.diagnosis}）`);
+        return;
+      }
+      const locked = new Set([...lockedEquipmentIds(), ...readJsonStorage(EQUIP_LOCK_SCRIPT_KEY, []).map(Number)]);
+      const byId = new Map(rows.equipments.map((equipment) => [Number(equipment.id), equipment]));
+      const targets = rows.filter((row) => {
+        const id = rowEquipmentId(row.element);
+        const equipment = byId.get(id);
+        return equipment && !isBoxChecked(row.checkbox) && !locked.has(id) && !equipment.equipped && Number(equipment.dur) < limit;
+      });
+      if (!targets.length) {
+        setStatus(`這一頁沒有還沒勾、耐久低於 ${limit} 又沒鎖定的裝備（換頁再按一次）`);
+        return;
+      }
+      const done = await clickPickTargets(settings, runId, targets, `耐久低於 ${limit} 的`);
+      if (done !== null) setStatus(`已勾選 ${done} 件耐久低於 ${limit} 的裝備`);
     } catch (error) {
       setStatus(`勾選失敗（${error.message}）`);
     } finally {
