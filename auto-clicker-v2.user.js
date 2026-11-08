@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.61
+// @version      5.62
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -12369,6 +12369,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
     let currentHeroId = null;
     let currentHistory = [];
+    let growthVersion = 0;
+    // 同卡比較：{ key: 卡片|版本, heroes: [{ heroId, stats }] }，切回同一種卡不用重讀全部角色
+    let cardGroupCache = null;
     let currentStats = null;
     let currentExtras = {}; // HP、體力目前的顯示值 { HP: { total, plus } }
     let currentTotals = {}; // 目前資料對應的畫面數值（含裝備），用來確認畫面上是不是同一隻角色
@@ -12383,6 +12386,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }
 
     function setValue(key, value) {
+      if (/_(?:history|meta)$/.test(key)) growthVersion++;
       try {
         writeGrowthRaw(STORAGE_PREFIX + key, JSON.stringify(value));
       } catch {
@@ -12728,6 +12732,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       }
 
       renderHistoryTable(attrPanel);
+      renderCardCompare(attrPanel);
     }
 
     // 在數值後面加上 (+7) 或 (+7 ↕5~9)
@@ -12876,6 +12881,91 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       note.textContent = `只算單級升級；次數少於 ${PLACE_MIN_SAMPLES} 次的顏色較淡，參考就好`;
       box.appendChild(note);
       return box;
+    }
+
+    // 同一種卡（自己的＋雲端分享的）至少升過這麼多級才拿來比，太少的成長值不準
+    const CARD_COMPARE_MIN_LEVELS = 3;
+
+    function cardGroup(cardKey) {
+      const key = `${cardKey}|${growthVersion}`;
+      if (cardGroupCache && cardGroupCache.key === key) return cardGroupCache.heroes;
+      const heroes = allHeroIds()
+        .filter((heroId) => {
+          const meta = getValue(`hero_${heroId}_meta`, null);
+          return meta && (meta.typeId || meta.type) === cardKey;
+        })
+        .map((heroId) => {
+          const history = heroHistory(heroId);
+          const levels = history.filter((rec) => !rec.legacy).reduce((sum, rec) => sum + (rec.to - rec.from), 0);
+          return { heroId, levels, stats: computeStats(history) };
+        })
+        .filter((hero) => hero.levels >= CARD_COMPARE_MIN_LEVELS);
+      cardGroupCache = { key, heroes };
+      return heroes;
+    }
+
+    function cardCompareRows(heroId, group) {
+      const own = group.find((hero) => hero.heroId === heroId);
+      if (!own) return '';
+      return STAT_NAMES.map((zhName) => {
+        const mine = own.stats[zhName];
+        const values = group.map((hero) => hero.stats[zhName] && hero.stats[zhName].avg).filter((value) => Number.isFinite(value));
+        if (!mine || values.length < 2) return '';
+        const average = values.reduce((sum, value) => sum + value, 0) / values.length;
+        const rank = values.filter((value) => value > mine.avg).length + 1;
+        const color = rank === 1 ? '#4ade80' : rank > values.length / 2 ? '#f87171' : '#e7e5e4';
+        return `<tr><td style="padding:1px 6px">${zhName}</td><td style="padding:1px 6px;text-align:right;color:${color}">${mine.avg.toFixed(1)}</td>
+          <td style="padding:1px 6px;text-align:right">${average.toFixed(1)}</td><td style="padding:1px 6px;text-align:right;color:#a8a29e">${Math.min(...values).toFixed(1)}～${Math.max(...values).toFixed(1)}</td>
+          <td style="padding:1px 6px;text-align:right;color:${color}">${rank}／${values.length}</td></tr>`;
+      }).join('');
+    }
+
+    // 角色頁上看這張卡：抽到的機率、稀有度和潛能有多難得、每級成長跟同一種卡比排第幾
+    function renderCardCompare(attrPanel) {
+      let box = attrPanel.querySelector('#gv-card-compare');
+      const meta = (currentHeroId && getValue(`hero_${currentHeroId}_meta`, null)) || null;
+      const cardKey = meta && (meta.typeId || meta.type);
+      if (!cardKey) {
+        if (box) box.remove();
+        return;
+      }
+      const odds = cardDrawOdds();
+      const key = `${currentHeroId}:${growthVersion}:${odds.stamp}`;
+      if (box && box.dataset.key === key) return;
+      const wasOpen = box ? box.querySelector('details').open : false;
+      if (box) box.remove();
+
+      const drawn = odds.byHero.get(String(currentHeroId));
+      const tier = meta.tier || (drawn && drawn.tier) || '';
+      const potential = meta.potential || (drawn && drawn.potential) || '';
+      const type = meta.type || (drawn && drawn.type) || meta.name || '';
+      const group = cardGroup(cardKey);
+      const rows = cardCompareRows(String(currentHeroId), group);
+      const lines = [];
+      const cardOdds = odds.cardRate(type);
+      if (cardOdds) lines.push(`抽到這張卡：${cardOdds}`);
+      const gradeLine = [
+        tier && odds.gradeText('tier', tier, '稀有度'),
+        potential && odds.gradeText('potential', potential, '潛能'),
+      ].filter(Boolean);
+      if (gradeLine.length) lines.push(gradeLine.join('　'));
+      if (!odds.total) lines.push('還沒有抽卡紀錄可以算機率（抽卡頁、雲端同步）');
+
+      box = document.createElement('div');
+      box.id = 'gv-card-compare';
+      box.dataset.key = key;
+      box.style.cssText = `margin-top:8px;${FONT_SIZE ? `font-size:${FONT_SIZE};` : ''}`;
+      for (const eventType of ['click', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'keydown', 'keyup']) {
+        box.addEventListener(eventType, (event) => event.stopPropagation());
+      }
+      box.innerHTML = `<details ${wasOpen ? 'open' : ''}><summary style="cursor:pointer;color:#eab308;font-weight:bold;user-select:none;-webkit-user-select:none">卡片比較：${escapeHtml(type)}${tier ? `（稀有度 ${escapeHtml(tier)}${potential ? `，潛能 ${escapeHtml(potential)}` : ''}）` : ''}</summary>
+        <div style="margin-top:4px;line-height:1.6">${lines.map((line) => `<div>${line}</div>`).join('')}</div>
+        ${rows
+          ? `<div style="margin-top:4px;color:#d6d3d1">每級平均成長，跟同一種卡 ${group.length} 隻比（自己的＋雲端分享的，至少升 ${CARD_COMPARE_MIN_LEVELS} 級）</div>
+            <div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px"><tr style="color:#a8a29e"><th style="padding:1px 6px;text-align:left">屬性</th><th style="padding:1px 6px">這隻</th><th style="padding:1px 6px">同卡平均</th><th style="padding:1px 6px">範圍</th><th style="padding:1px 6px">排名</th></tr>${rows}</table></div>`
+          : `<div style="margin-top:4px;color:#a8a29e">同一種卡有成長紀錄（升 ${CARD_COMPARE_MIN_LEVELS} 級以上）的只有 ${group.length} 隻，這隻${group.some((hero) => hero.heroId === String(currentHeroId)) ? '' : '自己也還不夠'}，至少要 2 隻才比得出來</div>`}
+      </details>`;
+      attrPanel.insertBefore(box, attrPanel.querySelector('#growth-history-box'));
     }
 
     function renderHistoryTable(attrPanel) {
@@ -13748,6 +13838,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       potential: hero.potential || '',
     });
     writeJsonStorage(DRAW_LOG_KEY, draws.slice(-DRAW_LOG_LIMIT));
+    cardOddsCache = null;
     if (activeTab === 'draw') renderDrawStats();
   }
 
@@ -14344,6 +14435,52 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   }
 
   // 範圍：自己這邊／雲端全部／某個上傳者。雲端全部＝雲端下載的＋自己還沒傳上去的
+  // 角色頁每次重畫都會問，抽卡紀錄上萬筆，算一次留 10 分鐘（抽卡時記一筆就作廢）
+  const CARD_ODDS_TTL_MILLISECONDS = 10 * 60000;
+  const CARD_ODDS_GRADES = ['F', 'E', 'D', 'C', 'B', 'A', 'S', 'SS', 'SSS'];
+  let cardOddsCache = null;
+
+  function cardDrawOdds() {
+    if (cardOddsCache && Date.now() - cardOddsCache.at < CARD_ODDS_TTL_MILLISECONDS) return cardOddsCache;
+    const byHero = new Map();
+    [...readJsonStorage(CLOUD_DRAWS_KEY, []), ...ownCloudDraws()].forEach((draw) => {
+      if (draw && draw.heroId) byHero.set(String(draw.heroId), draw);
+    });
+    const draws = [...byHero.values()];
+    const byItem = new Map();
+    const grades = { tier: new Map(), potential: new Map() };
+    draws.forEach((draw) => {
+      const item = byItem.get(draw.item) || { total: 0, types: new Map() };
+      item.total++;
+      item.types.set(draw.type, (item.types.get(draw.type) || 0) + 1);
+      byItem.set(draw.item, item);
+      ['tier', 'potential'].forEach((field) => grades[field].set(draw[field], (grades[field].get(draw[field]) || 0) + 1));
+    });
+    const percent = (part, whole) => `${((part / whole) * 100).toFixed(part / whole < 0.01 ? 2 : 1)}%`;
+    cardOddsCache = {
+      at: Date.now(),
+      stamp: draws.length,
+      total: draws.length,
+      byHero,
+      // 只列抽過 100 次以上的券，樣本太少的機率沒意義
+      cardRate(type) {
+        return [...byItem.entries()]
+          .filter(([, item]) => item.total >= 100 && item.types.get(type))
+          .sort(([, first], [, second]) => second.total - first.total)
+          .map(([name, item]) => `${escapeHtml(name)} ${percent(item.types.get(type), item.total)}（${item.total} 抽出現 ${item.types.get(type)} 次）`)
+          .join('、');
+      },
+      gradeText(field, grade, label) {
+        const index = CARD_ODDS_GRADES.indexOf(grade);
+        const count = grades[field].get(grade) || 0;
+        if (index < 0 || !draws.length) return '';
+        const atLeast = CARD_ODDS_GRADES.slice(index).reduce((sum, value) => sum + (grades[field].get(value) || 0), 0);
+        return `${label} ${escapeHtml(grade)}：${percent(count, draws.length)}，${escapeHtml(grade)} 以上 ${percent(atLeast, draws.length)}`;
+      },
+    };
+    return cardOddsCache;
+  }
+
   function statsRecords(kind, own, cloud, keyOf) {
     const select = panel.querySelector(`[data-role="${kind}-scope"]`);
     const me = readSettingsFromPanel().cloudName || '自己';
