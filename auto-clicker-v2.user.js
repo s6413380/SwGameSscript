@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.60
+// @version      5.61
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1658,6 +1658,8 @@
     <div data-tab="draw">
       <div class="hint">在遊戲物品頁用英雄券這類道具抽卡時自動記下抽到什麼。開了雲端同步會上傳，也能看大家（照雲端頁的署名分上傳者）的紀錄</div>
       <div class="row"><select data-role="draw-scope" style="flex:none;max-width:120px;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select><select data-role="draw-item" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select><button data-action="draw-clear">清除紀錄</button></div>
+      <div class="row"><button data-action="draw-copy">複製紀錄（表格）</button><span class="hint" style="flex:1">照上面選的範圍和道具，每抽一列：時間、角色代號、卡片、稀有度、潛能、道具、上傳者</span></div>
+      <textarea data-role="draw-export" rows="4" readonly style="display:none;width:100%;box-sizing:border-box;font:11px monospace"></textarea>
       <div data-role="draw-stats"></div>
     </div>
 
@@ -11582,6 +11584,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         saveSales({ ...loadSales(), sold: [] });
         renderSalesStats();
       }
+    } else if (action === 'draw-copy') {
+      copyDrawRecords();
     } else if (action === 'draw-clear') {
       if (window.confirm('要清除這個帳號的抽卡紀錄嗎？清掉就找不回來')) {
         writeJsonStorage(DRAW_LOG_KEY, []);
@@ -13751,6 +13755,44 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const counts = new Map();
     draws.forEach((draw) => counts.set(draw[key], (counts.get(draw[key]) || 0) + 1));
     return counts;
+  }
+
+  // 上傳者換成編號：看得出是不是同一個人連抽，不帶出別人的署名
+  function drawRecordsText() {
+    const all = statsRecords('draw', ownCloudDraws(), readJsonStorage(CLOUD_DRAWS_KEY, []), (draw) => String(draw.heroId));
+    const chosen = panel.querySelector('[data-role="draw-item"]').value;
+    const draws = (chosen ? all.filter((draw) => draw.item === chosen) : all).slice().sort((first, second) => first.at - second.at);
+    if (!draws.length) return '';
+    const uploaders = new Map();
+    const uploader = (draw) => {
+      if (!draw.by) return '自己';
+      if (!uploaders.has(draw.by)) uploaders.set(draw.by, `玩家${uploaders.size + 1}`);
+      return uploaders.get(draw.by);
+    };
+    const rows = draws.map((draw) =>
+      [new Date(draw.at).toLocaleString('zh-TW', { hour12: false }), draw.heroId, draw.type, draw.tier, draw.potential, draw.item, uploader(draw)].join('\t')
+    );
+    return ['時間\t角色代號\t卡片\t稀有度\t潛能\t道具\t上傳者', ...rows].join('\n');
+  }
+
+  async function copyDrawRecords() {
+    const text = drawRecordsText();
+    const box = panel.querySelector('[data-role="draw-export"]');
+    if (!text) {
+      setStatus('還沒有抽卡紀錄');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      box.style.display = 'none';
+      setStatus(`已複製 ${text.split('\n').length - 1} 筆抽卡紀錄，直接貼給 Claude`);
+    } catch {
+      // 有些環境不允許寫剪貼簿，改放到文字框讓使用者自己複製
+      box.value = text;
+      box.style.display = '';
+      box.select();
+      setStatus('無法直接複製，抽卡紀錄已放在下方文字框，請按 Ctrl+C');
+    }
   }
 
   function renderDrawStats() {
