@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.57
+// @version      5.58
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -408,6 +408,7 @@
     itemStepSeconds: 1,
     crashReloadEnabled: true,
     combatEnabled: true,
+    skillDexEnabled: true,
     combatKeyword: '戰鬥過程',
     combatSelector: '',
     huntExcludedHeroIds: '',
@@ -1434,7 +1435,8 @@
       <div data-role="combat-anomalies"></div>
       <div class="row"><button data-action="copy-last-report">複製上一場戰報</button><button data-action="reset-combat">重置統計</button></div>
       <textarea data-role="combat-report" rows="4" style="display:none;width:100%;box-sizing:border-box;font:11px monospace"></textarea>
-      <details style="margin-top:6px"><summary><b>📖 技能圖鑑</b>（每個角色出過的招、每招做了什麼）</summary>
+      <label class="row"><input data-field="skillDexEnabled" type="checkbox" style="flex:none;width:auto"> 記技能圖鑑（跟上面的戰鬥統計分開，只要圖鑑就只勾這個）</label>
+      <details data-role="skill-dex-box" style="margin-top:6px"><summary><b>📖 技能圖鑑</b>（每個角色出過的招、每招做了什麼）</summary>
         <div data-role="skill-dex"></div>
         <div class="row"><button data-action="reset-skill-dex">清空技能圖鑑</button></div>
         <div class="hint">次數＝這招一共放了幾次；「平均每場」＝總次數 ÷ 場數（0.3＝大約每 10 場放 3 次，可能是同一場放好幾次）；「N/M 場有放」＝M 場裡有幾場至少放過一次（這欄從 v5.57 開始記）。效果括號是「出這招時有這個效果」的比例，◯＝人名、N＝數字。滑鼠移到那一列看一次完整的戰報範例</div>
@@ -2108,6 +2110,10 @@
       }
       renderRecipeHeroes();
       refreshForgeHeroes().catch((error) => setStatus(`讀取角色失敗（${error.message}）`));
+    }
+    if (tabId === 'combat') {
+      if (combatRenderPending) renderCombatStats();
+      if (skillDexRenderPending) renderSkillDexLater();
     }
     if (tabId === 'huntStats') {
       renderHuntStats();
@@ -6304,7 +6310,7 @@
       countConditionBattles(heroes, data.report);
       checkHeroConditions(heroes, settings);
     }
-    if (settings.combatEnabled) recordBattleFromApi(data.report);
+    if (settings.combatEnabled || settings.skillDexEnabled) recordBattleFromApi(data.report, settings);
     recordLootLedger('hunt', data.report);
     if (data.report) {
       pageReport.hunt = { report: data.report, at: Date.now() };
@@ -8564,6 +8570,40 @@
   let combatStats = loadCombatStats();
   let pendingBattleText = '';
 
+  // 每場都把整份統計寫進 localStorage 會卡（異常戰報最多存 10 份原文，一份 2 萬字）：30 秒合併寫一次，關分頁時補寫
+  const STATS_SAVE_DELAY_MILLISECONDS = 30000;
+  const pendingStatsSaves = new Set();
+  let statsSaveTimer = 0;
+
+  function saveStatsLater(save) {
+    pendingStatsSaves.add(save);
+    if (!statsSaveTimer) statsSaveTimer = setTimeout(flushStatsSaves, STATS_SAVE_DELAY_MILLISECONDS);
+  }
+
+  function flushStatsSaves() {
+    clearTimeout(statsSaveTimer);
+    statsSaveTimer = 0;
+    const saves = [...pendingStatsSaves];
+    pendingStatsSaves.clear();
+    saves.forEach((save) => save());
+  }
+  window.addEventListener('pagehide', flushStatsSaves);
+
+  // 每場都重畫整張表也會卡：沒在看就先記著，切到戰鬥分頁、打開圖鑑時再畫
+  let combatRenderPending = false;
+  let skillDexRenderPending = false;
+
+  function renderCombatStatsLater() {
+    if (activeTab === 'combat') renderCombatStats();
+    else combatRenderPending = true;
+  }
+
+  function renderSkillDexLater() {
+    const box = panel.querySelector('[data-role="skill-dex-box"]');
+    if (activeTab === 'combat' && box && box.open) renderSkillDex();
+    else skillDexRenderPending = true;
+  }
+
   // 有選取紀錄區就直接讀；沒選取才用標題文字往上找包住整場紀錄的區塊。還沒出現戰後結算就當作這場還沒打完
   function findBattleLogElement(settings) {
     if (settings.combatSelector) {
@@ -8648,27 +8688,35 @@
     return perfTimed('recordBattleFromApi', () => recordBattleFromApiUntimed(...args));
   }
 
-  function recordBattleFromApiUntimed(report) {
+  function recordBattleFromApiUntimed(report, settings) {
     if (!report || !Array.isArray(report.messages)) return;
-    combatFromApi = true;
-    const signature = `api:${report.id}`;
-    if (signature === combatStats.lastSignature) return;
-    combatStats.lastSignature = signature;
-    const { lines, indented, sides } = battleInputOfReport(report);
+    const input = battleInputOfReport(report);
+    // 戰鬥統計的效果和技能圖鑑切招的結果一樣，切一次就好
+    let split = null;
+    const splitOnce = () => split || (split = splitSkillUses(input.lines, input.indented, input.sides));
+    if (settings.combatEnabled) recordCombatFromApi(report, input, splitOnce);
+    if (!settings.skillDexEnabled) return;
     try {
-      addBattleEffects(battleEffectsOf(lines, indented, sides));
-    } catch {
-      // 效果認不出來不影響其他統計
-    }
-    recordBattle(lines, indented, () => JSON.stringify(report).slice(0, 20000), sides);
-    try {
-      if (recordSkillDex(report)) {
-        saveSkillDex();
-        renderSkillDex();
+      if (recordSkillDex(report, input, splitOnce)) {
+        saveStatsLater(saveSkillDex);
+        renderSkillDexLater();
       }
     } catch {
       // 圖鑑認不出來不影響戰鬥統計
     }
+  }
+
+  function recordCombatFromApi(report, { lines, indented, sides }, splitOnce) {
+    combatFromApi = true;
+    const signature = `api:${report.id}`;
+    if (signature === combatStats.lastSignature) return;
+    combatStats.lastSignature = signature;
+    try {
+      addBattleEffects(battleEffectsOf(splitOnce()));
+    } catch {
+      // 效果認不出來不影響其他統計
+    }
+    recordBattle(lines, indented, () => JSON.stringify(report).slice(0, 20000), sides);
   }
 
   function battleInputOfReport(report) {
@@ -8706,8 +8754,8 @@
       const reason =
         lines.length < 3 ? '戰報分不出行（整份黏在一起）' : '認不出我方角色（找不到經驗值或剩餘生命值的結算）';
       recordAnomaly(reason, rawReport());
-      saveCombatStats();
-      renderCombatStats();
+      saveStatsLater(saveCombatStats);
+      renderCombatStatsLater();
       return;
     }
     if (flagged.size) recordAnomaly(`${flagged.size} 行提到我方的傷害或恢復沒有算到任何人`, combatStats.lastReport);
@@ -8720,8 +8768,8 @@
         addStats(total.skills[skill] || (total.skills[skill] = emptyStats(SKILL_FIELDS)), skillStats, SKILL_FIELDS);
       });
     });
-    saveCombatStats();
-    renderCombatStats();
+    saveStatsLater(saveCombatStats);
+    renderCombatStatsLater();
   }
 
   function sumMembers(members) {
@@ -8834,6 +8882,7 @@
   }
 
   function renderCombatStats() {
+    combatRenderPending = false;
     renderCombatAnomalies();
     const container = panel.querySelector('[data-role="combat-stats"]');
     if (!combatStats.battles) {
@@ -8856,8 +8905,7 @@
   }
 
   // 每個人放了哪些效果（加增益、讓敵人陷入的狀態、解除異常…），用技能圖鑑同一套切法：{ 名字: { 效果: 次數 } }
-  function battleEffectsOf(lines, indented, sides) {
-    const { uses, otherNames, damaged } = splitSkillUses(lines, indented, sides);
+  function battleEffectsOf({ uses, otherNames, damaged }) {
     const effects = {};
     uses.forEach((use) => {
       skillUseEffects(use, otherNames, damaged).tags.forEach((tag) => {
@@ -9053,12 +9101,12 @@
     return result;
   }
 
-  function recordSkillDex(report) {
+  function recordSkillDex(report, input = null, splitOnce = null) {
     if (!report || !Array.isArray(report.messages)) return false;
     const id = report.id === undefined ? null : String(report.id);
     if (id !== null && skillDex.seen.includes(id)) return false;
-    const { lines, indented, sides } = battleInputOfReport(report);
-    const { uses, otherNames, damaged } = splitSkillUses(lines, indented, sides);
+    const { lines, indented, sides } = input || battleInputOfReport(report);
+    const { uses, otherNames, damaged } = splitOnce ? splitOnce() : splitSkillUses(lines, indented, sides);
     const present = new Set([...sides.party, ...uses.map((use) => use.actor)]);
     present.forEach((name) => {
       const hero = skillDex.heroes[name] || (skillDex.heroes[name] = { battles: 0, skills: {} });
@@ -9106,11 +9154,12 @@
   }
 
   function renderSkillDex() {
+    skillDexRenderPending = false;
     const container = panel.querySelector('[data-role="skill-dex"]');
     if (!container) return;
     const heroes = Object.entries(skillDex.heroes).filter(([, hero]) => Object.keys(hero.skills).length);
     if (!heroes.length) {
-      container.innerHTML = '<div class="hint">還沒有資料：打幾場（要勾「讀取戰鬥紀錄並統計」）就會出現</div>';
+      container.innerHTML = '<div class="hint">還沒有資料：打幾場（要勾「記技能圖鑑」）就會出現</div>';
       return;
     }
     const open = new Set(Array.from(container.querySelectorAll('details[open]')).map((details) => details.dataset.skillDexHero));
@@ -23314,6 +23363,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   renderCombatStats();
   seedSkillDex();
   renderSkillDex();
+  panel.querySelector('[data-role="skill-dex-box"]').addEventListener('toggle', (event) => {
+    if (event.currentTarget.open && skillDexRenderPending) renderSkillDex();
+  });
   renderCardBuyStatus();
   renderCardAlertHistory();
   renderTrainStatus();
