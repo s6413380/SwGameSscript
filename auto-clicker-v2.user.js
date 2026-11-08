@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.56
+// @version      5.57
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1437,7 +1437,7 @@
       <details style="margin-top:6px"><summary><b>📖 技能圖鑑</b>（每個角色出過的招、每招做了什麼）</summary>
         <div data-role="skill-dex"></div>
         <div class="row"><button data-action="reset-skill-dex">清空技能圖鑑</button></div>
-        <div class="hint">次數＝這招出了幾次（/場＝平均每場幾次）。效果括號是「出這招時有這個效果」的比例，◯＝人名、N＝數字。滑鼠移到那一列看一次完整的戰報範例</div>
+        <div class="hint">次數＝這招一共放了幾次；「平均每場」＝總次數 ÷ 場數（0.3＝大約每 10 場放 3 次，可能是同一場放好幾次）；「N/M 場有放」＝M 場裡有幾場至少放過一次（這欄從 v5.57 開始記）。效果括號是「出這招時有這個效果」的比例，◯＝人名、N＝數字。滑鼠移到那一列看一次完整的戰報範例</div>
       </details>
       <div class="hint">控制＝讓敵人陷入異常（燒傷、害怕降攻…）的次數；擊殺＝補最後一刀的人；爆擊＝命中要害的比例；回血／回體＝恢復生命值／體力的量，算在施放的人身上</div>
     </div>
@@ -8879,6 +8879,9 @@
     });
   }
 
+  // 深色底上 #888 太暗看不清
+  const SKILL_DEX_DIM = '#c4c4cc';
+
   // battles 有給（累計）就多顯示平均每場幾次
   function battleEffectsHtml(effects, key, battles = 0) {
     const rows = Object.entries(effects || {})
@@ -8886,7 +8889,7 @@
       .map(([name, tags]) => {
         const list = Object.entries(tags)
           .sort(([, first], [, second]) => second - first)
-          .map(([tag, count]) => `${escapeHtml(tag)} ×${count}${battles ? `<span style="color:#888">（${(count / battles).toFixed(1)}/場）</span>` : ''}`)
+          .map(([tag, count]) => `${escapeHtml(tag)} ×${count}${battles ? `<span style="color:${SKILL_DEX_DIM}">（平均每場 ${(count / battles).toFixed(count < battles ? 2 : 1)} 次）</span>` : ''}`)
           .join('、');
         return `<div style="margin-top:3px"><b>${escapeHtml(name)}</b>：${list}</div>`;
       })
@@ -9060,7 +9063,9 @@
     present.forEach((name) => {
       const hero = skillDex.heroes[name] || (skillDex.heroes[name] = { battles: 0, skills: {} });
       hero.battles++;
+      hero.trackedBattles = (hero.trackedBattles || 0) + 1;
     });
+    const castThisBattle = new Set();
     uses.forEach((use) => {
       const effects = skillUseEffects(use, otherNames, damaged);
       const hero = skillDex.heroes[use.actor];
@@ -9068,6 +9073,11 @@
         hero.skills[use.skill] ||
         (hero.skills[use.skill] = { casts: 0, damage: 0, hits: 0, crits: 0, kills: 0, maxDamage: 0, hpHeal: 0, spHeal: 0, effects: {}, sample: [] });
       entry.casts++;
+      // 舊資料沒有這欄，從開始記的那場起算（trackedBattles 也是同時開始數）
+      if (!castThisBattle.has(`${use.actor}\n${use.skill}`)) {
+        castThisBattle.add(`${use.actor}\n${use.skill}`);
+        entry.castBattles = (entry.castBattles || 0) + 1;
+      }
       ['damage', 'hits', 'crits', 'kills', 'hpHeal', 'spHeal'].forEach((field) => (entry[field] += effects[field]));
       entry.maxDamage = Math.max(entry.maxDamage, effects.damage);
       effects.tags.forEach((tag) => {
@@ -9113,7 +9123,7 @@
             const effects = Object.entries(entry.effects)
               .sort(([, first], [, second]) => second - first)
               .slice(0, 6)
-              .map(([tag, count]) => `${escapeHtml(tag)}<span style="color:#888">（${percentText(count, entry.casts)}）</span>`);
+              .map(([tag, count]) => `${escapeHtml(tag)}<span style="color:${SKILL_DEX_DIM}">（${percentText(count, entry.casts)}）</span>`);
             const numbers = [
               entry.damage
                 ? `傷害 平均 ${formatAmount(entry.damage / entry.casts)}・最高 ${formatAmount(entry.maxDamage)}${entry.hits > entry.casts ? `・每次 ${(entry.hits / entry.casts).toFixed(1)} 擊` : ''}${entry.crits ? `・爆擊 ${percentText(entry.crits, entry.hits)}` : ''}`
@@ -9121,8 +9131,12 @@
               entry.hpHeal ? `回血 平均 ${formatAmount(entry.hpHeal / entry.casts)}` : '',
               entry.spHeal ? `回體 平均 ${formatAmount(entry.spHeal / entry.casts)}` : '',
             ].filter(Boolean);
-            return `<tr title="${escapeHtml(entry.sample.join('\n'))}"><td><b>${escapeHtml(skill)}</b></td><td>${entry.casts}<br><span style="color:#888">${(entry.casts / Math.max(1, hero.battles)).toFixed(1)}/場</span></td>
-              <td>${[...numbers.map(escapeHtml), ...effects].join('<br>') || '<span style="color:#888">沒看到效果</span>'}</td></tr>`;
+            const perBattle = entry.casts / Math.max(1, hero.battles);
+            const appeared = hero.trackedBattles && entry.castBattles
+              ? `<br><span style="color:${SKILL_DEX_DIM}" title="開始記這欄之後的 ${hero.trackedBattles} 場裡，有幾場放過這招">${entry.castBattles}/${hero.trackedBattles} 場有放（${percentText(entry.castBattles, hero.trackedBattles)}）</span>`
+              : '';
+            return `<tr title="${escapeHtml(entry.sample.join('\n'))}"><td><b>${escapeHtml(skill)}</b></td><td style="white-space:nowrap">${entry.casts} 次<br><span style="color:${SKILL_DEX_DIM}" title="總次數 ÷ ${hero.battles} 場">平均每場 ${perBattle < 1 ? perBattle.toFixed(2) : perBattle.toFixed(1)} 次</span>${appeared}</td>
+              <td>${[...numbers.map(escapeHtml), ...effects].join('<br>') || `<span style="color:${SKILL_DEX_DIM}">沒看到效果</span>`}</td></tr>`;
           })
           .join('');
         return `<details data-skill-dex-hero="${escapeHtml(name)}" ${open.has(name) ? 'open' : ''}><summary><b>${escapeHtml(name)}</b>（${Object.keys(hero.skills).length} 招，${hero.battles} 場）</summary>
