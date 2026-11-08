@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.63
+// @version      5.64
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -12884,14 +12884,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }
 
     // 雲端分享的角色大多只記到 1 級（3546 隻裡升 3 級以上的只有 746 隻），門檻設高會幾乎比不到；
-    // 只升 1 級的單一筆雜訊大，平均照級數加權、範圍看中間一半，不讓少數極端值主導
+    // 只升 1 級的單一筆雜訊大，平均照級數加權，不讓少數極端值主導
     const CARD_COMPARE_MIN_LEVELS = 1;
-
-    function quantile(sortedValues, fraction) {
-      const position = (sortedValues.length - 1) * fraction;
-      const lower = Math.floor(position);
-      return sortedValues[lower] + (sortedValues[Math.ceil(position)] - sortedValues[lower]) * (position - lower);
-    }
 
     function cardGroup(cardKey) {
       const key = `${cardKey}|${growthVersion}`;
@@ -12924,7 +12918,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         const top = rank / values.length;
         const color = top <= 0.25 ? '#4ade80' : top > 0.5 ? '#f87171' : '#e7e5e4';
         return `<tr><td style="padding:1px 6px">${zhName}</td><td style="padding:1px 6px;text-align:right;color:${color}">${mine.avg.toFixed(1)}<span style="color:#a8a29e">（${mine.levels} 級）</span></td>
-          <td style="padding:1px 6px;text-align:right">${average.toFixed(1)}</td><td style="padding:1px 6px;text-align:right;color:#a8a29e">${quantile(values, 0.25).toFixed(1)}～${quantile(values, 0.75).toFixed(1)}</td>
+          <td style="padding:1px 6px;text-align:right">${average.toFixed(1)}</td><td style="padding:1px 6px;text-align:right;color:#a8a29e">${values[0].toFixed(1)}</td><td style="padding:1px 6px;text-align:right;color:#a8a29e">${values[values.length - 1].toFixed(1)}</td>
           <td style="padding:1px 6px;text-align:right;color:${color}">${rank}／${values.length}（前 ${Math.max(1, Math.round(top * 100))}%）</td></tr>`;
       }).join('');
     }
@@ -12970,8 +12964,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       box.innerHTML = `<details ${wasOpen ? 'open' : ''}><summary style="cursor:pointer;color:#eab308;font-weight:bold;user-select:none;-webkit-user-select:none">卡片比較：${escapeHtml(type)}${tier ? `（稀有度 ${escapeHtml(tier)}${potential ? `，潛能 ${escapeHtml(potential)}` : ''}）` : ''}</summary>
         <div style="margin-top:4px;line-height:1.6">${lines.map((line) => `<div>${line}</div>`).join('')}</div>
         ${rows
-          ? `<div style="margin-top:4px;color:#d6d3d1">每級平均成長，跟同一種卡 ${group.length} 隻比（自己的＋雲端分享的）。同卡平均照級數加權；中間一半＝排除最好和最差各四分之一後的範圍；只記到一兩級的比較不準</div>
-            <div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px"><tr style="color:#a8a29e"><th style="padding:1px 6px;text-align:left">屬性</th><th style="padding:1px 6px">這隻</th><th style="padding:1px 6px">同卡平均</th><th style="padding:1px 6px">中間一半</th><th style="padding:1px 6px">排名</th></tr>${rows}</table></div>`
+          ? `<div style="margin-top:4px;color:#d6d3d1">每級平均成長，跟同一種卡 ${group.length} 隻比（自己的＋雲端分享的）。同卡平均照級數加權；最低、最高是同卡裡每級平均最低和最高的那隻，只記到一兩級的容易偏高或偏低</div>
+            <div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px"><tr style="color:#a8a29e"><th style="padding:1px 6px;text-align:left">屬性</th><th style="padding:1px 6px">這隻</th><th style="padding:1px 6px">同卡平均</th><th style="padding:1px 6px">最低</th><th style="padding:1px 6px">最高</th><th style="padding:1px 6px">排名</th></tr>${rows}</table></div>`
           : `<div style="margin-top:4px;color:#a8a29e">同一種卡有成長紀錄的只有 ${group.length} 隻${group.some((hero) => hero.heroId === String(currentHeroId)) ? '' : '，這隻自己還沒有升級紀錄'}，至少要 2 隻才比得出來</div>`}
       </details>`;
       attrPanel.insertBefore(box, attrPanel.querySelector('#growth-history-box'));
