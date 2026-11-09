@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.64
+// @version      5.65
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -9302,15 +9302,38 @@
 
   // 隊伍裡只有部分人在休息＝使用者手動讓它休息、不想讓它出戰（遊戲原地打怪不用全隊閒置），腳本不幫它完成休息。
   // 全隊都在休息時（腳本或手動按全隊休息）沿用上次記下的，腳本的全隊休息結束後再讓它們休息回去
+  // 不出戰名單要存起來：只記在記憶體的話，全隊休息或移動途中重新整理（含自動更新），
+  // 重開後全隊都在休息、看不出誰是手動休息的，完成休息就把它一起叫醒上場
+  const BENCHED_HEROES_KEY = 'autoClickerV2BenchedHeroes';
+
+  function loadBenchState() {
+    if (state.benchLoaded) return;
+    const saved = readJsonStorage(BENCHED_HEROES_KEY, {});
+    state.benchedHeroIds = new Set(saved.benched || []);
+    state.unbenchedForMove = new Set(saved.away || []);
+    state.benchLoaded = true;
+  }
+
+  function saveBenchState() {
+    const value = { benched: [...state.benchedHeroIds], away: [...state.unbenchedForMove] };
+    const raw = JSON.stringify(value);
+    if (raw === state.benchSaved) return;
+    state.benchSaved = raw;
+    writeJsonStorage(BENCHED_HEROES_KEY, value);
+  }
+
   function noteBenchedHeroes() {
+    loadBenchState();
     const team = huntTeam();
     const resting = team.filter((hero) => hero.actionState === 2);
     // 為了移動先結束休息的人還算不出戰，到了再讓它休息回去
     const away = team.filter((hero) => (state.unbenchedForMove || new Set()).has(hero.id));
     if (resting.length < team.length) state.benchedHeroIds = new Set([...resting, ...away].map((hero) => hero.id));
+    saveBenchState();
   }
 
   function benchedHeroes() {
+    loadBenchState();
     const ids = state.benchedHeroIds || new Set();
     return huntTeam().filter((hero) => ids.has(hero.id) && hero.actionState === 2);
   }
@@ -9321,6 +9344,7 @@
   }
 
   async function restBenchedHeroes(runId) {
+    loadBenchState();
     const ids = [...(state.benchedHeroIds || [])].filter((id) => state.heroStats.get(id)?.actionState === 0);
     for (const id of ids) {
       try {
@@ -9332,6 +9356,7 @@
         if (error.captchaRequired) throw error;
         // 休息不回去就讓它照常出戰，不卡住打怪
         state.benchedHeroIds.delete(id);
+        saveBenchState();
         setStatus(`${state.heroStats.get(id)?.name || id} 讓它休息回去失敗（${error.message}），這輪會出戰`);
       }
     }
@@ -9366,19 +9391,23 @@
   }
 
   async function endBenchedRest(heroes, runId) {
+    loadBenchState();
     for (const hero of heroes) {
       const reply = await requestGameApi(`${HEROES_API}/${hero.id}/completeAction`, { method: 'POST' });
       if (runId !== state.runId) return;
       syncGameCompleteAction(reply, hero.id);
       state.heroStats.set(hero.id, { ...state.heroStats.get(hero.id), ...(reply && reply.hero), actionState: 0 });
       state.unbenchedForMove = new Set([...(state.unbenchedForMove || []), hero.id]);
+      saveBenchState();
     }
   }
 
   // 到了目的地（不用再移動）才讓剛才結束休息的人休息回去，之後照常不出戰
   function restAfterMove(settings) {
-    if (!(state.unbenchedForMove || new Set()).size) return false;
+    loadBenchState();
+    if (!state.unbenchedForMove.size) return false;
     state.unbenchedForMove = new Set();
+    saveBenchState();
     const runId = state.runId;
     setStatus('到了，讓剛才結束休息的人休息回去');
     restBenchedHeroes(runId)
