@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.69
+// @version      5.70
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -264,6 +264,8 @@
     selectorA: '',
     selectorB: '',
     stageEnabled: false,
+    // 前行／後退本身就是一場戰鬥又要全隊閒置：開了才會為了移動叫醒手動休息的人（它會跟著打到目的地）；預設不叫醒，停在原地等
+    benchWakeForMove: false,
     stageSelector: '',
     stageTargetArea: '大草原',
     stageTargetNumber: 1,
@@ -1199,6 +1201,8 @@
 
     <div data-tab="move">
       <label class="row"><input data-field="stageEnabled" type="checkbox" style="flex:none;width:auto"> 自動移動到目標關卡（到之前不原地掛機）</label>
+      <label class="row"><input data-field="benchWakeForMove" type="checkbox" style="flex:none;width:auto"> 要移動時叫醒手動休息的角色（API 打怪）</label>
+      <div class="hint">前行、後退要全隊閒置，而且每一步都是一場戰鬥：勾了會先叫醒手動休息的人，它會跟著打到目的地，到了再休息回去。不勾＝停在原地等你處理（避難、往回退也走不了）</div>
       <div class="row">關卡欄位<input data-field="stageSelector" placeholder="顯示目前位置的文字"><button data-pick="stageSelector" data-pick-mode="element">選取</button></div>
       <div class="row">目標<select data-field="stageTargetArea" data-area-select style="width:150px;flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select>
         第 ${numberInput('stageTargetNumber', 'min="0"')} 關</div>
@@ -9474,6 +9478,12 @@
     const benched = benchedHeroes();
     if (!benched.length) return false;
     const names = benched.map((hero) => hero.name).join('、');
+    if (!settings.benchWakeForMove) {
+      setStatus(`要移動，但 ${names} 在休息（你手動讓它休息的），前行／後退要全隊閒置又會打怪，不叫醒它：到遊戲完成它的休息、把它移出隊伍，或在「移動」頁勾「要移動時叫醒手動休息的角色」`);
+      state.heroStatsAt = 0;
+      state.timerId = planTick(() => tick(settings), randomGap(20000, 40000));
+      return true;
+    }
     const readyAt = Math.max(...benched.map((hero) => (hero.canComplete ? 0 : Date.parse(hero.actionCompleteTime) || 0)));
     if (readyAt > Date.now()) {
       setStatus(`要移動：${names} 在休息，${Math.ceil((readyAt - Date.now()) / 1000)} 秒後才能結束休息`);
