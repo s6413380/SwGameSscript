@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.70
+// @version      5.71
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -429,7 +429,7 @@
     equipApiHeroIds: '',
     // 可以換上的裝備名稱（逗號分隔）；留空＝閒置裝備都能用
     equipApiAllowedNames: '',
-    // {heroId: {on, minDur, grip, fill, parts:{weapon:{on, types[], names[]}, …}}}：角色各自的換裝設定，沒開的照共用設定
+    // {heroId: {on, minDur, grip, fill, freeType, parts:{weapon:{on, types[], names[]}, …}}}：角色各自的換裝設定，沒開的照共用設定
     equipHeroPlans: '{}',
     // 用條件挑替換裝備（不用勾裝備）：每個部位各自的攻防智幸下限（0＝不限），附魔「名稱」或「名稱≥數值」，逗號分隔
     equipRuleEnabled: false,
@@ -5384,7 +5384,7 @@
       const saved = (plan.parts || {})[part.id] || {};
       parts[part.id] = { on: saved.on !== false, types: saved.types || [], names: saved.names || [], needEnchant: Boolean(saved.needEnchant), enchants: saved.enchants || '', minStats: saved.minStats || {}, maxStats: { ...(Number(saved.maxWgt) > 0 ? { wgt: Number(saved.maxWgt) } : {}), ...(saved.maxStats || {}) } };
     });
-    return { minDur: Number(plan.minDur) || 0, grip: plan.grip || '', fill: Boolean(plan.fill), parts };
+    return { minDur: Number(plan.minDur) || 0, grip: plan.grip || '', fill: Boolean(plan.fill), freeType: Boolean(plan.freeType), parts };
   }
 
   function equipPartOf(type) {
@@ -5399,7 +5399,10 @@
     if (part.id === 'weapon' && plan.grip === 'dual' && TWO_HAND_WEAPONS.includes(heldType)) types = [...ONE_HAND_WEAPONS, heldType];
     if (part.id === 'weapon' && plan.grip === 'two') types = TWO_HAND_WEAPONS;
     const chosen = plan.parts[part.id].types;
-    return chosen.length ? types.filter((type) => chosen.includes(type)) : types;
+    if (chosen.length) return types.filter((type) => chosen.includes(type));
+    // 沒特別勾類型：拿單手錘的就只換單手錘，勾了「自由換類型」才照持法換別類
+    if (!plan.freeType && heldType && types.includes(heldType)) return [heldType];
+    return types;
   }
 
   function heroMinDurability(settings, heroId) {
@@ -5439,7 +5442,7 @@
     const normalized = { ...plan, parts: Object.fromEntries(EQUIP_PARTS.map((part) => [part.id, { on: ((plan.parts || {})[part.id] || {}).on !== false }])) };
     const grip = EQUIP_GRIPS.find(([value]) => value === (plan.grip || ''));
     const parts = EQUIP_PARTS.filter((part) => normalized.parts[part.id].on).map((part) => part.name);
-    return [grip && plan.grip ? grip[1].replace(/（.*$/, '') : '', parts.length ? `換 ${parts.join('、')}` : '都不換', Number(plan.minDur) > 0 ? `耐久<${plan.minDur}` : '', plan.fill ? '空著補' : '', EQUIP_PARTS.some((part) => ((plan.parts || {})[part.id] || {}).needEnchant) ? '要附魔' : '', EQUIP_PARTS.some((part) => partHasStatRule((plan.parts || {})[part.id] || {})) ? '有數值門檻' : '']
+    return [grip && plan.grip ? grip[1].replace(/（.*$/, '') : '', parts.length ? `換 ${parts.join('、')}` : '都不換', Number(plan.minDur) > 0 ? `耐久<${plan.minDur}` : '', plan.fill ? '空著補' : '', plan.freeType ? '自由換類型' : '', EQUIP_PARTS.some((part) => ((plan.parts || {})[part.id] || {}).needEnchant) ? '要附魔' : '', EQUIP_PARTS.some((part) => partHasStatRule((plan.parts || {})[part.id] || {})) ? '有數值門檻' : '']
       .filter(Boolean)
       .join('・');
   }
@@ -5502,8 +5505,9 @@
         .map(([value, label]) => `<option value="${value}" ${(plan.grip || '') === value ? 'selected' : ''}>${label}</option>`)
         .join('')}</select></div>
       <label style="display:block">${checkbox('fill', plan.fill)} 部位空著就補上（雙持缺一把也補；雙手武器、雙持不補盾）</label>
+      <label style="display:block">${checkbox('freeType', plan.freeType)} 自由換類型（不勾＝身上拿什麼就只換什麼，例如拿單手錘只換單手錘）</label>
       ${partRows}
-      <div class="hint">持法限制武器能換成哪幾類：單持、雙持只換單手武器，雙手只換雙手武器。個別設定的角色不看「只換同名裝備」，要限定就在部位裡勾指定裝備</div>
+      <div class="hint">預設只換成身上那件的同類型；部位裡有勾類型就照勾的，勾「自由換類型」才照持法換別類（單持、雙持換單手武器，雙手換雙手武器）。個別設定的角色不看「只換同名裝備」，要限定就在部位裡勾指定裝備</div>
     </details>`;
   }
 
@@ -5517,6 +5521,7 @@
       minDur: Math.max(0, Number(value('minDur').value) || 0),
       grip: value('grip').value,
       fill: value('fill').checked,
+      freeType: value('freeType').checked,
       parts: Object.fromEntries(
         EQUIP_PARTS.map((part) => [
           part.id,
@@ -18428,7 +18433,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         .map((group) => {
           const left = group.left === null ? '算不出' : group.left === Infinity ? '不會掉' : `${group.left} 場`;
           const danger = group.left !== null && limit && group.left <= limit;
-          return `<tr><td style="text-align:left">${escapeHtml(group.type)}</td><td>${group.worn.length}／${group.sparesKnown ? group.spares.length : '?'}</td>
+          return `<tr><td style="text-align:left">${escapeHtml(group.type)}</td><td>${group.worn.length}／${group.sparesKnown ? group.spares.length : '?'}${spareTypesText(group)}</td>
             <td>${group.perBattle === null ? '-' : group.perBattle.toFixed(2)}</td><td>${(todayUsage[group.type] || 0).toLocaleString()}</td>
             <td>${group.usable.toLocaleString()}</td><td style="color:${danger ? '#f87171' : '#4ade80'}">${left}${timeText(group.left)}</td></tr>`;
         })
@@ -18444,6 +18449,15 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         return `<div class="hint" style="color:#fbbf24">${escapeHtml(group.type)}：倉庫有 ${group.skipped.length} 件沒算進備用（${escapeHtml(why)}）</div>`;
       })
       .join('')}`;
+  }
+
+  // 備用裡有別類型時才列，例如「單手錘 6、單手劍 40」
+  function spareTypesText(group) {
+    const counts = new Map();
+    group.spares.forEach((equipment) => counts.set(equipment.type, (counts.get(equipment.type) || 0) + 1));
+    if (!counts.size || (counts.size === 1 && counts.has(group.type))) return '';
+    const parts = [...counts].sort(([first, firstCount], [second, secondCount]) => (first === group.type ? -1 : second === group.type ? 1 : secondCount - firstCount)).map(([type, count]) => `${escapeHtml(type)} ${count}`);
+    return `<div style="color:#a0a0aa;font-size:11px">${parts.join('、')}</div>`;
   }
 
   function sparesNote(groups) {
