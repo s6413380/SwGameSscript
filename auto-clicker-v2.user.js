@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.67
+// @version      5.68
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -6382,11 +6382,18 @@
     return `換裝：監控 ${worn.length} 件${planned ? `（${planned} 人用個別設定）` : ''}，最危險 ${hero ? hero.name : lowest.equipped} 的${lowest.type} 耐久 ${lowest.dur}，低於 ${equipmentMinDurability(settings, lowest.equipped, lowest)} 換`;
   }
 
+  // 休息中的人不出戰、不耗耐久，不幫它換裝：脫下、穿上可能讓它結束休息，變成空手被拉去打
+  function heroResting(heroId) {
+    const hero = state.heroStats.get(heroId);
+    return Boolean(hero && hero.actionState === 2);
+  }
+
   function findWornEquipmentNeedingSwap(settings) {
     return (
       state.equipments.find(
         (equipment) =>
           isMonitoredEquipment(settings, equipment) &&
+          !heroResting(equipment.equipped) &&
           equipment.dur < equipmentMinDurability(settings, equipment.equipped, equipment) &&
           !state.equipApiSkipped.has(equipment.id)
       ) || null
@@ -6572,7 +6579,7 @@
     retrySkippedFills();
     for (const heroId of equipHeroIds(settings)) {
       const plan = equipHeroPlan(settings, heroId);
-      if (!plan || !plan.fill || !state.heroStats.has(heroId)) continue;
+      if (!plan || !plan.fill || !state.heroStats.has(heroId) || heroResting(heroId)) continue;
       for (const part of EQUIP_PARTS) {
         if (!plan.parts[part.id].on || state.equipApiSkipped.has(fillKey(heroId, part))) continue;
         const worn = state.equipments.filter((equipment) => equipment.equipped === heroId && part.types.includes(equipment.type)).length;
@@ -6709,6 +6716,7 @@
         saveEmptiedSlots();
         continue;
       }
+      if (heroResting(slot.heroId)) continue;
       const runId = state.runId;
       const hero = state.heroStats.get(slot.heroId);
       const who = `${hero ? hero.name : slot.heroId} 的${slot.type}`;
@@ -9413,7 +9421,12 @@
     const resting = team.filter((hero) => hero.actionState === 2);
     // 為了移動先結束休息的人還算不出戰，到了再讓它休息回去
     const away = team.filter((hero) => (state.unbenchedForMove || new Set()).has(hero.id));
-    if (resting.length < team.length) state.benchedHeroIds = new Set([...resting, ...away].map((hero) => hero.id));
+    if (resting.length < team.length) {
+      const next = new Set([...resting, ...away].map((hero) => hero.id));
+      const woke = team.filter((hero) => state.benchedHeroIds.has(hero.id) && !next.has(hero.id));
+      if (woke.length) setStatus(`${woke.map((hero) => `${hero.name}（${hero.actionState}）`).join('、')} 原本手動休息，現在不在休息了，之後會出戰`);
+      state.benchedHeroIds = next;
+    }
     saveBenchState();
   }
 
