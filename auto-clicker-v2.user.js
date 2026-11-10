@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.66
+// @version      5.67
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -3095,6 +3095,8 @@
 
   function reloadForUpdateIfIdle() {
     if (!autoUpdate.pendingVersion || forgeRunner.captchaWaiting) return false;
+    // 換裝脫下了還沒穿上，這時重整會讓角色空手；等穿好，下一步（scheduleNext）會再來重整
+    if (emptiedEquipSlots.size) return false;
     if (!state.running && (state.verifyResumeMode !== null || dashboard.alert)) return false;
     // 自動鍛造照跑不影響：舊版繼續鍛造，等人閒下來再更新（重整後會自動接著鍛造）
     if (!state.running && manualPlayActive()) return false;
@@ -5901,8 +5903,24 @@
   // 照補血、補體力的門檻挑出要補的人，用 API 吃；不看「用 API 補給」有沒有勾，也不點畫面
   // equipping：手動打怪後正在換裝／補裝（脫下到穿上中間身上是空的），小視窗這段時間不給打
   const manualSupply = { busy: false, equipping: false };
-  // 換裝脫下了還沒穿回去的部位：equipmentId → { heroId, type, name, expected（脫之前同類型穿幾件）}
-  const emptiedEquipSlots = new Map();
+  // 換裝脫下了還沒穿回去的部位：equipmentId → { heroId, type, name, expected（脫之前同類型穿幾件）}。
+  // 存起來：脫下到穿上中間重新整理（含自動更新）的話，重開後才知道要先穿回去再打
+  const EMPTIED_SLOTS_KEY = 'autoClickerV2EmptiedSlots';
+  const emptiedEquipSlots = new Map((() => {
+    try {
+      return JSON.parse(localStorage.getItem(EMPTIED_SLOTS_KEY)) || [];
+    } catch {
+      return [];
+    }
+  })());
+
+  function saveEmptiedSlots() {
+    try {
+      localStorage.setItem(EMPTIED_SLOTS_KEY, JSON.stringify([...emptiedEquipSlots]));
+    } catch {
+      // 存不了就只記在這一頁
+    }
+  }
   // 換裝跳過的原因：equipmentId → 文字
   const equipSkipReasons = new Map();
   const MANUAL_SUPPLY_MAX_ROUNDS = 8;
@@ -6643,6 +6661,7 @@
         name: worn.name,
         expected: state.equipments.filter((equipment) => equipment.equipped === heroId && equipment.type === worn.type).length,
       });
+      saveEmptiedSlots();
       state.equipments = result.equipments;
     } catch (error) {
       if (cancelled()) return;
@@ -6658,10 +6677,63 @@
       return;
     }
     emptiedEquipSlots.delete(worn.id);
+    saveEmptiedSlots();
     const message = `${who} → 換上「${replacement.name}」(耐久 ${replacement.dur}/${replacement.fullDur})`;
     setStatus(message);
     logItemUse(message);
     finish();
+  }
+
+  // 換裝脫下後沒穿上（穿上失敗、中途停止或重新整理）：出戰的人先穿回去才打。
+  // 優先挑符合換裝條件的，沒有就穿回原本那件（耐久低也比空手好）；穿不上就暫停
+  function restoreEmptiedSlot(settings) {
+    if (!emptiedEquipSlots.size) return false;
+    // 重整後還沒讀過裝備清單：先讀，不然看不出穿了沒就直接打
+    if (!state.equipments.length) {
+      const runId = state.runId;
+      refreshEquipments()
+        .catch((error) => setStatus(`讀取裝備清單失敗（${error.message}）`))
+        .then(() => {
+          if (runId !== state.runId) return;
+          if (state.equipments.length) tick(settings);
+          else pauseWithAlert('有角色換裝脫下了沒穿回去，裝備清單又讀不到，已暫停（免得空手打）');
+        });
+      return true;
+    }
+    const team = new Set(state.huntTeamIds);
+    for (const [equipmentId, slot] of emptiedEquipSlots) {
+      const wearing = state.equipments.filter((equipment) => equipment.equipped === slot.heroId && equipment.type === slot.type).length;
+      // 隊伍還沒讀到（剛重整）時不能當成不在隊上而丟掉
+      if (wearing >= slot.expected || (team.size && !team.has(slot.heroId))) {
+        emptiedEquipSlots.delete(equipmentId);
+        saveEmptiedSlots();
+        continue;
+      }
+      const runId = state.runId;
+      const hero = state.heroStats.get(slot.heroId);
+      const who = `${hero ? hero.name : slot.heroId} 的${slot.type}`;
+      const original = state.equipments.find((equipment) => equipment.id === equipmentId && equipment.equipped === null && equipment.state === 0 && equipment.dur > 0);
+      const replacement = findReplacementEquipment(settings, { id: equipmentId, equipped: slot.heroId, type: slot.type, name: slot.name }) || original;
+      if (!replacement) {
+        pauseWithAlert(`${who}脫下了沒穿回去，也找不到能穿的，已暫停（免得空手打）`);
+        return true;
+      }
+      setStatus(`${who}脫下了還沒穿回去，先穿上「${replacement.name}」再打`);
+      putOnEquipmentByApi(slot.heroId, replacement).then((problem) => {
+        if (runId !== state.runId) return;
+        if (problem) {
+          logItemUse(`[換裝] ${who}脫下了沒穿回去，補穿失敗：${problem}`);
+          pauseWithAlert(`${who}脫下了沒穿回去（${problem}），已暫停（免得空手打）`);
+          return;
+        }
+        emptiedEquipSlots.delete(equipmentId);
+        saveEmptiedSlots();
+        logItemUse(`[換裝] ${who}脫下了沒穿回去 → 補穿「${replacement.name}」(耐久 ${replacement.dur}/${replacement.fullDur})`);
+        continueAfterItem(settings);
+      });
+      return true;
+    }
+    return false;
   }
 
   // 成功回傳空字串，失敗回傳原因；用回應的裝備清單確認真的穿上了
@@ -10353,6 +10425,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const wearing = state.equipments.filter((equipment) => equipment.equipped === slot.heroId && equipment.type === slot.type).length;
       if (wearing >= slot.expected) {
         emptiedEquipSlots.delete(equipmentId);
+        saveEmptiedSlots();
         return;
       }
       if (manualSupply.equipping) return;
@@ -10885,6 +10958,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       cureHuntHero(settings, cureTarget);
       return;
     }
+
+    if (restoreEmptiedSlot(settings)) return;
 
     if (!state.needRest && settings.equipApiEnabled) {
       if (Date.now() - state.equipmentsAt > EQUIPMENTS_FRESH_MILLISECONDS) {
