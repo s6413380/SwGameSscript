@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.68
+// @version      5.69
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -5914,6 +5914,13 @@
     }
   })());
 
+  // 同部位（武器、盾、頭、身、飾品）現在穿幾件；不認得的類型就只算同類型
+  function emptiedSlotWearing(slot) {
+    const part = equipPartOf(slot.type);
+    const types = part ? part.types : [slot.type];
+    return state.equipments.filter((equipment) => equipment.equipped === slot.heroId && types.includes(equipment.type)).length;
+  }
+
   function saveEmptiedSlots() {
     try {
       localStorage.setItem(EMPTIED_SLOTS_KEY, JSON.stringify([...emptiedEquipSlots]));
@@ -6382,10 +6389,11 @@
     return `換裝：監控 ${worn.length} 件${planned ? `（${planned} 人用個別設定）` : ''}，最危險 ${hero ? hero.name : lowest.equipped} 的${lowest.type} 耐久 ${lowest.dur}，低於 ${equipmentMinDurability(settings, lowest.equipped, lowest)} 換`;
   }
 
-  // 休息中的人不出戰、不耗耐久，不幫它換裝：脫下、穿上可能讓它結束休息，變成空手被拉去打
+  // 休息中的人不出戰、不耗耐久，不幫它換裝：脫下、穿上可能讓它結束休息，變成空手被拉去打。
+  // 挖礦、鍛造、販賣、練功、移動、復活中也一樣不碰；不認得的角色（沒讀到狀態）照舊
   function heroResting(heroId) {
     const hero = state.heroStats.get(heroId);
-    return Boolean(hero && hero.actionState === 2);
+    return Boolean(hero && Number.isFinite(Number(hero.actionState)) && Number(hero.actionState) !== 0);
   }
 
   function findWornEquipmentNeedingSwap(settings) {
@@ -6666,7 +6674,7 @@
         heroId,
         type: worn.type,
         name: worn.name,
-        expected: state.equipments.filter((equipment) => equipment.equipped === heroId && equipment.type === worn.type).length,
+        expected: emptiedSlotWearing({ heroId, type: worn.type }),
       });
       saveEmptiedSlots();
       state.equipments = result.equipments;
@@ -6709,7 +6717,7 @@
     }
     const team = new Set(state.huntTeamIds);
     for (const [equipmentId, slot] of emptiedEquipSlots) {
-      const wearing = state.equipments.filter((equipment) => equipment.equipped === slot.heroId && equipment.type === slot.type).length;
+      const wearing = emptiedSlotWearing(slot);
       // 隊伍還沒讀到（剛重整）時不能當成不在隊上而丟掉
       if (wearing >= slot.expected || (team.size && !team.has(slot.heroId))) {
         emptiedEquipSlots.delete(equipmentId);
@@ -10435,7 +10443,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     if (manualSupply.equipping) issues.push({ text: '換裝中（換好才能打）' });
     else if (supplying) issues.push({ text: '補給／換裝中' });
     emptiedEquipSlots.forEach((slot, equipmentId) => {
-      const wearing = state.equipments.filter((equipment) => equipment.equipped === slot.heroId && equipment.type === slot.type).length;
+      const wearing = emptiedSlotWearing(slot);
       if (wearing >= slot.expected) {
         emptiedEquipSlots.delete(equipmentId);
         saveEmptiedSlots();
@@ -12184,6 +12192,13 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         const lockMethod = String(lockInit.method || (lockInput instanceof Request ? lockInput.method : 'GET')).toUpperCase();
         const lockGuard = guardLockedEquipment(lockUrl, lockMethod, lockInit, args);
         if (lockGuard && lockGuard.response) return lockGuard.response;
+        let nakedHunt = '';
+        try {
+          if (!fromScript && lockMethod === 'POST' && HUNT_API_PATTERN.test(lockUrl)) nakedHunt = nakedHuntReason();
+        } catch {
+          // 檢查出錯就照常放行，不能擋到遊戲
+        }
+        if (nakedHunt) return lockedResponse(nakedHunt);
         if (lockGuard && lockGuard.args) args = lockGuard.args;
       }
       // 關閉面板＝不掛機也不回報，但手動玩的升級還是要記，所以只留成長值紀錄
@@ -18054,6 +18069,19 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   const EQUIPMENT_SELL_PATTERN = /\/api\/equipments\/(\d+)\/(sell|recycle)(?:[?#]|$)/;
   const EQUIPMENT_RECYCLE_ALL_PATTERN = /\/api\/equipments\/recycleAll(?:[?#]|$)/;
+
+  // 遊戲畫面按打怪／前行／後退時：有出戰的人空手就不送，回錯誤讓遊戲照常顯示提示
+  function nakedHuntReason() {
+    if (manualSupply.equipping) return '換裝中（脫下到穿上中間身上是空的），換好再打';
+    const team = new Set(state.huntTeamIds);
+    for (const slot of emptiedEquipSlots.values()) {
+      if (team.size && !team.has(slot.heroId)) continue;
+      if (heroResting(slot.heroId) || emptiedSlotWearing(slot) >= slot.expected) continue;
+      const hero = state.heroStats.get(slot.heroId);
+      return `${hero ? hero.name : slot.heroId} 的${slot.type}脫下了還沒穿回去，先穿上再打（愛吉吉擋下）`;
+    }
+    return '';
+  }
 
   function lockedResponse(message) {
     showToast(message);
