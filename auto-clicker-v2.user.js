@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.74
+// @version      5.75
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -312,6 +312,8 @@
     stageEnabled: false,
     // 前行／後退本身就是一場戰鬥又要全隊閒置：開了才會為了移動叫醒手動休息的人（它會跟著打到目的地）；預設不叫醒，停在原地等
     benchWakeForMove: false,
+    // 自己勾的不出戰名單：腳本一直讓它休息，全隊休息完、移動完被叫醒也會讓它休息回去
+    benchHeroIds: '',
     stageSelector: '',
     stageTargetArea: '大草原',
     stageTargetNumber: 1,
@@ -1247,6 +1249,10 @@
 
     <div data-tab="move">
       <label class="row"><input data-field="stageEnabled" type="checkbox" style="flex:none;width:auto"> 自動移動到目標關卡（到之前不原地掛機）</label>
+      <div class="subhead">不出戰（API 打怪）</div>
+      <div class="hint">勾了的隊員腳本會一直讓它休息、不上場；全隊休息完或移動完被叫醒，也會先讓它休息回去才打。取消勾選才會出戰</div>
+      <input type="hidden" data-field="benchHeroIds">
+      <div data-role="bench-heroes" class="choices"><div class="hint">還沒讀到隊伍</div></div>
       <label class="row"><input data-field="benchWakeForMove" type="checkbox" style="flex:none;width:auto"> 要移動時叫醒手動休息的角色（API 打怪）</label>
       <div class="hint">前行、後退要全隊閒置，而且每一步都是一場戰鬥：勾了會先叫醒手動休息的人，它會跟著打到目的地，到了再休息回去。不勾＝停在原地等你處理（避難、往回退也走不了）</div>
       <div class="row">關卡欄位<input data-field="stageSelector" placeholder="顯示目前位置的文字"><button data-pick="stageSelector" data-pick-mode="element">選取</button></div>
@@ -5386,6 +5392,31 @@
           )
           .join('')
       : '<div class="hint">隊伍裡沒有角色</div>';
+    const benched = chosenBenchHeroIds(readSettingsFromPanel());
+    panel.querySelector('[data-role="bench-heroes"]').innerHTML = heroes.length
+      ? heroes
+          .map(
+            (hero) => `<label style="display:inline-block;margin-right:10px"><input type="checkbox" data-bench-hero value="${hero.id}"
+              ${benched.includes(hero.id) ? 'checked' : ''} style="width:auto;flex:none"> ${escapeHtml(hero.name)}</label>`
+          )
+          .join('')
+      : '<div class="hint">隊伍裡沒有角色</div>';
+  }
+
+  function chosenBenchHeroIds(settings) {
+    return String(settings.benchHeroIds || '')
+      .split(',')
+      .map(Number)
+      .filter(Boolean);
+  }
+
+  // 不在畫面上的（暫時移出隊伍）照樣留著，回到隊伍還是不出戰
+  function updateBenchHeroesFromChoices() {
+    const inputs = Array.from(panel.querySelectorAll('[data-bench-hero]'));
+    const shown = inputs.map((input) => Number(input.value));
+    const kept = chosenBenchHeroIds(readSettingsFromPanel()).filter((id) => !shown.includes(id));
+    const checked = inputs.filter((input) => input.checked).map((input) => Number(input.value));
+    panel.querySelector('[data-field="benchHeroIds"]').value = [...kept, ...checked].join(',');
   }
 
   async function loadHuntTeam() {
@@ -9507,8 +9538,9 @@
     const resting = team.filter((hero) => hero.actionState === 2);
     // 為了移動先結束休息的人還算不出戰，到了再讓它休息回去
     const away = team.filter((hero) => (state.unbenchedForMove || new Set()).has(hero.id));
+    const chosen = chosenBenchHeroIds(readSettingsFromPanel());
     if (resting.length < team.length) {
-      const next = new Set([...resting, ...away].map((hero) => hero.id));
+      const next = new Set([...resting, ...away].map((hero) => hero.id).concat(chosen.filter((id) => team.some((hero) => hero.id === id))));
       const woke = team.filter((hero) => state.benchedHeroIds.has(hero.id) && !next.has(hero.id));
       if (woke.length) setStatus(`${woke.map((hero) => `${hero.name}（${hero.actionState}）`).join('、')} 原本手動休息，現在不在休息了，之後會出戰`);
       state.benchedHeroIds = next;
@@ -9538,12 +9570,43 @@
         if (hero && hero.id) state.heroStats.set(hero.id, { ...state.heroStats.get(hero.id), ...hero });
       } catch (error) {
         if (error.captchaRequired) throw error;
-        // 休息不回去就讓它照常出戰，不卡住打怪
-        state.benchedHeroIds.delete(id);
+        // 休息不回去就讓它照常出戰，不卡住打怪；自己勾的不出戰留著，打怪前會再讓它休息
+        if (!chosenBenchHeroIds(readSettingsFromPanel()).includes(id)) state.benchedHeroIds.delete(id);
         saveBenchState();
         setStatus(`${state.heroStats.get(id)?.name || id} 讓它休息回去失敗（${error.message}），這輪會出戰`);
       }
     }
+  }
+
+  // 自己勾不出戰的隊員醒著（全隊休息完、手動完成休息、移動完）：打怪前先讓它休息。
+  // 讓它休息失敗就先不打，免得它被拉去打；隔一陣子再試
+  function restChosenBench(settings) {
+    const chosen = chosenBenchHeroIds(settings);
+    const away = state.unbenchedForMove || new Set();
+    const awake = huntTeam().filter((hero) => chosen.includes(hero.id) && hero.actionState === 0 && !away.has(hero.id));
+    if (!awake.length) return false;
+    const names = awake.map((hero) => hero.name).join('、');
+    const runId = state.runId;
+    setStatus(`${names} 設成不出戰，先讓它休息`);
+    (async () => {
+      for (const hero of awake) {
+        const rested = await requestGameApi(`${HEROES_API}/${hero.id}/rest`, { method: 'POST' });
+        if (runId !== state.runId) return;
+        syncGameHeroAction(rested, 'rest');
+        state.heroStats.set(hero.id, { ...state.heroStats.get(hero.id), ...(rested && rested.id ? rested : {}), actionState: 2 });
+      }
+    })()
+      .then(() => {
+        if (runId === state.runId) state.timerId = planTick(() => tick(settings), randomGap(1500, 4000));
+      })
+      .catch((error) => {
+        if (runId !== state.runId) return;
+        if (error.captchaRequired) return pauseForCaptcha(settings);
+        setStatus(`${names} 設成不出戰，但讓它休息失敗（${error.message}），先不打，30 秒後再試`);
+        state.heroStatsAt = 0;
+        state.timerId = planTick(() => tick(settings), randomGap(25000, 40000));
+      });
+    return true;
   }
 
   // 前進、後退、換地圖要全隊閒置：手動休息（不出戰）的人先結束休息，到了目的地再讓它休息回去（restAfterMove）。
@@ -10791,6 +10854,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         state.huntInfo = info;
         state.heroStats = new Map((info.heroes || []).map((hero) => [hero.id, hero]));
         state.heroStatsAt = Date.now();
+      } else {
+        huntTeam().forEach((hero) => state.heroStats.set(hero.id, { ...hero, actionState: 0 }));
       }
       await restBenchedHeroes(runId);
       if (runId !== state.runId) return;
@@ -11049,6 +11114,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       });
       return;
     }
+
+    // 要用最新的隊伍狀態判斷誰醒著，放在重抓角色數值之後
+    if (apiHunt && !state.needRest && restChosenBench(settings)) return;
 
     const supplyTarget = state.needRest ? null : findSlotNeedingItem(settings);
     if (supplyTarget) {
@@ -24245,6 +24313,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     if (event.target.dataset.itemChoice) updateItemNamesFromChoices(event.target.dataset.itemChoice);
     if (event.target.dataset.heroChoice) updateHeroIdsFromChoices(event.target.dataset.heroChoice);
     if (event.target.dataset.huntInclude !== undefined) updateExcludedHeroesFromChoices();
+    if (event.target.dataset.benchHero !== undefined) updateBenchHeroesFromChoices();
     if (event.target.dataset.equipHero !== undefined) {
       updateEquipHeroesFromChoices();
       renderEquipHeroes(equipPlanView.heroes);
