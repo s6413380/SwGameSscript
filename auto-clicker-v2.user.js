@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.75
+// @version      5.76
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1598,7 +1598,7 @@
     </div>
 
     <div data-tab="alloyTest">
-      <div class="hint">一種金屬當底材，加一個別的材料看有沒有加成：同一個角色、同一種裝備、同一個名稱，輪流做「純底材（材料上限個）」和「底材少 1 個＋添加材料 1 個」，每種做幾件。數值先換成普通品質，再跟同一天、同名稱的純底材比，正的就是加成。名稱 00:00 換效果，所以只拿同一天的比</div>
+      <div class="hint">一種金屬當底材，加別的材料看有沒有加成：同一個角色、同一種裝備、同一個名稱，輪流做「純底材（材料上限個）」和「底材少幾個＋添加材料幾個」（份量、兩兩組合可以選），每種做幾件。數值先換成普通品質，再跟同一天、同名稱的純底材比，正的就是加成。名稱 00:00 換效果，所以只拿同一天的比</div>
       <div class="row">角色<select data-alloy-test="heroId" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
       <div class="row">裝備<select data-alloy-test="type" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select>每種做<input data-alloy-test="repeat" type="number" min="1" max="10" style="flex:none;width:48px">件</div>
       <div class="row">名稱<input data-alloy-test="name" placeholder="固定一個名稱，例：合金測試" style="flex:1;min-width:0"></div>
@@ -1607,6 +1607,8 @@
       <div data-role="alloy-test-bases" style="max-height:110px;overflow:auto;font-size:12px"></div>
       <div class="row">添加<span class="hint" style="margin:0">（每種跟底材各做一組）</span><span style="flex:1"></span><button data-action="alloy-test-clear-additives">清空</button></div>
       <div data-role="alloy-test-additives" style="max-height:140px;overflow:auto;font-size:12px"></div>
+      <div class="row">添加份量<input data-alloy-test="amounts" placeholder="1" style="flex:none;width:80px"><span class="hint" style="margin:0">（例：1,2,3＝每種添加各做放 1、2、3 份，底材跟著少）</span></div>
+      <label class="row"><input data-alloy-test="pairs" type="checkbox" style="flex:none;width:auto"> 兩兩組合：勾的添加兩種一起各放 1 份（底材少 2 個）<span class="hint" style="margin:0">種類多時爐數很多，看下面的爐數</span></label>
       <div class="row"><button data-action="alloy-test-start" style="font-weight:bold">開始測試</button><button data-action="alloy-test-stop">停止</button><button data-action="alloy-test-refresh">讀取裝備並更新結果</button><button data-action="alloy-test-copy" title="複製成跟「加成合金」表一樣的格式（底材一欄、添加一列）">複製結果</button></div>
       <textarea data-role="alloy-test-export" rows="4" readonly style="display:none;width:100%;box-sizing:border-box;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></textarea>
       <div data-role="alloy-test-status" class="hint"></div>
@@ -17406,7 +17408,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   const alloyTestRunner = { running: false, runId: 0, timerId: null, failures: 0, status: '' };
 
   function loadAlloyTest() {
-    return { heroId: 0, type: '單手劍', name: '', bases: '鐵', additives: '', repeat: 3, started: {}, ...(readJsonStorage(ALLOY_TEST_KEY, null) || {}) };
+    return { heroId: 0, type: '單手劍', name: '', bases: '鐵', additives: '', amounts: '1', pairs: false, repeat: 3, started: {}, ...(readJsonStorage(ALLOY_TEST_KEY, null) || {}) };
   }
 
   function saveAlloyTest(config) {
@@ -17421,15 +17423,34 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return Math.min(10, Math.max(1, Math.round(Number(config.repeat) || 1)));
   }
 
-  // 每種底材一組：純底材當對照，再來每種添加各一個配方
+  // 「1,2,3」→ [1, 2, 3]；底材至少要留 1 個
+  function alloyTestAmounts(config, cap) {
+    const amounts = String(config.amounts || '1')
+      .split(/[\s,，、]+/)
+      .map((value) => Math.round(Number(value)))
+      .filter((value) => value >= 1 && value < cap);
+    return amounts.length ? [...new Set(amounts)].sort((first, second) => first - second) : [1];
+  }
+
+  // 每種底材一組：純底材當對照，再來每種添加每個份量一個配方，勾了兩兩組合再加上兩種各 1 份。
+  // additive 是給人看的名字（鈹、鈹×2、鈹＋銥），空的＝對照
   function alloyTestRecipes(config) {
     const cap = MATERIAL_CAPS[config.type] || 0;
     if (cap < 2) return [];
-    const additives = alloyMaterialNames(config.additives);
-    return alloyMaterialNames(config.bases).flatMap((base) => [
-      { base, additive: '', recipe: `${base}×${cap}` },
-      ...additives.filter((additive) => additive !== base).map((additive) => ({ base, additive, recipe: `${base}×${cap - 1}、${additive}×1` })),
-    ]);
+    const amounts = alloyTestAmounts(config, cap);
+    return alloyMaterialNames(config.bases).flatMap((base) => {
+      const additives = alloyMaterialNames(config.additives).filter((additive) => additive !== base);
+      const singles = additives.flatMap((additive) =>
+        amounts.map((amount) => ({ base, additive: amount === 1 ? additive : `${additive}×${amount}`, recipe: `${base}×${cap - amount}、${additive}×${amount}` }))
+      );
+      const pairs =
+        config.pairs && cap >= 3
+          ? additives.flatMap((first, index) =>
+              additives.slice(index + 1).map((second) => ({ base, additive: `${first}＋${second}`, recipe: `${base}×${cap - 2}、${first}×1、${second}×1` }))
+            )
+          : [];
+      return [{ base, additive: '', recipe: `${base}×${cap}` }, ...singles, ...pairs];
+    });
   }
 
   function alloyRecipeKey(recipe) {
@@ -17505,7 +17526,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const config = loadAlloyTest();
     panel.querySelectorAll('[data-alloy-test]').forEach((input) => {
       const field = input.dataset.alloyTest;
-      config[field] = ['heroId', 'repeat'].includes(field) ? Number(input.value) || 0 : input.value;
+      config[field] = input.type === 'checkbox' ? input.checked : ['heroId', 'repeat'].includes(field) ? Number(input.value) || 0 : input.value;
     });
     return config;
   }
@@ -17519,7 +17540,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const typeSelect = panel.querySelector('[data-alloy-test="type"]');
     if (!typeSelect.options.length) typeSelect.innerHTML = Object.values(FORGE_TYPE_NAMES).map((type) => `<option>${escapeHtml(type)}</option>`).join('');
     panel.querySelectorAll('[data-alloy-test]').forEach((input) => {
-      if (document.activeElement !== input) input.value = config[input.dataset.alloyTest] ?? '';
+      if (input.type === 'checkbox') input.checked = Boolean(config[input.dataset.alloyTest]);
+      else if (document.activeElement !== input) input.value = config[input.dataset.alloyTest] ?? '';
     });
     renderAlloyMaterialPicks(config);
     renderAlloyTestStatus();
