@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.72
+// @version      5.73
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -182,6 +182,7 @@
     ['material', '材料統計'],
     ['forgerCompare', '鍛造師比較'],
     ['nameTest', '自測名稱'],
+    ['alloyTest', '合金測試'],
     ['combat', '戰鬥'],
     ['huntStats', '樓層'],
     ['income', '收益'],
@@ -200,11 +201,11 @@
     ['cardBuy', '購卡'],
   ];
   // 輔助模式收起來的分頁：都是自動化才用得到的
-  const ASSIST_HIDDEN_TABS = ['main', 'move', 'train', 'forge', 'nameTest', 'mining', 'pick', 'transfer', 'cardBuy', 'api'];
+  const ASSIST_HIDDEN_TABS = ['main', 'move', 'train', 'forge', 'nameTest', 'alloyTest', 'mining', 'pick', 'transfer', 'cardBuy', 'api'];
   // 分頁太多，先選大類再選分頁；大類裡記住上次看的分頁
   const TAB_GROUPS = [
     ['hunt', '打怪', ['main', 'health', 'resource', 'move', 'equip', 'train', 'pause']],
-    ['forging', '鍛造', ['forge', 'recipe', 'material', 'forgerCompare', 'nameTest', 'mining']],
+    ['forging', '鍛造', ['forge', 'recipe', 'material', 'forgerCompare', 'nameTest', 'alloyTest', 'mining']],
     ['stats', '統計', ['income', 'combat', 'huntStats', 'loot', 'growth', 'draw', 'scratch', 'sales']],
     ['other', '其他', ['pick', 'transfer', 'cardBuy', 'alert', 'cloud', 'log', 'api', 'backup']],
   ];
@@ -1590,6 +1591,19 @@
       <div data-role="name-test-result" style="font-size:12px;max-height:420px;overflow:auto"></div>
     </div>
 
+    <div data-tab="alloyTest">
+      <div class="hint">一種金屬當底材，加一個別的材料看有沒有加成：同一個角色、同一種裝備、同一個名稱，輪流做「純底材（材料上限個）」和「底材少 1 個＋添加材料 1 個」，每種做幾件。數值先換成普通品質，再跟同一天、同名稱的純底材比，正的就是加成。名稱 00:00 換效果，所以只拿同一天的比</div>
+      <div class="row">角色<select data-alloy-test="heroId" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
+      <div class="row">裝備<select data-alloy-test="type" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select>每種做<input data-alloy-test="repeat" type="number" min="1" max="10" style="flex:none;width:48px">件</div>
+      <div class="row">名稱<input data-alloy-test="name" placeholder="固定一個名稱，例：合金測試" style="flex:1;min-width:0"></div>
+      <div class="row">底材<input data-alloy-test="bases" placeholder="例：鐵、銅（可以填好幾種，各自一組）" style="flex:1;min-width:0"></div>
+      <div class="row">添加<input data-alloy-test="additives" placeholder="例：銀、金、鉛、鋁、鉑、鈦、鎢" style="flex:1;min-width:0"></div>
+      <div class="row"><button data-action="alloy-test-start" style="font-weight:bold">開始測試</button><button data-action="alloy-test-stop">停止</button><button data-action="alloy-test-refresh">讀取裝備並更新結果</button><button data-action="alloy-test-copy" title="複製成跟「加成合金」表一樣的格式（底材一欄、添加一列）">複製結果</button></div>
+      <textarea data-role="alloy-test-export" rows="4" readonly style="display:none;width:100%;box-sizing:border-box;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></textarea>
+      <div data-role="alloy-test-status" class="hint"></div>
+      <div data-role="alloy-test-result" style="font-size:12px;max-height:420px;overflow:auto"></div>
+    </div>
+
     <div data-tab="mining">
       <div class="row"><button data-action="mining-start" style="font-weight:bold">開始挖礦</button><button data-action="mining-stop">停止挖礦</button><button data-action="mining-refresh">重新讀取</button></div>
       <div class="row">立即收礦 <select data-role="mining-collect-site" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">全部地點</option><option value="1">砂石場</option><option value="2">森林區</option><option value="3">鐵礦山</option><option value="4">阿嬤寶山</option></select>
@@ -2146,6 +2160,13 @@
         .then(() => activeTab === 'nameTest' && renderNameTest())
         .catch(() => {});
       if (Date.now() - mineStockAt > MINE_STOCK_FRESH_MILLISECONDS) refreshMineStock().then(() => activeTab === 'nameTest' && renderNameTestStatus()).catch(() => {});
+    }
+    if (tabId === 'alloyTest') {
+      renderAlloyTest();
+      refreshForgeHeroes()
+        .then(() => activeTab === 'alloyTest' && renderAlloyTest())
+        .catch(() => {});
+      if (Date.now() - mineStockAt > MINE_STOCK_FRESH_MILLISECONDS) refreshMineStock().then(() => activeTab === 'alloyTest' && renderAlloyTestStatus()).catch(() => {});
     }
     if (tabId === 'recipe') {
       renderRecipes();
@@ -11980,6 +12001,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       refreshForgerCompare();
     } else if (action === 'forger-compare-viewer') {
       openForgerCompareViewer();
+    } else if (action === 'alloy-test-start') {
+      startAlloyTest();
+    } else if (action === 'alloy-test-stop') {
+      stopAlloyTest();
+    } else if (action === 'alloy-test-refresh') {
+      refreshAlloyTest();
+    } else if (action === 'alloy-test-copy') {
+      copyAlloyTestResult();
     } else if (action === 'name-test-start') {
       startNameTest();
     } else if (action === 'name-test-stop') {
@@ -17290,6 +17319,360 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }
   }
 
+  function forgeTestingHeroIds() {
+    return [nameTestRunner.running ? Number(loadNameTest().heroId) : 0, alloyTestRunner.running ? Number(loadAlloyTest().heroId) : 0].filter(Boolean);
+  }
+
+  // ---------- 合金測試 ----------
+  // 社群「加成合金」表的測法：一種金屬當底材，換掉 1 個成別的材料，看數值比純底材多幾 %。
+  // 同角色、同裝備、同名稱輪流做（名稱和鍛造技能都會影響數值，固定住才只剩材料的差別），換成普通品質後跟同一天的純底材比
+  const ALLOY_TEST_KEY = 'aijijiAlloyTest';
+  const ALLOY_TEST_RETRY_LIMIT = 3;
+  const ALLOY_TEST_FIELDS = [['atk', '攻擊'], ['def', '防禦'], ['int', '智力'], ['lck', '幸運'], ['wgt', '重量'], ['fullDur', '耐久']];
+  const alloyTestRunner = { running: false, runId: 0, timerId: null, failures: 0, status: '' };
+
+  function loadAlloyTest() {
+    return { heroId: 0, type: '單手劍', name: '', bases: '鐵', additives: '', repeat: 3, started: {}, ...(readJsonStorage(ALLOY_TEST_KEY, null) || {}) };
+  }
+
+  function saveAlloyTest(config) {
+    writeJsonStorage(ALLOY_TEST_KEY, config);
+  }
+
+  function alloyMaterialNames(text) {
+    return [...new Set(String(text || '').split(/[\s,，、]+/).map((name) => name.trim()).filter(Boolean))];
+  }
+
+  function alloyTestRepeat(config) {
+    return Math.min(10, Math.max(1, Math.round(Number(config.repeat) || 1)));
+  }
+
+  // 每種底材一組：純底材當對照，再來每種添加各一個配方
+  function alloyTestRecipes(config) {
+    const cap = MATERIAL_CAPS[config.type] || 0;
+    if (cap < 2) return [];
+    const additives = alloyMaterialNames(config.additives);
+    return alloyMaterialNames(config.bases).flatMap((base) => [
+      { base, additive: '', recipe: `${base}×${cap}` },
+      ...additives.filter((additive) => additive !== base).map((additive) => ({ base, additive, recipe: `${base}×${cap - 1}、${additive}×1` })),
+    ]);
+  }
+
+  function alloyRecipeKey(recipe) {
+    return recipeKeyOf(parseRecipeLoosely(recipe));
+  }
+
+  // 今天這個角色、裝備、名稱每個配方開過幾爐（開了就算，不等做好）
+  function alloyConditionKey(config) {
+    return `${Number(config.heroId)}|${config.type}|${String(config.name || '').trim()}`;
+  }
+
+  function alloyStartedToday(config) {
+    const today = (config.started || {})[localDayKey(Date.now())] || {};
+    return today[alloyConditionKey(config)] || {};
+  }
+
+  // 輪著做：挑今天做最少的配方，一樣少就照清單順序（純底材排每組最前面）
+  function nextAlloyJob(config) {
+    const started = alloyStartedToday(config);
+    const repeat = alloyTestRepeat(config);
+    return alloyTestRecipes(config)
+      .map((entry) => ({ ...entry, count: started[alloyRecipeKey(entry.recipe)] || 0 }))
+      .filter((entry) => entry.count < repeat)
+      .reduce((best, entry) => (!best || entry.count < best.count ? entry : best), null);
+  }
+
+  // 同一天、同名稱的才比；每組（日期＋名稱）算 添加的平均 ÷ 純底材的平均 − 1，再照件數加權平均
+  function alloyTestResults(config) {
+    if (!config.heroId || !config.type) return [];
+    const recipes = alloyTestRecipes(config);
+    const byKey = new Map(recipes.map((entry) => [alloyRecipeKey(entry.recipe), entry]));
+    const multipliers = qualityMultipliers();
+    const groups = new Map();
+    forgedRecords().forEach((item) => {
+      if (Number(item.heroId) !== Number(config.heroId) || item.type !== config.type || !Array.isArray(item.materials)) return;
+      const key = recipeKeyOf(item.materials);
+      if (!byKey.has(key)) return;
+      const group = `${localDayKey(item.craftedTime)}|${String(item.name || '').trim()}`;
+      if (!groups.has(group)) groups.set(group, new Map());
+      const samples = groups.get(group);
+      if (!samples.has(key)) samples.set(key, []);
+      samples.get(key).push(baseStats(item, multipliers));
+    });
+    const average = (bases, field) => bases.reduce((sum, base) => sum + base[field], 0) / bases.length;
+    return recipes.map((entry) => {
+      const key = alloyRecipeKey(entry.recipe);
+      const controlKey = alloyRecipeKey(`${entry.base}×${MATERIAL_CAPS[config.type]}`);
+      let n = 0;
+      let controlN = 0;
+      const sums = Object.fromEntries(ALLOY_TEST_FIELDS.map(([field]) => [field, 0]));
+      const weights = Object.fromEntries(ALLOY_TEST_FIELDS.map(([field]) => [field, 0]));
+      groups.forEach((samples) => {
+        const own = samples.get(key) || [];
+        const control = samples.get(controlKey) || [];
+        // 對照組算全部；添加的只算當天有純底材可以比的
+        if (!entry.additive) n += own.length;
+        if (!entry.additive || !own.length || !control.length) return;
+        n += own.length;
+        controlN += control.length;
+        ALLOY_TEST_FIELDS.forEach(([field]) => {
+          const reference = average(control, field);
+          if (!reference) return;
+          sums[field] += (average(own, field) / reference - 1) * own.length;
+          weights[field] += own.length;
+        });
+      });
+      const bonus = Object.fromEntries(ALLOY_TEST_FIELDS.map(([field]) => [field, weights[field] ? sums[field] / weights[field] : null]));
+      return { ...entry, n, controlN, bonus };
+    });
+  }
+
+  function readAlloyTestForm() {
+    const config = loadAlloyTest();
+    panel.querySelectorAll('[data-alloy-test]').forEach((input) => {
+      const field = input.dataset.alloyTest;
+      config[field] = ['heroId', 'repeat'].includes(field) ? Number(input.value) || 0 : input.value;
+    });
+    return config;
+  }
+
+  function renderAlloyTest() {
+    const config = loadAlloyTest();
+    const heroSelect = panel.querySelector('[data-alloy-test="heroId"]');
+    const heroes = forgeHeroes.slice().sort((first, second) => (second.forge || 0) - (first.forge || 0));
+    heroSelect.innerHTML = `<option value="0">選角色</option>${heroes.map((hero) => `<option value="${hero.id}">${escapeHtml(hero.name)}（鍛 ${hero.forge ?? '?'}・裁 ${hero.tailor ?? '?'}・工 ${hero.craft ?? '?'}）</option>`).join('')}`;
+    if (config.heroId && !heroes.some((hero) => hero.id === Number(config.heroId))) heroSelect.add(new Option(`角色 ${config.heroId}`, String(config.heroId)));
+    const typeSelect = panel.querySelector('[data-alloy-test="type"]');
+    if (!typeSelect.options.length) typeSelect.innerHTML = Object.values(FORGE_TYPE_NAMES).map((type) => `<option>${escapeHtml(type)}</option>`).join('');
+    panel.querySelectorAll('[data-alloy-test]').forEach((input) => {
+      if (document.activeElement !== input) input.value = config[input.dataset.alloyTest] ?? '';
+    });
+    renderAlloyTestStatus();
+    const rows = alloyTestResults(config);
+    const box = panel.querySelector('[data-role="alloy-test-result"]');
+    if (!rows.some((entry) => entry.n)) {
+      box.innerHTML = '<div class="hint">還沒有做好的測試品；做好後按「讀取裝備並更新結果」</div>';
+      return;
+    }
+    const cell = (value, field) => {
+      if (value === null) return '<td style="color:#78716c">-</td>';
+      const percent = Math.round(value * 1000) / 10;
+      // 重量變重是壞事，顏色反過來
+      const good = field === 'wgt' ? percent < 0 : percent > 0;
+      return `<td style="color:${Math.abs(percent) < 1 ? '#a0a0aa' : good ? '#4ade80' : '#f87171'}">${percent > 0 ? '+' : ''}${percent}%</td>`;
+    };
+    box.innerHTML = `<table class="combat"><tr><th style="text-align:left">配方</th><th>件</th>${ALLOY_TEST_FIELDS.map(([, label]) => `<th>${label.slice(0, 1)}</th>`).join('')}</tr>${rows
+      .map((entry) =>
+        entry.additive
+          ? `<tr><td style="text-align:left">${escapeHtml(entry.base)}＋${escapeHtml(entry.additive)}</td><td>${entry.n}</td>${ALLOY_TEST_FIELDS.map(([field]) => cell(entry.bonus[field], field)).join('')}</tr>`
+          : `<tr style="background:#1c1c22"><td style="text-align:left"><b>純${escapeHtml(entry.base)}</b>（對照）</td><td>${entry.n}</td><td colspan="${ALLOY_TEST_FIELDS.length}" style="text-align:left;color:#a0a0aa">${escapeHtml(entry.recipe)}</td></tr>`
+      )
+      .join('')}</table>
+      <div class="hint">% ＝ 添加配方的平均（換成普通品質）÷ 同一天同名稱的純底材平均 − 1；重量正的是變重。每種只做幾件時品質、運氣的誤差還很大，±5% 內先當沒差，看得到方向後再加做</div>`;
+  }
+
+  function renderAlloyTestStatus() {
+    const box = panel.querySelector('[data-role="alloy-test-status"]');
+    if (!box) return;
+    const config = loadAlloyTest();
+    const recipes = alloyTestRecipes(config);
+    const started = alloyStartedToday(config);
+    const repeat = alloyTestRepeat(config);
+    const done = recipes.reduce((sum, entry) => sum + Math.min(started[alloyRecipeKey(entry.recipe)] || 0, repeat), 0);
+    // 剩下的爐數要用多少材料，跟庫存比
+    const need = new Map();
+    recipes.forEach((entry) => {
+      const left = repeat - Math.min(started[alloyRecipeKey(entry.recipe)] || 0, repeat);
+      parseRecipeLoosely(entry.recipe).forEach(([name, quantity]) => need.set(name, (need.get(name) || 0) + quantity * left));
+    });
+    const stock = new Map(mineStock.map((mine) => [mine.name, mine.have]));
+    const short = mineStock.length ? [...need].filter(([name, quantity]) => quantity > (stock.get(name) || 0)).map(([name, quantity]) => `${name} 要 ${quantity} 有 ${stock.get(name) || 0}`) : [];
+    box.innerHTML = `${alloyTestRunner.running ? '🟢 測試中' : '⚪ 沒在測'}・今天 ${done}/${recipes.length * repeat} 爐（${recipes.length} 種配方）${
+      short.length ? `<br><span style="color:#f87171">材料不夠：${short.map(escapeHtml).join('、')}</span>` : ''
+    }${alloyTestRunner.status ? `<br>${escapeHtml(alloyTestRunner.status)}` : ''}`;
+  }
+
+  async function refreshAlloyTest() {
+    try {
+      await refreshNameTestEquipments();
+      await refreshForgeHeroes(true);
+      if (Date.now() - mineStockAt > MINE_STOCK_FRESH_MILLISECONDS) await refreshMineStock();
+    } catch (error) {
+      setStatus(`讀取失敗（${error.message}）`);
+    }
+    renderAlloyTest();
+  }
+
+  // 跟「加成合金」表同一個樣子：底材一段、每種添加一列
+  function alloyTestResultText(config) {
+    const rows = alloyTestResults(config);
+    const fields = ALLOY_TEST_FIELDS.filter(([field]) => field !== 'wgt');
+    return alloyMaterialNames(config.bases)
+      .map((base) => {
+        const lines = rows
+          .filter((entry) => entry.base === base && entry.additive)
+          .map((entry) => [entry.additive, ...fields.map(([field]) => (entry.bonus[field] === null ? '' : `${Math.round(entry.bonus[field] * 100)}%`)), entry.n].join('\t'));
+        return [[`${base}底`, ...fields.map(([, label]) => label), '件數'].join('\t'), ...lines].join('\n');
+      })
+      .join('\n\n');
+  }
+
+  async function copyAlloyTestResult() {
+    const text = alloyTestResultText(readAlloyTestForm());
+    const box = panel.querySelector('[data-role="alloy-test-export"]');
+    if (!text) {
+      setStatus('沒有結果可以複製');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      box.style.display = 'none';
+      setStatus('已複製合金測試結果');
+    } catch {
+      box.value = text;
+      box.style.display = '';
+      box.select();
+      setStatus('無法直接複製，結果已放在下方文字框，請按 Ctrl+C');
+    }
+  }
+
+  function alloyTestLog(message) {
+    alloyTestRunner.status = `${new Date().toLocaleTimeString('zh-TW', { hour12: false })} ${message}`;
+    setStatus(`［合金］${message}`);
+    if (activeTab === 'alloyTest') renderAlloyTestStatus();
+  }
+
+  function scheduleAlloyTest(delay) {
+    backgroundTimer.clearTimeout(alloyTestRunner.timerId);
+    const runId = alloyTestRunner.runId;
+    alloyTestRunner.timerId = backgroundTimer.setTimeout(() => {
+      if (runId === alloyTestRunner.runId) alloyTestTick();
+    }, delay);
+  }
+
+  function startAlloyTest() {
+    const config = readAlloyTestForm();
+    saveAlloyTest(config);
+    if (alloyTestRunner.running) return alloyTestLog('已經在測了');
+    if (!config.heroId) return alloyTestLog('先選角色');
+    if (!String(config.name || '').trim()) return alloyTestLog('先填名稱（整個測試用同一個）');
+    if (!alloyMaterialNames(config.bases).length) return alloyTestLog('先填底材');
+    if (!alloyMaterialNames(config.additives).length) return alloyTestLog('先填添加材料');
+    if (nameTestRunner.running && Number(loadNameTest().heroId) === Number(config.heroId)) return alloyTestLog('這個角色正在測名，換一個角色或先停測名');
+    if (!nextAlloyJob(config)) return alloyTestLog('今天這些配方都做到件數了，要再做就把「每種做幾件」調大');
+    alloyTestRunner.running = true;
+    alloyTestRunner.runId++;
+    alloyTestRunner.failures = 0;
+    alloyTestLog('開始合金測試');
+    alloyTestTick();
+  }
+
+  function stopAlloyTest(message) {
+    alloyTestRunner.running = false;
+    alloyTestRunner.runId++;
+    backgroundTimer.clearTimeout(alloyTestRunner.timerId);
+    alloyTestLog(message || '已停止');
+    wakeForgeRunner();
+  }
+
+  async function alloyTestTick() {
+    if (alloyTestRunner.ticking) return;
+    alloyTestRunner.ticking = true;
+    try {
+      await alloyTestTickOnce();
+    } finally {
+      alloyTestRunner.ticking = false;
+    }
+  }
+
+  // 跟測名同一套：收爐 → 讀裝備（做好的才對得上數值）→ 挑下一個配方 → 找空的鍛造坊開爐
+  async function alloyTestTickOnce() {
+    if (!alloyTestRunner.running) return;
+    if (tabShutDown) return stopAlloyTest('分頁關閉了');
+    const runId = alloyTestRunner.runId;
+    const cancelled = () => runId !== alloyTestRunner.runId;
+    const config = loadAlloyTest();
+    try {
+      let heroes = (await requestGameApi(HEROES_API)).heroes || [];
+      if (cancelled()) return;
+      forgeHeroes = heroes;
+      forgeHeroesAt = Date.now();
+      let hero = heroes.find((candidate) => candidate.id === Number(config.heroId));
+      if (!hero) return stopAlloyTest('找不到測試的角色');
+      if (hero.actionState === 5) {
+        const doneAt = Date.parse(hero.actionCompleteTime);
+        if (!hero.canComplete && !(Number.isFinite(doneAt) && doneAt <= Date.now())) {
+          const delay = Math.min(Math.max((Number.isFinite(doneAt) ? doneAt : Date.now() + 60000) - Date.now(), 0) + randomGap(3000, 12000), 15 * 60000);
+          alloyTestLog(`${hero.name} 鍛造中，${Math.round(delay / 1000)} 秒後再看`);
+          scheduleAlloyTest(delay);
+          return;
+        }
+        const completed = await requestGameApi(`${HEROES_API}/${hero.id}/completeForge`, { method: 'POST' });
+        if (cancelled()) return;
+        syncGameCompleteForge(completed, hero.id);
+        heroes = completed.heroes || heroes;
+        hero = heroes.find((candidate) => candidate.id === hero.id) || { ...hero, actionState: 0 };
+        await refreshNameTestEquipments();
+        if (cancelled()) return;
+        if (activeTab === 'alloyTest') renderAlloyTest();
+      }
+      const job = nextAlloyJob(loadAlloyTest());
+      if (!job) {
+        stopAlloyTest(`今天的 ${alloyTestRecipes(config).length} 種配方都做完了`);
+        showToast('合金測試做完了，到「鍛造 → 合金測試」看結果');
+        return;
+      }
+      if (inHuntTeam(hero)) return stopAlloyTest(`${hero.name} 在狩獵隊伍裡，不能鍛造`);
+      if (hero.actionState) {
+        alloyTestLog(`${hero.name} 在忙別的事，閒下來再開爐`);
+        scheduleAlloyTest(randomGap(60000, 90000));
+        return;
+      }
+      const busyShops = new Set(heroes.filter((candidate) => candidate.actionState === 5).map((candidate) => Number(candidate.actionTarget)));
+      const shopCount = await forgeShopCount();
+      if (cancelled()) return;
+      const freeShop = Array.from({ length: shopCount }, (_, index) => index + 1).find((shop) => !busyShops.has(shop));
+      if (!freeShop) {
+        const delay = nextForgeDelay(heroes, [hero.id], false);
+        alloyTestLog(`${shopCount} 間鍛造坊都有人在用，${Math.round(delay / 1000)} 秒後再看`);
+        scheduleAlloyTest(delay);
+        return;
+      }
+      const name = String(config.name).trim();
+      const { body, summary } = await buildForgeRequest({ type: config.type, recipe: job.recipe, name }, hero.id, freeShop);
+      if (cancelled()) return;
+      await sendForge(body);
+      const fresh = loadAlloyTest();
+      const day = localDayKey(Date.now());
+      const condition = alloyConditionKey(config);
+      const today = (fresh.started || {})[day] || {};
+      const counts = today[condition] || {};
+      const key = alloyRecipeKey(job.recipe);
+      // 只留今天的，舊的日子用不到
+      fresh.started = { [day]: { ...today, [condition]: { ...counts, [key]: (counts[key] || 0) + 1 } } };
+      saveAlloyTest(fresh);
+      alloyTestRunner.failures = 0;
+      alloyTestLog(`${hero.name} 在鍛造坊 ${freeShop} 開始做 ${job.additive ? `${job.base}＋${job.additive}` : `純${job.base}`}（${summary}）`);
+      scheduleAlloyTest(randomGap(15000, 30000));
+    } catch (error) {
+      if (cancelled()) return;
+      if (error.captchaRequired) {
+        stopAlloyTest('伺服器要求活人驗證，驗證完再按「開始測試」');
+        alertUser('合金測試：伺服器要求活人驗證，已停止', { paused: true });
+        return;
+      }
+      if ((error.transient || error.status) && !/材料|庫存|上限/.test(error.message) && alloyTestRunner.failures < ALLOY_TEST_RETRY_LIMIT) {
+        alloyTestRunner.failures++;
+        alloyTestLog(`出錯（${error.message}），稍後重試（第 ${alloyTestRunner.failures}/${ALLOY_TEST_RETRY_LIMIT} 次）`);
+        scheduleAlloyTest(randomGap(30000, 60000));
+        return;
+      }
+      // 材料不夠、名稱不合規定這類不會自己好
+      stopAlloyTest(`停止：${error.message}`);
+      showToast(`合金測試停止：${error.message}`);
+    }
+  }
+
   async function refreshForgerCompare() {
     try {
       const equipments = (await requestGameApi(EQUIPMENTS_API)).equipments || [];
@@ -20737,8 +21120,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const heroIds = forgeByApiHeroIds(settings);
     const heroById = new Map(forgeHeroes.map((hero) => [hero.id, hero]));
     const order = [...forgeHeroes.filter((hero) => heroIds.includes(hero.id)).map((hero) => hero.id), ...heroIds.filter((id) => !heroById.has(id))];
-    const testingId = nameTestRunner.running ? Number(loadNameTest().heroId) : 0;
-    const nextId = order.find((id) => id !== testingId && heroById.has(id) && canStartForge(heroById.get(id)));
+    const testingIds = forgeTestingHeroIds();
+    const nextId = order.find((id) => !testingIds.includes(id) && heroById.has(id) && canStartForge(heroById.get(id)));
     const stock = new Map(mineStock.map((mine) => [mine.name, mine.have]));
     const plans = forgeByApiPlans(settings);
     return order.map((heroId) => {
@@ -20747,7 +21130,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const recipe = parseRecipeLoosely(plan.recipe);
       const total = recipe.reduce((sum, [, quantity]) => sum + quantity, 0);
       const cap = MATERIAL_CAPS[plan.type];
-      const [statusColor, statusText] = heroId === testingId ? ['#c084fc', '🧪 測名中，測完回到佇列'] : forgeHeroStatus(hero, heroId === nextId);
+      const [statusColor, statusText] = testingIds.includes(heroId) ? ['#c084fc', '🧪 測試中（測名或合金），測完回到佇列'] : forgeHeroStatus(hero, heroId === nextId);
       const problems = [];
       if (!recipe.length) problems.push('還沒設定配方，輪到它時會暫停');
       if (!String(plan.name || '').trim()) problems.push('沒有名稱');
@@ -21269,9 +21652,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       pauseForgeRunner('還沒勾要鍛造的角色');
       return;
     }
-    // 測名中的角色交給測名收爐、開爐，測完再回到佇列，兩邊才不會搶同一個角色
-    const testingId = nameTestRunner.running ? Number(loadNameTest().heroId) : 0;
-    const heroIds = queuedIds.filter((heroId) => heroId !== testingId);
+    // 測名、合金測試中的角色交給測試收爐、開爐，測完再回到佇列，兩邊才不會搶同一個角色
+    const testingIds = forgeTestingHeroIds();
+    const heroIds = queuedIds.filter((heroId) => !testingIds.includes(heroId));
     try {
       let heroes = (await requestGameApi(HEROES_API)).heroes || [];
       if (cancelled()) return;
@@ -23731,6 +24114,12 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     input.addEventListener('change', () => {
       saveNameTest(readNameTestForm());
       renderNameTest();
+    })
+  );
+  panel.querySelectorAll('[data-alloy-test]').forEach((input) =>
+    input.addEventListener('change', () => {
+      saveAlloyTest(readAlloyTestForm());
+      renderAlloyTest();
     })
   );
   panel.querySelector('[data-role="material-filter"]').addEventListener('input', renderMaterialSummary);
