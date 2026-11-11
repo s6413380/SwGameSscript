@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.71
+// @version      5.72
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -12,8 +12,8 @@
 (function () {
   'use strict';
 
-  if (window.__autoClickerLoaded) return;
-  window.__autoClickerLoaded = true;
+  if (window.__aijijiLoaded) return;
+  window.__aijijiLoaded = true;
 
   // 網站的 localStorage 只有約 5MB（遊戲和腳本共用）；滿了以後遊戲存東西（例如賭場的 casinoLogs）會丟錯，
   // 遊戲沒接住，整個畫面就黑掉。吞掉「空間不足」這種錯，頂多那筆沒存到；記下來在監看欄提醒，不然成長紀錄這類資料會無聲無息地沒存
@@ -79,14 +79,14 @@
     // 瀏覽器不支援長任務就只看腳本自己的數字
   }
   // 統計類（收入、抽卡、測名表、打怪、耐久、挖礦、市場、雲端同步紀錄）每個幾十到幾百 KB，加起來又把 localStorage 擠滿，也搬過去
-  const STATS_BIG_STORAGE_KEYS = ['autoClickerV2Cloud', 'autoClickerV2Income', 'autoClickerV2Draws', 'autoClickerV2NameWeights', 'autoClickerV2HuntStats', 'autoClickerV2DurTrack', 'autoClickerV2DurStats', 'autoClickerV2Mining', 'autoClickerV2MarketSales'];
-  const BIG_STORAGE_KEYS = new Set(['autoClickerV2CloudEquipments', 'autoClickerV2CloudScratch', 'autoClickerV2CloudDraws', 'autoClickerV2Scratch', 'autoClickerV2ForgedEquipments', 'autoClickerV2ForgeMaterials', ...STATS_BIG_STORAGE_KEYS]);
+  const STATS_BIG_STORAGE_KEYS = ['aijijiCloud', 'autoClickerV2Income', 'aijijiDraws', 'aijijiNameWeights', 'autoClickerV2HuntStats', 'autoClickerV2DurTrack', 'autoClickerV2DurStats', 'autoClickerV2Mining', 'autoClickerV2MarketSales'];
+  const BIG_STORAGE_KEYS = new Set(['aijijiCloudEquipments', 'aijijiCloudScratch', 'aijijiCloudDraws', 'aijijiScratch', 'aijijiForgedEquipments', 'aijijiForgeMaterials', ...STATS_BIG_STORAGE_KEYS]);
   // 這些是累加的：資料庫開好之前讀到的是空的，那時寫的是「空的＋一筆」，資料庫裡已經有就以資料庫的為準（頂多少記那一筆）
   const KEEP_STORED_BIG_STORAGE_KEYS = new Set(STATS_BIG_STORAGE_KEYS);
   // 自己的鍛造紀錄沒辦法重抓：資料庫開好之前讀到的是空的，這段時間寫進來的只有新的幾件，開好時要跟資料庫裡的合併（同一件以新的為準）
-  const MERGED_BIG_STORAGE_KEYS = new Set(['autoClickerV2ForgedEquipments', 'autoClickerV2ForgeMaterials']);
+  const MERGED_BIG_STORAGE_KEYS = new Set(['aijijiForgedEquipments', 'aijijiForgeMaterials']);
   // 成長紀錄一隻角色好幾筆（含雲端分享進來的別人的角色），上萬筆加起來把 localStorage 擠滿：整組前綴都搬過去
-  const GROWTH_STORAGE_PREFIX = 'autoClickerV2Growth:';
+  const GROWTH_STORAGE_PREFIX = 'aijijiGrowth:';
   const bigStorage = {
     values: new Map(),
     db: null,
@@ -94,7 +94,7 @@
     ready: null,
     channel: (() => {
       try {
-        return new BroadcastChannel('autoClickerV2BigStorage');
+        return new BroadcastChannel('aijijiBigStorage');
       } catch {
         return null;
       }
@@ -109,8 +109,53 @@
     return typeof GM_info !== 'undefined' ? GM_info.script.version : '?';
   })();
 
-  const STORAGE_KEY = 'autoClickerSettingsV2';
+  const STORAGE_KEY = 'aijijiSettings';
   const V1_STORAGE_KEY = 'autoClickerSettings';
+
+  // 統計版也會讀的鍵改成 aijiji 開頭（設定、抽卡、刮刮樂、成長、鍛造、雲端紀錄），舊名稱的資料第一次開時搬過來
+  const RENAMED_STORAGE_KEYS = new Map([
+    ['autoClickerSettingsV2', STORAGE_KEY],
+    ['autoClickerV2Cloud', 'aijijiCloud'],
+    ['autoClickerV2Draws', 'aijijiDraws'],
+    ['autoClickerV2Scratch', 'aijijiScratch'],
+    ['autoClickerV2CloudDraws', 'aijijiCloudDraws'],
+    ['autoClickerV2CloudScratch', 'aijijiCloudScratch'],
+    ['autoClickerV2CloudEquipments', 'aijijiCloudEquipments'],
+    ['autoClickerV2ForgedEquipments', 'aijijiForgedEquipments'],
+    ['autoClickerV2ForgeMaterials', 'aijijiForgeMaterials'],
+    ['autoClickerV2NameWeights', 'aijijiNameWeights'],
+    ['autoClickerV2ItemNames', 'aijijiItemNames'],
+    ['autoClickerV2ForgePending', 'aijijiForgePending'],
+  ]);
+  const OLD_GROWTH_STORAGE_PREFIX = 'autoClickerV2Growth:';
+  const OLD_BIG_STORAGE_DB = 'autoClickerV2';
+  const BIG_STORAGE_COPIED_KEY = 'aijijiOldDatabaseCopied';
+
+  function renamedStorageKey(key) {
+    if (RENAMED_STORAGE_KEYS.has(key)) return RENAMED_STORAGE_KEYS.get(key);
+    return String(key).startsWith(OLD_GROWTH_STORAGE_PREFIX) ? GROWTH_STORAGE_PREFIX + String(key).slice(OLD_GROWTH_STORAGE_PREFIX.length) : key;
+  }
+
+  // 新名稱已經有東西就以新的為準（別的分頁先搬過了）
+  function moveRenamedLocalStorage() {
+    let keys = [];
+    try {
+      keys = Object.keys(localStorage);
+    } catch {
+      return;
+    }
+    keys.forEach((key) => {
+      const renamed = renamedStorageKey(key);
+      if (renamed === key) return;
+      try {
+        if (localStorage.getItem(renamed) === null) localStorage.setItem(renamed, localStorage.getItem(key));
+        localStorage.removeItem(key);
+      } catch {
+        // 搬不動（空間滿）就留著舊的，下次開再搬
+      }
+    });
+  }
+  moveRenamedLocalStorage();
 
   // 體力與血條共用同一套補給邏輯：每條數值對應一格道具欄與一個使用按鈕，綁在同一列設定。
   // 陣列順序就是檢查優先順序，血條排前面，先保命再補體力
@@ -13941,12 +13986,12 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   // 自己記鍛造材料，不用另外裝鍛造工具腳本：送出 /api/forge 時記下材料，完成鍛造時對上新做出來的裝備。
   // 材料送出的只有道具 id，名稱要從之前讀過的道具清單查；材料用完就從清單消失了，所以平常看到就先存起來
-  const OWN_FORGE_MATERIALS_KEY = 'autoClickerV2ForgeMaterials';
-  const FORGE_PENDING_KEY = 'autoClickerV2ForgePending';
+  const OWN_FORGE_MATERIALS_KEY = 'aijijiForgeMaterials';
+  const FORGE_PENDING_KEY = 'aijijiForgePending';
   const FORGE_PENDING_PER_HERO = 6;
   // 開工 3 天還對不上（在別處收走後賣掉、回收）就不等了
   const FORGE_PENDING_MAX_AGE = 3 * 24 * 3600 * 1000;
-  const ITEM_NAMES_KEY = 'autoClickerV2ItemNames';
+  const ITEM_NAMES_KEY = 'aijijiItemNames';
   const FORGE_TYPE_NAMES = {
     sword: '單手劍', rapier: '細劍', dagger: '短刀', hammer: '單手錘', shield: '盾牌',
     thsword: '雙手劍', katana: '太刀', axe: '雙手斧', spear: '長槍',
@@ -13983,7 +14028,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   }
 
   // 抽卡統計：用英雄券這類道具（POST /api/items/{id}/use）時，回應的 drawResult 就是抽到的英雄
-  const DRAW_LOG_KEY = 'autoClickerV2Draws';
+  const DRAW_LOG_KEY = 'aijijiDraws';
   const DRAW_LOG_LIMIT = 3000;
   const DRAW_RECENT_COUNT = 20;
 
@@ -14093,7 +14138,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   // 刮刮樂統計：POST /api/casino/scratchCard {cardId, count} 回 {prizes[{kind, message}], netChange, cost}
   // netChange 只算錢（中道具不算進去），所以贏到的錢 = netChange + 花費
-  const SCRATCH_LOG_KEY = 'autoClickerV2Scratch';
+  const SCRATCH_LOG_KEY = 'aijijiScratch';
   const SCRATCH_LOG_LIMIT = 3000;
   const SCRATCH_RECENT_COUNT = 20;
   const SCRATCH_CARDS = { regular: { label: '200 元', cost: 200 }, premium: { label: '1,600 元', cost: 1600 } };
@@ -14531,8 +14576,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   }
 
   // 抽卡、刮刮樂上雲端：大家的紀錄合起來機率才準。每筆記上傳者（雲端頁的署名），統計頁可以分人看
-  const CLOUD_DRAWS_KEY = 'autoClickerV2CloudDraws';
-  const CLOUD_SCRATCH_KEY = 'autoClickerV2CloudScratch';
+  const CLOUD_DRAWS_KEY = 'aijijiCloudDraws';
+  const CLOUD_SCRATCH_KEY = 'aijijiCloudScratch';
   const CLOUD_STATS_LIMIT = 20000;
   const OWN_SCOPE = '';
   const ALL_SCOPE = '*';
@@ -14814,9 +14859,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   // 鍛造材料：API 不給，自己攔截鍛造請求記，也讀鍛造工具腳本存在 localStorage 的（裝備 id → 材料），別人的只讀不改。
   // 裝備數值則是每次讀到 /api/equipments 就自己存一份，賣掉、回收的裝備也還算得到
-  const FORGED_EQUIPMENTS_KEY = 'autoClickerV2ForgedEquipments';
+  const FORGED_EQUIPMENTS_KEY = 'aijijiForgedEquipments';
   const FORGED_EQUIPMENTS_LIMIT = 5000;
-  const CLOUD_EQUIPMENTS_KEY = 'autoClickerV2CloudEquipments';
+  const CLOUD_EQUIPMENTS_KEY = 'aijijiCloudEquipments';
   const MATERIAL_STAT_FIELDS = [
     ['atk', '攻'],
     ['def', '防'],
@@ -14936,14 +14981,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       };
       let request;
       try {
-        request = indexedDB.open('autoClickerV2', 1);
+        request = indexedDB.open('aijiji', 1);
       } catch {
         giveUp();
         return;
       }
       request.onupgradeneeded = () => request.result.createObjectStore('kv');
       request.onerror = giveUp;
-      request.onsuccess = () => {
+      request.onsuccess = () => copyOldBigStorage(request.result).then(() => {
         const db = request.result;
         let transaction;
         try {
@@ -14981,7 +15026,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           resolve();
         };
         transaction.onerror = giveUp;
-      };
+      });
     });
     if (bigStorage.channel) {
       bigStorage.channel.onmessage = (event) => {
@@ -14993,6 +15038,85 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         };
       };
     }
+  }
+
+  // 資料庫改名：第一次開新資料庫時把舊資料庫整包複製過來（成長紀錄換新前綴），舊的留著當備份。
+  // 新資料庫已經有的鍵不蓋（統計版可能先開過、寫過）
+  function copyOldBigStorage(db) {
+    return new Promise((resolve) => {
+      const markCopied = () => {
+        try {
+          const transaction = db.transaction('kv', 'readwrite');
+          transaction.objectStore('kv').put(Date.now(), BIG_STORAGE_COPIED_KEY);
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () => resolve();
+        } catch {
+          resolve();
+        }
+      };
+      let check;
+      try {
+        check = db.transaction('kv').objectStore('kv').get(BIG_STORAGE_COPIED_KEY);
+      } catch {
+        resolve();
+        return;
+      }
+      check.onerror = () => resolve();
+      check.onsuccess = () => {
+        if (check.result) {
+          resolve();
+          return;
+        }
+        let request;
+        try {
+          request = indexedDB.open(OLD_BIG_STORAGE_DB);
+        } catch {
+          markCopied();
+          return;
+        }
+        // 要建新的代表本來就沒有舊資料庫：取消，不留一個空的
+        request.onupgradeneeded = () => request.transaction.abort();
+        request.onerror = markCopied;
+        request.onsuccess = () => {
+          const old = request.result;
+          const entries = [];
+          let cursor;
+          try {
+            cursor = old.transaction('kv').objectStore('kv').openCursor();
+          } catch {
+            old.close();
+            markCopied();
+            return;
+          }
+          cursor.onerror = () => {
+            old.close();
+            resolve();
+          };
+          cursor.onsuccess = () => {
+            const entry = cursor.result;
+            if (entry) {
+              entries.push([renamedStorageKey(entry.key), entry.value]);
+              entry.continue();
+              return;
+            }
+            old.close();
+            try {
+              const transaction = db.transaction('kv', 'readwrite');
+              const store = transaction.objectStore('kv');
+              entries.forEach(([key, value]) => {
+                const get = store.get(key);
+                get.onsuccess = () => get.result === undefined && store.put(value, key);
+              });
+              store.put(Date.now(), BIG_STORAGE_COPIED_KEY);
+              transaction.oncomplete = () => resolve();
+              transaction.onerror = () => resolve();
+            } catch {
+              resolve();
+            }
+          };
+        };
+      };
+    });
   }
 
   // 強化加的數值（plus）是之後另外加的，跟材料無關，扣掉才是剛做好時的數值
@@ -17185,7 +17309,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 推到 GitHub 公開版時這行會清空，網址改由私下傳給朋友的載入器提供（window.__autoClickerCloudUrl）
   const BUILT_IN_CLOUD_URL = '';
   const DEFAULT_CLOUD_URL = BUILT_IN_CLOUD_URL || window.__autoClickerCloudUrl || '';
-  const CLOUD_STATE_KEY = 'autoClickerV2Cloud';
+  const CLOUD_STATE_KEY = 'aijijiCloud';
   const CLOUD_BATCH_ROWS = 1000;
   // 要跟 cloud-sheet.gs 的 PAGE_ROWS 一樣
   const CLOUD_PAGE_ROWS = 3000;
@@ -19412,7 +19536,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 名稱效果每種裝備不一樣以後換了新分頁，多一欄「裝備類型」（舊分頁 2031406039 只剩短刀的舊資料）
   const NAME_TODAY_SHEET_URL =
     'https://docs.google.com/spreadsheets/d/1AQgO3da4OrSQk6Jwpm9wUkNfI1a0OYKwDyDuf_dwhaM/export?format=csv&gid=37096851';
-  const NAME_WEIGHTS_KEY = 'autoClickerV2NameWeights';
+  const NAME_WEIGHTS_KEY = 'aijijiNameWeights';
   const NAME_SHEET_REFRESH_MILLISECONDS = 30 * 60000;
   const NAME_WEIGHT_DAYS = 60;
   // 測名表在品質後面依序是 攻 防 智 幸 重 耐 的基準比；重量的換算方式不明，不拿來調整
