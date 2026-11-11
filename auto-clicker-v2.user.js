@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.73
+// @version      5.74
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1596,8 +1596,11 @@
       <div class="row">角色<select data-alloy-test="heroId" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
       <div class="row">裝備<select data-alloy-test="type" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select>每種做<input data-alloy-test="repeat" type="number" min="1" max="10" style="flex:none;width:48px">件</div>
       <div class="row">名稱<input data-alloy-test="name" placeholder="固定一個名稱，例：合金測試" style="flex:1;min-width:0"></div>
-      <div class="row">底材<input data-alloy-test="bases" placeholder="例：鐵、銅（可以填好幾種，各自一組）" style="flex:1;min-width:0"></div>
-      <div class="row">添加<input data-alloy-test="additives" placeholder="例：銀、金、鉛、鋁、鉑、鈦、鎢" style="flex:1;min-width:0"></div>
+      <input data-alloy-test="bases" type="hidden"><input data-alloy-test="additives" type="hidden">
+      <div class="row">底材<span class="hint" style="margin:0">（可以勾好幾種，各自一組）</span><span style="flex:1"></span><input data-role="alloy-test-filter" placeholder="篩選材料" style="flex:none;width:90px"></div>
+      <div data-role="alloy-test-bases" style="max-height:110px;overflow:auto;font-size:12px"></div>
+      <div class="row">添加<span class="hint" style="margin:0">（每種跟底材各做一組）</span><span style="flex:1"></span><button data-action="alloy-test-clear-additives">清空</button></div>
+      <div data-role="alloy-test-additives" style="max-height:140px;overflow:auto;font-size:12px"></div>
       <div class="row"><button data-action="alloy-test-start" style="font-weight:bold">開始測試</button><button data-action="alloy-test-stop">停止</button><button data-action="alloy-test-refresh">讀取裝備並更新結果</button><button data-action="alloy-test-copy" title="複製成跟「加成合金」表一樣的格式（底材一欄、添加一列）">複製結果</button></div>
       <textarea data-role="alloy-test-export" rows="4" readonly style="display:none;width:100%;box-sizing:border-box;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></textarea>
       <div data-role="alloy-test-status" class="hint"></div>
@@ -2166,7 +2169,7 @@
       refreshForgeHeroes()
         .then(() => activeTab === 'alloyTest' && renderAlloyTest())
         .catch(() => {});
-      if (Date.now() - mineStockAt > MINE_STOCK_FRESH_MILLISECONDS) refreshMineStock().then(() => activeTab === 'alloyTest' && renderAlloyTestStatus()).catch(() => {});
+      if (Date.now() - mineStockAt > MINE_STOCK_FRESH_MILLISECONDS) refreshMineStock().then(() => activeTab === 'alloyTest' && renderAlloyTest()).catch(() => {});
     }
     if (tabId === 'recipe') {
       renderRecipes();
@@ -12009,6 +12012,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       refreshAlloyTest();
     } else if (action === 'alloy-test-copy') {
       copyAlloyTestResult();
+    } else if (action === 'alloy-test-clear-additives') {
+      saveAlloyTest({ ...readAlloyTestForm(), additives: '' });
+      renderAlloyTest();
     } else if (action === 'name-test-start') {
       startNameTest();
     } else if (action === 'name-test-stop') {
@@ -17447,6 +17453,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     panel.querySelectorAll('[data-alloy-test]').forEach((input) => {
       if (document.activeElement !== input) input.value = config[input.dataset.alloyTest] ?? '';
     });
+    renderAlloyMaterialPicks(config);
     renderAlloyTestStatus();
     const rows = alloyTestResults(config);
     const box = panel.querySelector('[data-role="alloy-test-result"]');
@@ -17469,6 +17476,26 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       )
       .join('')}</table>
       <div class="hint">% ＝ 添加配方的平均（換成普通品質）÷ 同一天同名稱的純底材平均 − 1；重量正的是變重。每種只做幾件時品質、運氣的誤差還很大，±5% 內先當沒差，看得到方向後再加做</div>`;
+  }
+
+  // 材料從庫存列出來勾；勾過但現在沒庫存的也留著，不然看不到也取消不了
+  function renderAlloyMaterialPicks(config) {
+    const filter = panel.querySelector('[data-role="alloy-test-filter"]').value.trim();
+    const stock = new Map(mineStock.map((mine) => [mine.name, mine.have]));
+    ['bases', 'additives'].forEach((field) => {
+      const picked = alloyMaterialNames(config[field]);
+      const names = [...new Set([...picked, ...mineStock.filter((mine) => mine.have > 0).map((mine) => mine.name)])]
+        .filter((name) => !filter || picked.includes(name) || name.includes(filter))
+        .sort((first, second) => first.localeCompare(second, 'zh-Hant'));
+      const box = panel.querySelector(`[data-role="alloy-test-${field}"]`);
+      box.innerHTML = names.length
+        ? names
+            .map(
+              (name) => `<label style="display:inline-block;margin:0 8px 2px 0;white-space:nowrap${picked.includes(name) ? ';color:#4ade80' : ''}"><input type="checkbox" data-alloy-pick="${field}" value="${escapeHtml(name)}" ${picked.includes(name) ? 'checked' : ''} style="width:auto;flex:none"> ${escapeHtml(name)}<span style="color:#78716c">${stock.has(name) ? stock.get(name) : 0}</span></label>`
+            )
+            .join('')
+        : '<span class="hint">還沒讀到材料庫存，按「讀取裝備並更新結果」</span>';
+    });
   }
 
   function renderAlloyTestStatus() {
@@ -24122,6 +24149,15 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       renderAlloyTest();
     })
   );
+  // 勾選的材料寫回隱藏欄位（存的格式跟以前打字的一樣）
+  panel.querySelector('[data-tab="alloyTest"]').addEventListener('change', (event) => {
+    const field = event.target.dataset.alloyPick;
+    if (!field) return;
+    const picked = [...panel.querySelectorAll(`[data-alloy-pick="${field}"]:checked`)].map((input) => input.value);
+    saveAlloyTest({ ...readAlloyTestForm(), [field]: picked.join('、') });
+    renderAlloyTest();
+  });
+  panel.querySelector('[data-role="alloy-test-filter"]').addEventListener('input', () => renderAlloyMaterialPicks(loadAlloyTest()));
   panel.querySelector('[data-role="material-filter"]').addEventListener('input', renderMaterialSummary);
   panel.querySelector('[data-role="growth-import-file"]').addEventListener('change', (event) => {
     const files = Array.from(event.target.files);
