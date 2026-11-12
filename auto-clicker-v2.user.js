@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.81
+// @version      5.82
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -199,6 +199,7 @@
     ['backup', '備份'],
     ['transfer', '轉移'],
     ['cardBuy', '購卡'],
+    ['players', '查玩家'],
   ];
   // 輔助模式收起來的分頁：都是自動化才用得到的
   const ASSIST_HIDDEN_TABS = ['main', 'move', 'train', 'forge', 'nameTest', 'alloyTest', 'mining', 'pick', 'transfer', 'cardBuy', 'api'];
@@ -207,7 +208,7 @@
     ['hunt', '打怪', ['main', 'health', 'resource', 'move', 'equip', 'train', 'pause']],
     ['forging', '鍛造', ['forge', 'recipe', 'material', 'forgerCompare', 'nameTest', 'alloyTest', 'mining']],
     ['stats', '統計', ['income', 'combat', 'huntStats', 'loot', 'growth', 'draw', 'scratch', 'sales']],
-    ['other', '其他', ['pick', 'transfer', 'cardBuy', 'alert', 'cloud', 'log', 'api', 'backup']],
+    ['other', '其他', ['pick', 'transfer', 'cardBuy', 'players', 'alert', 'cloud', 'log', 'api', 'backup']],
   ];
   const TAB_STORAGE_KEY = 'autoClickerV2Tab';
   // 鍛造完成的回應在載入途中就可能進來，標記要賣的清單鍵放前面
@@ -1845,6 +1846,16 @@
       </fieldset>
     </div>
 
+    <div data-tab="players">
+      <div class="hint">用玩家 id 查資料（遊戲裡點玩家看到的那些：樓層、隊伍、狩獵／鍛造／擊殺次數…）。加進清單的玩家每次查都記下來，看得到跟上次查比多了多少。同地點遇到的、在遊戲裡點開看過的、戰報（打劫、被打、組隊）裡的玩家會自動記下 id，不用另外送請求</div>
+      <div class="row">玩家 id<input data-role="player-id" inputmode="numeric" placeholder="例：12345" style="flex:1;min-width:0"><button data-action="player-lookup">查詢</button><button data-action="player-watch">加入清單</button></div>
+      <div data-role="player-detail" style="font-size:12px"></div>
+      <div class="subhead">我的清單</div>
+      <div data-role="player-watched" style="font-size:12px"></div>
+      <div class="subhead">最近遇到的玩家</div>
+      <div data-role="player-seen" style="font-size:12px;max-height:200px;overflow:auto"></div>
+    </div>
+
     <div data-tab="api">
       <div class="hint">按「開始錄製」→ 手動替一位角色開道具欄、按使用、關掉 → 按「停止錄製」→「複製」貼出來分析。只在錄製中記錄；token、密碼這類欄位會自動遮掉</div>
       <div class="row"><button data-action="api-record">開始錄製</button><button data-action="api-copy">複製</button><button data-action="api-clear">清除</button></div>
@@ -2222,6 +2233,10 @@
     if (tabId === 'income') renderIncome();
     if (tabId === 'draw') renderDrawStats();
     if (tabId === 'loot') renderLootLedger();
+    if (tabId === 'players') {
+      collectCachedPlayers();
+      renderPlayers();
+    }
     if (tabId === 'equip') {
       renderDurabilityForecast();
       // 沒開 API 換裝時不會自己讀裝備清單，備用的算不到；打開這頁才補讀一次
@@ -2842,6 +2857,175 @@
   const PROFILE_API = '/api/profile';
   const PROFILE_RESPONSE_PATTERN = /\/api\/profile(?:[?#]|$)/;
   const TEAMMATE_RESPONSE_PATTERN = /\/api\/teammate(?:[?#]|$)/;
+  const ZONE_USERS_PATTERN = /\/api\/zoneUsers(?:[?#]|$)/;
+  // 只有查資料那支；/api/users/{id}/attack 這類不算
+  const USER_DETAIL_PATTERN = /\/api\/users\/(\d+)(?:[?#]|$)/;
+  const PLAYER_WATCH_KEY = 'autoClickerV2PlayerWatch';
+  const PLAYER_SEEN_LIMIT = 100;
+  const PLAYER_LOOKUP_LIMIT = 30;
+  // 遊戲玩家資料頁的統計欄位，照遊戲的順序
+  const PLAYER_STAT_FIELDS = [
+    ['floor', '目前樓層'], ['maxFloor', '最高層數'], ['bossCount', '挑戰Boss次數'], ['huntCount', '狩獵次數'], ['forgeCount', '鍛造次數'],
+    ['mineSp', '總挖礦耗體'], ['kill', '擊殺英雄'], ['friendlyKill', '友切擊殺'], ['counterKill', '反殺英雄'], ['robCount', '搶劫次數'],
+    ['robMoney', '搶奪總額'], ['robbedMoney', '被搶總額'], ['casinoSpent', '賭場總下注'], ['casinoWon', '賭場總贏得'], ['scratchCardSpent', '刮刮樂總消費'],
+  ];
+  const playerView = { id: 0 };
+
+  // watched：自己加的清單 [{id, note}]；seen：遇到過的 {id: {nickname, at, place}}；lookups：每次查的結果 {id: [新到舊]}
+  function loadPlayerWatch() {
+    return { watched: [], seen: {}, lookups: {}, ...(readJsonStorage(PLAYER_WATCH_KEY, null) || {}) };
+  }
+
+  function savePlayerWatch(data) {
+    const seen = Object.entries(data.seen).sort(([, first], [, second]) => second.at - first.at).slice(0, PLAYER_SEEN_LIMIT);
+    writeJsonStorage(PLAYER_WATCH_KEY, { ...data, seen: Object.fromEntries(seen) });
+  }
+
+  function rememberSeenPlayers(users, place) {
+    const own = dashboard.profile && dashboard.profile.id;
+    const fresh = users.filter((user) => user && user.id && user.id !== own);
+    if (!fresh.length) return;
+    const data = loadPlayerWatch();
+    fresh.forEach((user) => {
+      data.seen[user.id] = { ...(data.seen[user.id] || {}), nickname: user.nickname || '', nameColor: user.nameColor || 0, at: Date.now(), place };
+    });
+    savePlayerWatch(data);
+    if (activeTab === 'players') renderPlayers();
+  }
+
+  function noticeReportPlayers(detail) {
+    const report = detail.report || {};
+    const place = `戰報 ${[report.zone, report.stage].filter(Boolean).join(' ')}`.trim();
+    rememberSeenPlayers([detail.userA, detail.userB], place);
+  }
+
+  // 遊戲快取裡還留著的玩家資料（這次開頁面以來點開過、還沒過期的）收進來
+  function collectCachedPlayers() {
+    try {
+      const client = findGameQueryClient();
+      if (!client) return;
+      client
+        .getQueryCache()
+        .getAll()
+        .filter((query) => query.queryKey[0] === 'users' && query.queryKey.length === 2 && query.state.data)
+        .forEach((query) => noticePlayerDetail(Number(query.queryKey[1]), query.state.data, query.state.dataUpdatedAt));
+    } catch {
+      // 遊戲改版找不到快取就算了
+    }
+  }
+
+  function noticeZoneUsers(reply) {
+    rememberSeenPlayers((reply && reply.users) || [], apiLocationText(readSettingsFromPanel()));
+  }
+
+  function noticePlayerDetail(id, user, at = Date.now()) {
+    if (!id || !user) return;
+    const data = loadPlayerWatch();
+    if ((data.lookups[id] || []).some((record) => record.at === at)) return;
+    data.seen[id] = { ...(data.seen[id] || {}), nickname: user.nickname || '', nameColor: user.nameColor || 0, at: Math.max(at, (data.seen[id] || {}).at || 0) };
+    const record = {
+      at,
+      nickname: user.nickname || '',
+      nameColor: user.nameColor || 0,
+      floor: user.floor,
+      statusText: user.statusText || '',
+      heroes: (user.heroes || []).map((hero) => ({ name: hero.name, type: hero.type })),
+      stats: user.stats || {},
+    };
+    data.lookups[id] = [record, ...(data.lookups[id] || [])].sort((first, second) => second.at - first.at).slice(0, PLAYER_LOOKUP_LIMIT);
+    savePlayerWatch(data);
+    if (at > Date.now() - 60000) playerView.id = id;
+    if (activeTab === 'players') renderPlayers();
+  }
+
+  async function lookupPlayer(id) {
+    if (!id) throw new Error('先填玩家 id');
+    setStatus(`查玩家 ${id}…`);
+    // 回應由 fetch 攔截器記下來（noticePlayerDetail），這裡只要送出
+    await requestGameApi(`/api/users/${id}`);
+    const latest = (loadPlayerWatch().lookups[id] || [])[0];
+    setStatus(`查玩家 ${id}：${latest ? latest.nickname : '沒有資料'}`);
+  }
+
+  function watchPlayer(id) {
+    if (!id) return setStatus('先填玩家 id');
+    const data = loadPlayerWatch();
+    if (!data.watched.some((entry) => entry.id === id)) data.watched.push({ id, note: '' });
+    savePlayerWatch(data);
+    renderPlayers();
+  }
+
+  function unwatchPlayer(id) {
+    const data = loadPlayerWatch();
+    data.watched = data.watched.filter((entry) => entry.id !== id);
+    savePlayerWatch(data);
+    renderPlayers();
+  }
+
+  function setPlayerNote(id, note) {
+    const data = loadPlayerWatch();
+    data.watched = data.watched.map((entry) => (entry.id === id ? { ...entry, note: note.trim() } : entry));
+    savePlayerWatch(data);
+  }
+
+  function playerTime(at) {
+    return new Date(at).toLocaleString('zh-TW', { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+
+  function playerNameHtml(nickname, nameColor) {
+    const color = { 1: '#fb923c', 2: '#ef4444' }[nameColor];
+    return `<span${color ? ` style="color:${color}"` : ''}>${escapeHtml(nickname || '（不知道名字）')}</span>`;
+  }
+
+  function renderPlayerDetail(data) {
+    const box = panel.querySelector('[data-role="player-detail"]');
+    const records = data.lookups[playerView.id] || [];
+    const [latest, previous] = records;
+    if (!latest) {
+      box.innerHTML = '';
+      return;
+    }
+    const money = (key, value) => (['robMoney', 'robbedMoney', 'casinoSpent', 'casinoWon', 'scratchCardSpent'].includes(key) ? `$${Number(value).toLocaleString()}` : Number(value).toLocaleString());
+    const rows = PLAYER_STAT_FIELDS.filter(([key]) => latest.stats[key] !== undefined)
+      .map(([key, label]) => {
+        const change = previous && previous.stats[key] !== undefined ? latest.stats[key] - previous.stats[key] : 0;
+        return `<tr><td style="color:#a8a29e">${label}</td><td style="text-align:right">${money(key, latest.stats[key])}</td><td style="text-align:right;color:#4ade80">${change ? `${change > 0 ? '+' : ''}${money(key, change)}` : ''}</td></tr>`;
+      })
+      .join('');
+    box.innerHTML = `<div style="margin:4px 0"><b>${playerNameHtml(latest.nickname, latest.nameColor)}</b>（id ${playerView.id}）樓層 ${latest.floor ?? '-'}　${playerTime(latest.at)} 查的</div>
+      ${latest.statusText ? `<div style="color:#a8a29e">${escapeHtml(latest.statusText)}</div>` : ''}
+      <div>隊伍：${latest.heroes.map((hero) => `${escapeHtml(hero.name)}（${escapeHtml(hero.type)}）`).join('、') || '-'}</div>
+      <table style="width:100%;border-collapse:collapse"><tbody>${rows}</tbody></table>
+      ${previous ? `<div class="hint">綠字＝跟上次（${playerTime(previous.at)}）比多了多少</div>` : ''}`;
+  }
+
+  function renderPlayers() {
+    const data = loadPlayerWatch();
+    renderPlayerDetail(data);
+    const buttons = (id) => `<button data-action="player-lookup" data-player-id="${id}" style="flex:none">查</button>`;
+    panel.querySelector('[data-role="player-watched"]').innerHTML = data.watched.length
+      ? data.watched
+          .map((entry) => {
+            const latest = (data.lookups[entry.id] || [])[0];
+            const seen = data.seen[entry.id];
+            const name = latest ? latest.nickname : seen ? seen.nickname : '';
+            return `<div class="row" style="gap:4px">${buttons(entry.id)}<span style="flex:none">${playerNameHtml(name, (latest || seen || {}).nameColor)} ${entry.id}</span>
+              <input data-player-note="${entry.id}" value="${escapeHtml(entry.note || '')}" placeholder="備註" style="flex:1;min-width:0">
+              <span style="flex:none;color:#78716c">${latest ? playerTime(latest.at) : '沒查過'}</span><button data-action="player-unwatch" data-player-id="${entry.id}" style="flex:none">移除</button></div>`;
+          })
+          .join('')
+      : '<div class="hint">還沒加玩家：上面填 id 按「加入清單」，或從下面最近遇到的加</div>';
+    const watchedIds = new Set(data.watched.map((entry) => entry.id));
+    const seen = Object.entries(data.seen).sort(([, first], [, second]) => second.at - first.at);
+    panel.querySelector('[data-role="player-seen"]').innerHTML = seen.length
+      ? seen
+          .map(
+            ([id, entry]) => `<div class="row" style="gap:4px">${buttons(id)}<span style="flex:1;min-width:0">${playerNameHtml(entry.nickname, entry.nameColor)} ${id}<span style="color:#78716c">　${escapeHtml(entry.place || '')} ${playerTime(entry.at)}</span></span>
+              ${watchedIds.has(Number(id)) ? '' : `<button data-action="player-watch" data-player-id="${id}" style="flex:none">加入</button>`}</div>`
+          )
+          .join('')
+      : '<div class="hint">還沒遇到其他玩家（打怪時同地點有人、或在遊戲裡點開玩家就會記下來）</div>';
+  }
 
   // 不同設定檔的分頁彼此不通，改由本機的 monitor-server.ps1 收集各分頁回報，總覽頁再一起顯示
   const DASHBOARD_REPORT_MILLISECONDS = 5000;
@@ -11897,6 +12081,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       }
     } else if (action === 'draw-copy') {
       copyDrawRecords();
+    } else if (action === 'player-lookup') {
+      const id = Number(event.target.dataset.playerId || panel.querySelector('[data-role="player-id"]').value.trim());
+      if (event.target.dataset.playerId) panel.querySelector('[data-role="player-id"]').value = id;
+      lookupPlayer(id).catch((error) => setStatus(`查玩家失敗（${error.message}）`));
+    } else if (action === 'player-watch') {
+      watchPlayer(Number(event.target.dataset.playerId || panel.querySelector('[data-role="player-id"]').value.trim()));
+    } else if (action === 'player-unwatch') {
+      unwatchPlayer(Number(event.target.dataset.playerId));
     } else if (action === 'draw-clear') {
       if (window.confirm('要清除這個帳號的抽卡紀錄嗎？清掉就找不回來')) {
         writeJsonStorage(DRAW_LOG_KEY, []);
@@ -12407,17 +12599,19 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const reportDetailMatch = !growthOnly && REPORT_DETAIL_PATTERN.test(url) ? url.match(REPORT_DETAIL_PATTERN) : null;
       const reportListMatch = !growthOnly ? REPORT_LIST_PATTERN.exec(url) : null;
       const isCardMarket = !growthOnly && (MARKET_HEROES_PATTERN.test(url) || RELEASED_MARKET_PATTERN.test(url));
+      const isZoneUsers = !growthOnly && ZONE_USERS_PATTERN.test(url);
       const isOtherSite = /^https?:/i.test(url) && !url.startsWith(location.origin);
       const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
       const isPlace = PLACE_API_PATTERN.test(url) && (method !== 'GET' || HUNT_INFO_PATTERN.test(url));
       const isMoney = !growthOnly && PLACE_API_PATTERN.test(url) && (method !== 'GET' || MONEY_API_PATTERN.test(url));
       const ownTradesMatch = !growthOnly && method === 'GET' ? url.match(OWN_TRADES_PATTERN) : null;
+      const userDetailMatch = !growthOnly && method === 'GET' ? url.match(USER_DETAIL_PATTERN) : null;
       const isSaleAction = !growthOnly && method === 'POST' && (GOODS_SELL_PATTERN.test(url) || TRADE_CANCEL_PATTERN.test(url) || EQUIPMENT_CANCEL_PATTERN.test(url));
       // 玩家自己在遊戲畫面收礦、派去挖礦、休息
       const manualMiningMatch = !growthOnly && !fromScript && method === 'POST' ? url.match(MINING_ACTION_PATTERN) : null;
       const needsResponse = growthOnly
         ? isHunt || growthHeroId || isHeroList || isForgeData || isPlace
-        : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData || itemUseMatch || isPlace || isMoney || isCardMarket || manualMiningMatch || isScratchCard || marketGoodsMatch || reportDetailMatch || ownTradesMatch || isSaleAction;
+        : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData || itemUseMatch || isPlace || isMoney || isCardMarket || manualMiningMatch || isScratchCard || marketGoodsMatch || reportDetailMatch || ownTradesMatch || isSaleAction || isZoneUsers || userDetailMatch;
       if (!growthOnly && method === 'GET' && HUNT_EVENTS_PATTERN.test(url)) {
         return originalFetch.apply(this, args).then((response) => {
           tapHuntEvents(response);
@@ -12510,6 +12704,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
               }
             }
             if (response.ok && isCardMarket && method === 'GET') noticeGameMarket(url, parseJsonText(responseText));
+            if (response.ok && method === 'GET' && ZONE_USERS_PATTERN.test(url)) noticeZoneUsers(parseJsonText(responseText));
+            if (response.ok && userDetailMatch) noticePlayerDetail(Number(userDetailMatch[1]), parseJsonText(responseText));
             // 角色列表不管是遊戲自己讀（每 16 秒、抽到新卡、買賣角色後）還是腳本讀的，挖礦頁都跟著換，新卡馬上看得到
             if (response.ok && method === 'GET' && isHeroList) noticeHeroList(parseJsonText(responseText));
             if (response.ok && marketGoodsMatch && method === 'GET') noticeMarketGoods(marketGoodsMatch[1], parseJsonText(responseText));
@@ -19699,6 +19895,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   function noticeReportDetail(id, data) {
     if (!data || !data.report) return;
+    noticeReportPlayers(data);
     pageReport.detail[id] = data.report;
     renderPageReport();
   }
@@ -24293,6 +24490,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     })
   );
   // 勾選的材料寫回隱藏欄位（存的格式跟以前打字的一樣）
+  panel.querySelector('[data-tab="players"]').addEventListener('change', (event) => {
+    if (event.target.dataset.playerNote) setPlayerNote(Number(event.target.dataset.playerNote), event.target.value);
+  });
   panel.querySelector('[data-tab="alloyTest"]').addEventListener('change', (event) => {
     const field = event.target.dataset.alloyPick;
     if (!field) return;
