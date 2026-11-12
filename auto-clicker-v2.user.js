@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.78
+// @version      5.79
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -11974,7 +11974,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const settings = readSettingsFromPanel();
       row.querySelector('[data-forge-plan="type"]').value = settings.forgeRecipeType;
       row.querySelector('[data-forge-plan="recipe"]').value = settings.forgeRecipe;
-      updateForgeApiPlansFromChoices();
+      updateForgeApiPlansFromChoices(row, ['type', 'recipe']);
       saveSettings(readSettingsFromPanel());
       renderForgePlanOverview();
     } else if (action === 'forge-api-heroes') {
@@ -21054,6 +21054,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     saveSettings(readSettingsFromPanel());
     renderForgePlanOverview();
     renderRecipeHeroes();
+    if (panel.querySelector('[data-forge-plan-hero]')) renderForgeApiHeroChoices();
     const hero = forgeHeroes.find((candidate) => candidate.id === heroId);
     const text = `${hero ? hero.name : heroId} 名稱${trimmed ? `改成「${trimmed}」（今天自動換名稱不會蓋掉）` : '清空，改用配方頁的名稱'}`;
     forgeLog(text);
@@ -21449,17 +21450,22 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return ` <span style="color:${possible ? '#22c55e' : '#ef4444'}">夠 ${possible} 爐</span>`;
   }
 
-  function updateForgeApiPlansFromChoices() {
-    const plans = {};
-    panel.querySelectorAll('[data-forge-plan-hero]').forEach((row) => {
-      const value = (field) => row.querySelector(`[data-forge-plan="${field}"]`).value.trim();
-      const plan = { type: value('type'), recipe: value('recipe'), name: value('name') };
-      if (plan.recipe || plan.name) plans[row.dataset.forgePlanHero] = plan;
-    });
-    // 這次清單裡沒列出來的角色（例如已經送人）設定照留
-    const shown = new Set([...panel.querySelectorAll('[data-forge-plan-hero]')].map((row) => row.dataset.forgePlanHero));
-    const kept = Object.fromEntries(Object.entries(forgeByApiPlans(readSettingsFromPanel())).filter(([heroId]) => !shown.has(heroId)));
-    panel.querySelector('[data-field="forgeByApiPlans"]').value = JSON.stringify({ ...kept, ...plans });
+  // 只回寫改到的那一格。以前整個清單一起讀回來：佇列卡片、自動換名稱改過的名稱，清單畫面還是舊的（昨天的），
+  // 一改清單裡任何一格就全部蓋回舊名稱，連「今天手動鎖定」、用／賣也一起丟掉
+  function updateForgeApiPlansFromChoices(row, fields) {
+    const heroId = row.dataset.forgePlanHero;
+    const plans = forgeByApiPlans(readSettingsFromPanel());
+    const old = plans[heroId] || {};
+    const plan = { ...old };
+    fields.forEach((field) => (plan[field] = row.querySelector(`[data-forge-plan="${field}"]`).value.trim()));
+    // 在清單裡自己改名稱跟佇列卡片一樣，今天自動換名稱不蓋掉
+    if (fields.includes('name') && plan.name !== (old.name || '')) {
+      if (plan.name) plan.nameManualDay = localDayKey(Date.now());
+      else delete plan.nameManualDay;
+    }
+    if (plan.recipe || plan.name) plans[heroId] = plan;
+    else delete plans[heroId];
+    panel.querySelector('[data-field="forgeByApiPlans"]').value = JSON.stringify(plans);
   }
 
   function updateForgeApiHeroesFromChoices() {
@@ -24371,7 +24377,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     if (/^equipRule|^equipApiMinDurability$/.test(event.target.dataset.field || '') && state.equipments.length) renderEquipRulePreview();
     if (event.target.dataset.pickChoice) updatePickFromChoices(event.target.dataset.pickChoice);
     if (event.target.dataset.forgeApiHero !== undefined) updateForgeApiHeroesFromChoices();
-    if (event.target.dataset.forgePlan) updateForgeApiPlansFromChoices();
+    if (event.target.dataset.forgePlan) updateForgeApiPlansFromChoices(event.target.closest('[data-forge-plan-hero]'), [event.target.dataset.forgePlan]);
     if (['forgeRecipe', 'forgeRecipeType'].includes(event.target.dataset.field)) renderRecipeFavorites();
     if (event.target.dataset.forgeApiHero !== undefined || event.target.dataset.forgePlan || ['forgeRecipe', 'forgeRecipeType'].includes(event.target.dataset.field)) {
       renderRecipeHeroes();
