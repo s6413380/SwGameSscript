@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.80
+// @version      5.81
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -22306,6 +22306,15 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 上一輪留在場上的工頭（例如中途重整、出錯）：時間到就先收回來；回傳收完的工頭，還不能收回傳 null
   async function recoverForeman(settings, foreman, data, opened, waits) {
     if (foremanParked(data, foreman)) return foreman;
+    if (foreman && foreman.actionState === 4 && !foremanRecord(data, foreman)) {
+      // 在礦場裡但腳本沒記到（手動派進去、紀錄被清掉）：以前當成閒著，收礦時叫他進別的地點，進不去就跳「不能進場」。
+      // 在他平時掛機的地點就當作掛機中接手；在別的地點是人自己派的，這輪不帶也不動他
+      const site = Number(foreman.actionTarget) || 0;
+      if (!site || site !== foremanParkSite(settings, foreman.id)) return null;
+      data.foremen = { ...data.foremen, [foreman.id]: { at: Date.parse(foreman.actionStart) || Date.now(), site, parked: true } };
+      saveMining(data);
+      return foreman;
+    }
     if (!foreman || foreman.actionState !== 4 || !foremanRecord(data, foreman)) return foreman;
     if (!canCompleteNow(foreman, Date.now())) {
       if (waits) waits.push(Date.parse(foreman.actionCompleteTime) || Date.now() + 60000);
