@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.79
+// @version      5.80
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -983,9 +983,22 @@
     });
   }
 
+  // 這個分頁上次存（或載入）時的設定。同帳號開兩個分頁共用同一份設定，以前每次存都把整個面板寫回去：
+  // A 分頁在打怪、B 分頁停在別的目的地，B 隨便存一次（改名稱、勾選項）就把 B 畫面上的目的地寫進去，A 一重整就跑去 B 的地點。
+  // 現在只寫這個分頁自己改過的欄位，別的分頁改的照留
+  let settingsBaseline = null;
+
   function saveSettings(settings) {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+      const stored = settingsBaseline && JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+      const next = stored ? { ...stored } : settings;
+      if (stored) {
+        Object.keys(settings)
+          .filter((key) => JSON.stringify(settings[key]) !== JSON.stringify(settingsBaseline[key]))
+          .forEach((key) => (next[key] = settings[key]));
+      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      if (settingsBaseline) settingsBaseline = { ...settings };
     } catch {
       // 部分網站會封鎖 localStorage，設定不保存但不影響執行
     }
@@ -24463,6 +24476,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   });
 
   writeSettingsToPanel(loadSettings());
+  // 以面板讀回來的值當起點（型別跟之後存的一樣），沒改的欄位才不會被當成改過
+  settingsBaseline = readSettingsFromPanel();
   refreshSlotButtons();
   refreshSupplyModes();
   applyPanelTheme();
