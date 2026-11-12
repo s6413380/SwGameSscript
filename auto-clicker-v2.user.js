@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.76
+// @version      5.77
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -464,6 +464,8 @@
     huntExcludedHeroIds: '',
     equipApiEnabled: false,
     equipApiMinDurability: 10,
+    // 有這些附魔的裝備自動換裝不拿來穿（爆炸會炸到自己人）
+    equipApiAvoidEnchants: '爆炸',
     equipDurabilityRules: '',
     equipApiSameName: false,
     equipApiPauseWhenEmpty: true,
@@ -1352,6 +1354,7 @@
           <b>用 API 自動換裝</b>（只換勾選的角色，不用選按鈕）</label>
         <div data-equip-mode="api">
           <div class="row">耐久低於 ${numberInput('equipApiMinDurability', 'min="0"')} 就換</div>
+          <div class="row">不穿附魔<input data-field="equipApiAvoidEnchants" placeholder="爆炸、毒（留空＝都可以穿）" style="flex:1;min-width:0"></div>
           <div class="row">個別裝備<input data-field="equipDurabilityRules" placeholder="項鍊=3、短刀=5、某某之劍=2" style="flex:1;min-width:0"></div>
           <div class="hint">本身耐久就低的裝備另外設門檻：類型或裝備名稱=耐久，「、」分隔；名稱寫一部分就對得到，名稱比類型優先。有寫到的裝備不管角色個別設定，都照這裡的換</div>
           <label class="row"><input data-field="equipApiSameName" type="checkbox" style="flex:none;width:auto"> 只換同名裝備（不勾＝同類型都可以）</label>
@@ -5737,7 +5740,7 @@
           .map((name) => `<button type="button" data-equip-rule-enchant="${escapeHtml(name)}" style="margin:1px 2px;padding:0 6px;border-radius:9px;font-size:11px;${chosen.has(name) ? 'background:#14532d;color:#bbf7d0;border:1px solid #22c55e' : ''}">${escapeHtml(name)}</button>`)
           .join('')}`
       : '<span class="hint" style="margin:0">裝備清單裡沒有附魔過的裝備</span>';
-    const blocked = noAutoEquipIds();
+    const blocked = autoEquipBlockedIds(settings);
     const idle = state.equipments.filter((equipment) => equipment.equipped === null && equipment.state === 0 && !blocked.has(equipment.id));
     const matched = idle.filter((equipment) => matchesEquipRule(settings, equipment) && equipment.dur >= equipmentMinDurability(settings, null, equipment));
     const byType = new Map();
@@ -6578,14 +6581,14 @@
     const plan = equipHeroPlan(settings, heroId);
     const part = plan && equipPartOf(worn.type);
     if (part) return pickIdleEquipment(settings, plan, part, heroId, worn.type);
-    const blocked = noAutoEquipIds();
+    const blocked = autoEquipBlockedIds(settings);
     return state.equipments
       .filter((equipment) => isReplacementCandidate(settings, worn, equipment, blocked))
       .reduce((best, equipment) => (!best || equipment.dur > best.dur ? equipment : best), null);
   }
 
   // 這件閒置裝備能不能拿來換掉 worn：跟上面換裝挑選的條件一樣（個別設定的持法、類型、指定裝備、數值、附魔，共用的同名、勾選清單、耐久門檻）
-  function isReplacementCandidate(settings, worn, equipment, blocked = noAutoEquipIds()) {
+  function isReplacementCandidate(settings, worn, equipment, blocked = autoEquipBlockedIds(settings)) {
     const heroId = worn.equipped;
     if (equipment.equipped !== null || equipment.state !== 0 || blocked.has(equipment.id)) return false;
     if (equipment.dur < equipmentMinDurability(settings, heroId, equipment)) return false;
@@ -6609,6 +6612,7 @@
     const reasonOf = (equipment) => {
       if (equipment.equipped !== null) return '別人穿著';
       if (equipment.state !== 0) return `狀態 ${equipment.state}（上架或其他用途中）`;
+      if (avoidedEnchantOf(settings, equipment)) return `有不穿的附魔（${avoidedEnchantOf(settings, equipment)}）`;
       if (blocked.has(equipment.id)) return '標了不自動穿';
       if (!types.includes(equipment.type)) return `持法／勾的類型不含${equipment.type}`;
       if (plan && part) {
@@ -6646,7 +6650,7 @@
   function pickIdleEquipment(settings, plan, part, heroId, preferredType) {
     const types = equipPartTypes(plan, part, preferredType);
     const rank = (equipment) => [equipment.type === preferredType ? 1 : 0, equipment.dur];
-    const blocked = noAutoEquipIds();
+    const blocked = autoEquipBlockedIds(settings);
     return state.equipments
       .filter(
         (equipment) =>
@@ -18673,6 +18677,25 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 另一種鎖：留著自己手動穿的（或留給別的角色），自動換裝不會把它換上去；跟 🔒 分開，各鎖各的
   const NO_AUTO_EQUIP_KEY = 'autoClickerV2NoAutoEquip';
 
+  function avoidedEnchantNames(settings) {
+    return String(settings.equipApiAvoidEnchants || '')
+      .split(/[\s,，、]+/)
+      .map((name) => name.trim())
+      .filter(Boolean);
+  }
+
+  function avoidedEnchantOf(settings, equipment) {
+    const enchantments = equipment.enchantments || {};
+    return avoidedEnchantNames(settings).find((name) => name in enchantments) || '';
+  }
+
+  // 自動換裝不拿來穿的：手動標了不自動穿的，加上有「不穿附魔」的
+  function autoEquipBlockedIds(settings) {
+    const ids = noAutoEquipIds();
+    if (avoidedEnchantNames(settings).length) state.equipments.forEach((equipment) => avoidedEnchantOf(settings, equipment) && ids.add(equipment.id));
+    return ids;
+  }
+
   function noAutoEquipIds() {
     return new Set(readJsonStorage(NO_AUTO_EQUIP_KEY, []).map(Number));
   }
@@ -18962,7 +18985,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 同類型的裝備合起來算：不同角色拿同一類武器時，備用的是共用的，誰先用完都會去拿
   function durabilityByType(track, settings) {
     const swapping = Boolean(settings.equipApiEnabled);
-    const blocked = noAutoEquipIds();
+    const blocked = autoEquipBlockedIds(settings);
     const known = state.equipments.length > 0;
     // 只算出戰隊伍的：沒出戰的角色身上的不會掉；還沒讀到隊伍時才全部算
     const team = new Set(state.huntTeamIds.map(Number));
