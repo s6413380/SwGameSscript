@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.77
+// @version      5.78
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -6352,8 +6352,10 @@
     partyPoll.name = profile.teammate || '';
   }
 
+  // 以前鍛造分頁一律不讀：只開一個分頁、拿它跑 API 鍛造的帳號，不在狩獵頁時就完全不補血。
+  // 改成同帳號有別的分頁在掛機才不讀（交給它補）；兩個分頁都閒著時靠共用的讀取時間錯開
   function pollPartyHuntInfo(settings) {
-    if (!settings.manualSupplyEnabled || tabShutDown || scriptHuntingActive() || partyPoll.inFlight || tabRole() === 'forge') return;
+    if (!settings.manualSupplyEnabled || tabShutDown || scriptHuntingActive() || partyPoll.inFlight || otherTabRunning(false)) return;
     if (partyPoll.teammate === false || huntEventsTap.active) return;
     if (!partyPoll.gap) partyPoll.gap = randomGap(30000, 60000);
     if (Date.now() - readJsonStorage(PARTY_HUNT_INFO_SEEN_KEY, 0) < partyPoll.gap) return;
