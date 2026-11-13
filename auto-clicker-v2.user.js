@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.82
+// @version      5.83
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -13423,7 +13423,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         .map((heroId) => {
           const history = heroHistory(heroId);
           const levels = history.filter((rec) => !rec.legacy).reduce((sum, rec) => sum + (rec.to - rec.from), 0);
-          return { heroId, levels, stats: computeStats(history) };
+          const meta = getValue(`hero_${heroId}_meta`, null) || {};
+          return { heroId, levels, stats: computeStats(history), name: meta.name || '', contributor: meta.contributor || '' };
         })
         .filter((hero) => hero.levels >= CARD_COMPARE_MIN_LEVELS);
       cardGroupCache = { key, heroes };
@@ -13440,10 +13441,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         const average = entries.reduce((sum, entry) => sum + entry.avg * entry.levels, 0) / entries.reduce((sum, entry) => sum + entry.levels, 0);
         const values = entries.map((entry) => entry.avg).sort((first, second) => first - second);
         const rank = values.filter((value) => value > mine.avg).length + 1;
+        // 最高那隻是誰的：自己的卡沒有上傳者，雲端的寫署名
+        const best = group.filter((hero) => hero.stats[zhName] && Number.isFinite(hero.stats[zhName].avg)).reduce((first, second) => (second.stats[zhName].avg > first.stats[zhName].avg ? second : first));
+        const bestText = best.heroId === heroId ? '這隻' : `${escapeHtml(best.name || best.heroId)}${best.contributor ? `（${escapeHtml(best.contributor)}）` : ''}`;
         const top = rank / values.length;
         const color = top <= 0.25 ? '#4ade80' : top > 0.5 ? '#f87171' : '#e7e5e4';
         return `<tr><td style="padding:1px 6px">${zhName}</td><td style="padding:1px 6px;text-align:right;color:${color}">${mine.avg.toFixed(1)}<span style="color:#a8a29e">（${mine.levels} 級）</span></td>
           <td style="padding:1px 6px;text-align:right">${average.toFixed(1)}</td><td style="padding:1px 6px;text-align:right;color:#a8a29e">${values[0].toFixed(1)}</td><td style="padding:1px 6px;text-align:right;color:#a8a29e">${values[values.length - 1].toFixed(1)}</td>
+          <td style="padding:1px 6px;color:#a8a29e;white-space:nowrap" title="${best.levels} 級的紀錄">${bestText}</td>
           <td style="padding:1px 6px;text-align:right;color:${color}">${rank}／${values.length}（前 ${Math.max(1, Math.round(top * 100))}%）</td></tr>`;
       }).join('');
     }
@@ -13490,7 +13495,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         <div style="margin-top:4px;line-height:1.6">${lines.map((line) => `<div>${line}</div>`).join('')}</div>
         ${rows
           ? `<div style="margin-top:4px;color:#d6d3d1">每級平均成長，跟同一種卡 ${group.length} 隻比（自己的＋雲端分享的）。同卡平均照級數加權；最低、最高是同卡裡每級平均最低和最高的那隻，只記到一兩級的容易偏高或偏低</div>
-            <div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px"><tr style="color:#a8a29e"><th style="padding:1px 6px;text-align:left">屬性</th><th style="padding:1px 6px">這隻</th><th style="padding:1px 6px">同卡平均</th><th style="padding:1px 6px">最低</th><th style="padding:1px 6px">最高</th><th style="padding:1px 6px">排名</th></tr>${rows}</table></div>`
+            <div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px"><tr style="color:#a8a29e"><th style="padding:1px 6px;text-align:left">屬性</th><th style="padding:1px 6px">這隻</th><th style="padding:1px 6px">同卡平均</th><th style="padding:1px 6px">最低</th><th style="padding:1px 6px">最高</th><th style="padding:1px 6px">最高是誰</th><th style="padding:1px 6px">排名</th></tr>${rows}</table></div>`
           : `<div style="margin-top:4px;color:#a8a29e">同一種卡有成長紀錄的只有 ${group.length} 隻${group.some((hero) => hero.heroId === String(currentHeroId)) ? '' : '，這隻自己還沒有升級紀錄'}，至少要 2 隻才比得出來</div>`}
       </details>`;
       attrPanel.insertBefore(box, attrPanel.querySelector('#growth-history-box'));
@@ -13695,7 +13700,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     function cleanMeta(meta) {
       if (!meta || typeof meta !== 'object' || typeof meta.typeId !== 'string') return null;
       const text = (value) => (typeof value === 'string' ? value.slice(0, 40) : undefined);
-      return { name: text(meta.name), typeId: text(meta.typeId), type: text(meta.type), tier: text(meta.tier), potential: text(meta.potential) };
+      return { name: text(meta.name), typeId: text(meta.typeId), type: text(meta.type), tier: text(meta.tier), potential: text(meta.potential), contributor: text(meta.contributor) };
     }
 
     // heroId 是遊戲裡全服唯一的，同一隻角色的同一次升級（from→to）只算一次；重複匯入同一個檔案不會灌水
@@ -13720,7 +13725,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           added += fresh.length;
         }
         const meta = cleanMeta(entry.meta);
-        if (meta && !getValue(`hero_${heroId}_meta`, null)) setValue(`hero_${heroId}_meta`, meta);
+        const oldMeta = getValue(`hero_${heroId}_meta`, null);
+        if (meta && !oldMeta) setValue(`hero_${heroId}_meta`, meta);
+        else if (meta && meta.contributor && !oldMeta.contributor) setValue(`hero_${heroId}_meta`, { ...oldMeta, contributor: meta.contributor });
         if (!index.includes(heroId)) index.push(heroId);
       }
       setValue('hero_index', index);
@@ -18092,9 +18099,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 試算表的列：key, heroId, name, type, typeId, tier, potential, from, to, place, time, diff, contributor
   function importCloudGrowth(rows) {
     const heroes = {};
-    rows.forEach(([, heroId, name, type, typeId, tier, potential, from, to, place, time, diff]) => {
+    rows.forEach(([, heroId, name, type, typeId, tier, potential, from, to, place, time, diff, contributor]) => {
       const id = String(heroId);
-      if (!heroes[id]) heroes[id] = { meta: { name: String(name), type: String(type), typeId: String(typeId), tier: String(tier), potential: String(potential) }, history: [] };
+      if (!heroes[id]) heroes[id] = { meta: { name: String(name), type: String(type), typeId: String(typeId), tier: String(tier), potential: String(potential), contributor: String(contributor || '') }, history: [] };
       heroes[id].history.push({ from: Number(from), to: Number(to), t: Number(time) || 0, d: parseJsonCell(diff, {}), place: String(place) });
     });
     return Object.keys(heroes).length ? growthTracker.importShare({ format: 'swordgale-growth', version: 1, heroes }).added : 0;
@@ -18228,6 +18235,11 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           saved[sentKey] = [...sent];
           saveCloudState(saved);
         }
+      }
+      // 以前的成長紀錄沒記上傳者，從頭重抓一次補上（同一次升級不會重算）
+      if (!readJsonStorage('autoClickerV2GrowthContributor', false)) {
+        saved.growthRow = 0;
+        writeJsonStorage('autoClickerV2GrowthContributor', true);
       }
       let downloaded = 0;
       for (;;) {
