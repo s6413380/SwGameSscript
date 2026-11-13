@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.84
+// @version      5.85
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -13446,9 +13446,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         const average = entries.reduce((sum, entry) => sum + entry.avg * entry.levels, 0) / entries.reduce((sum, entry) => sum + entry.levels, 0);
         const values = entries.map((entry) => entry.avg).sort((first, second) => first - second);
         const rank = values.filter((value) => value > mine.avg).length + 1;
-        // 最高那隻是誰的：自己的卡沒有上傳者，雲端的寫署名
+        // 最高那隻是誰的：雲端的寫署名；沒有署名的明講，不然只看到卡名不知道是誰的
         const best = group.filter((hero) => hero.stats[zhName] && Number.isFinite(hero.stats[zhName].avg)).reduce((first, second) => (second.stats[zhName].avg > first.stats[zhName].avg ? second : first));
-        const bestText = best.heroId === heroId ? '這隻' : `${escapeHtml(best.name || best.heroId)}${best.contributor ? `（${escapeHtml(best.contributor)}）` : ''}`;
+        const bestText = best.heroId === heroId ? '這隻' : `${escapeHtml(best.name || best.heroId)}${best.contributor ? `（上傳：${escapeHtml(best.contributor)}）` : '（沒有署名：自己的卡，或雲端還沒重抓）'}`;
         const top = rank / values.length;
         const color = top <= 0.25 ? '#4ade80' : top > 0.5 ? '#f87171' : '#e7e5e4';
         return `<tr><td style="padding:1px 6px">${zhName}</td><td style="padding:1px 6px;text-align:right;color:${color}">${mine.avg.toFixed(1)}<span style="color:#a8a29e">（${mine.levels} 級）</span></td>
