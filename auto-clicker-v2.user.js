@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.83
+// @version      5.84
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1520,7 +1520,8 @@
     <div data-tab="growth">
       <div class="hint">同名的卡成長也不一樣，一張卡一筆（自己的加上匯入別人的）</div>
       <div class="row"><select data-role="growth-type" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select>
-        <button data-action="growth-refresh">重新計算</button></div>
+        <button data-action="growth-refresh">重新計算</button><button data-action="growth-top" title="上面選的這種卡，每項屬性每級平均最高的前 3 隻是誰的">最高是誰</button></div>
+      <div data-role="growth-top" style="font-size:12px"></div>
       <div data-role="growth-summary"></div>
       <div class="subhead">全部角色合併：依升級地點（各角色先跟自己的平均比，跟角色無關）</div>
       <div data-role="growth-places" style="font-size:12px"></div>
@@ -12335,6 +12336,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       syncGrowth(readSettingsFromPanel());
     } else if (action === 'growth-refresh') {
       renderGrowthSummary();
+    } else if (action === 'growth-top') {
+      const box = panel.querySelector('[data-role="growth-top"]');
+      if (box.innerHTML) box.innerHTML = '';
+      else renderGrowthTop();
     } else if (action === 'growth-export-file') {
       exportGrowthToFile();
     } else if (action === 'growth-export-copy') {
@@ -13656,6 +13661,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
             type: meta.type || '未知類型',
             tier: meta.tier || '',
             potential: meta.potential || '',
+            contributor: meta.contributor || '',
             stats,
             levelUps,
             places: computePlaceStats(history, stats),
@@ -24423,6 +24429,37 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       <div style="font-size:12px">${places || '<div class="hint">還沒有記到地點的升級</div>'}</div>`;
   }
 
+  // 只記到一兩級的平均很容易偏高，不列
+  const GROWTH_TOP_MIN_LEVELS = 3;
+  const GROWTH_TOP_COUNT = 3;
+
+  // 上面選的那張卡同一種的全部角色（自己的＋雲端的），每項屬性每級平均最高的前幾隻
+  function renderGrowthTop() {
+    const box = panel.querySelector('[data-role="growth-top"]');
+    const summaries = growthTracker.cardSummaries();
+    const selected = summaries.find((summary) => summary.heroId === panel.querySelector('[data-role="growth-type"]').value);
+    if (!selected) {
+      box.innerHTML = '<div class="hint">還沒有成長紀錄</div>';
+      return;
+    }
+    const group = summaries.filter((summary) => summary.type === selected.type && summary.levelUps >= GROWTH_TOP_MIN_LEVELS);
+    const who = (card) =>
+      `${card.heroId === selected.heroId ? '<b>' : ''}${escapeHtml(card.name)}${card.contributor ? `<span style="color:#a8a29e">（${escapeHtml(card.contributor)}）</span>` : ''}${card.heroId === selected.heroId ? '</b>' : ''}`;
+    const rows = growthTracker.sharedStatNames
+      .map((zhName) => {
+        const top = group
+          .filter((card) => card.stats[zhName] && Number.isFinite(card.stats[zhName].avg))
+          .sort((first, second) => second.stats[zhName].avg - first.stats[zhName].avg)
+          .slice(0, GROWTH_TOP_COUNT);
+        if (!top.length) return '';
+        return `<tr><td>${zhName}</td><td style="text-align:left">${top.map((card) => `${who(card)} ${formatGrowth(card.stats[zhName].avg)}<span style="color:#78716c">（${card.levelUps} 級）</span>`).join('<br>')}</td></tr>`;
+      })
+      .join('');
+    box.innerHTML = `<div class="subhead">${escapeHtml(selected.type)}：每項屬性最高的前 ${GROWTH_TOP_COUNT} 隻（共 ${group.length} 隻，記到 ${GROWTH_TOP_MIN_LEVELS} 級以上才算）</div>
+      ${rows ? `<table class="combat"><tr><th>屬性</th><th style="text-align:left">誰（雲端署名）每級平均</th></tr>${rows}</table>` : '<div class="hint">這種卡記到 3 級以上的還沒有</div>'}
+      <div class="hint">粗體＝上面選的這隻；沒有署名的是自己的卡，或還沒重抓雲端紀錄的</div>`;
+  }
+
   function growthShareText() {
     return JSON.stringify(growthTracker.exportShare());
   }
@@ -24470,7 +24507,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     renderGrowthSummary();
   }
 
-  panel.querySelector('[data-role="growth-type"]').addEventListener('change', renderGrowthSummary);
+  panel.querySelector('[data-role="growth-type"]').addEventListener('change', () => {
+    renderGrowthSummary();
+    if (panel.querySelector('[data-role="growth-top"]').innerHTML) renderGrowthTop();
+  });
   panel.querySelector('[data-role="material-mode"]').addEventListener('change', renderMaterialSummary);
   panel.querySelector('[data-role="hunt-stats-place"]').addEventListener('change', renderHuntStats);
   panel.querySelector('[data-role="income-period"]').addEventListener('change', renderIncome);
