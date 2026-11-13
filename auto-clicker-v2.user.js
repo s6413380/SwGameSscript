@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.85
+// @version      5.86
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1717,7 +1717,7 @@
       <div class="hint">把成長值與鍛造材料紀錄傳到 Google 試算表，跟朋友共用；設定方法看使用說明「雲端共用」。只傳自己的，同一筆不會重複</div>
       <label class="row"><input data-field="cloudSyncEnabled" type="checkbox" style="flex:none;width:auto"> 啟用雲端同步（每 10 分鐘）</label>
       <div class="row">網址<input data-field="cloudUrl" placeholder="留空＝用內建的共用試算表"></div>
-      <div class="row">署名<input data-field="cloudName" placeholder="試算表上顯示是誰傳的"></div>
+      <div class="row">署名<input data-field="cloudName" placeholder="試算表上顯示是誰傳的（空白＝用遊戲暱稱）"></div>
       <div class="row"><span data-role="cloud-status" class="hint" style="flex:1"></span><button data-action="cloud-sync-now">立即同步</button></div>
     </div>
 
@@ -4468,11 +4468,16 @@
     return url;
   }
 
+  // 試算表上記誰傳的：有填署名用署名，沒填就用遊戲暱稱（以前是「未署名」，分不出是誰的卡）
+  function cloudContributor(settings) {
+    return settings.cloudName || (dashboard.profile && dashboard.profile.nickname) || '未署名';
+  }
+
   async function postTransferEvent(settings, transfer, eventName) {
     const result = await cloudRequest(cloudUrlOf(settings), {
       method: 'POST',
       body: JSON.stringify({
-        contributor: settings.cloudName || '未署名',
+        contributor: cloudContributor(settings),
         transfers: [[`${transfer.id}:${eventName}`, transfer.id, transfer.from, transfer.to, transfer.amount, transfer.mine, transfer.token, eventName, Date.now()]],
       }),
     });
@@ -7777,7 +7782,7 @@
     const result = await cloudRequest(cloudUrlOf(settings), {
       method: 'POST',
       body: JSON.stringify({
-        contributor: settings.cloudName || '未署名',
+        contributor: cloudContributor(settings),
         transfers: [[`${inviteId}:${eventName}`, inviteId, from, to, fromId, note, '', eventName, Date.now()]],
       }),
     });
@@ -13446,14 +13451,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         const average = entries.reduce((sum, entry) => sum + entry.avg * entry.levels, 0) / entries.reduce((sum, entry) => sum + entry.levels, 0);
         const values = entries.map((entry) => entry.avg).sort((first, second) => first - second);
         const rank = values.filter((value) => value > mine.avg).length + 1;
-        // 最高那隻是誰的：雲端的寫署名；沒有署名的明講，不然只看到卡名不知道是誰的
+        // 最高那隻是誰的：名字（署名），沒有署名就只放名字，說明放滑鼠提示
         const best = group.filter((hero) => hero.stats[zhName] && Number.isFinite(hero.stats[zhName].avg)).reduce((first, second) => (second.stats[zhName].avg > first.stats[zhName].avg ? second : first));
-        const bestText = best.heroId === heroId ? '這隻' : `${escapeHtml(best.name || best.heroId)}${best.contributor ? `（上傳：${escapeHtml(best.contributor)}）` : '（沒有署名：自己的卡，或雲端還沒重抓）'}`;
+        const bestText = best.heroId === heroId ? '這隻' : `${escapeHtml(best.name || best.heroId)}${best.contributor ? `（${escapeHtml(best.contributor)}）` : ''}`;
         const top = rank / values.length;
         const color = top <= 0.25 ? '#4ade80' : top > 0.5 ? '#f87171' : '#e7e5e4';
         return `<tr><td style="padding:1px 6px">${zhName}</td><td style="padding:1px 6px;text-align:right;color:${color}">${mine.avg.toFixed(1)}<span style="color:#a8a29e">（${mine.levels} 級）</span></td>
           <td style="padding:1px 6px;text-align:right">${average.toFixed(1)}</td><td style="padding:1px 6px;text-align:right;color:#a8a29e">${values[0].toFixed(1)}</td><td style="padding:1px 6px;text-align:right;color:#a8a29e">${values[values.length - 1].toFixed(1)}</td>
-          <td style="padding:1px 6px;color:#a8a29e;white-space:nowrap" title="${best.levels} 級的紀錄">${bestText}</td>
+          <td style="padding:1px 6px;color:#a8a29e;white-space:nowrap" title="${best.contributor ? `雲端署名：${escapeHtml(best.contributor)}` : '沒有署名：自己的卡，或雲端還沒重抓'}，記到 ${best.levels} 級">${bestText}</td>
           <td style="padding:1px 6px;text-align:right;color:${color}">${rank}／${values.length}（前 ${Math.max(1, Math.round(top * 100))}%）</td></tr>`;
       }).join('');
     }
@@ -18201,7 +18206,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         const placeBatch = places.slice(start, start + CLOUD_BATCH_ROWS);
         const result = await cloudRequest(url, {
           method: 'POST',
-          body: JSON.stringify({ contributor: settings.cloudName || '未署名', growth: growthBatch, equipment: equipmentBatch, places: placeBatch }),
+          body: JSON.stringify({ contributor: cloudContributor(settings), growth: growthBatch, equipment: equipmentBatch, places: placeBatch }),
         });
         uploaded += (result.added.growth || 0) + (result.added.equipment || 0) + (result.added.places || 0);
         growthBatch.forEach((row) => sentGrowth.add(row[0]));
@@ -18219,7 +18224,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         .filter((name) => !sentConditions.has(name))
         .map((name) => [name, Date.now()]);
       if (conditions.length) {
-        const result = await cloudRequest(url, { method: 'POST', body: JSON.stringify({ contributor: settings.cloudName || '未署名', conditions }) });
+        const result = await cloudRequest(url, { method: 'POST', body: JSON.stringify({ contributor: cloudContributor(settings), conditions }) });
         // 舊版試算表沒有異常分頁（回應裡沒有 conditions），更新試算表後會補傳
         if (result.added.conditions !== undefined) {
           uploaded += result.added.conditions;
@@ -18234,7 +18239,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         const fresh = rows.filter((row) => !sent.has(row[0]));
         for (let start = 0; start < fresh.length; start += CLOUD_BATCH_ROWS) {
           const batch = fresh.slice(start, start + CLOUD_BATCH_ROWS);
-          const result = await cloudRequest(url, { method: 'POST', body: JSON.stringify({ contributor: settings.cloudName || '未署名', [name]: batch }) });
+          const result = await cloudRequest(url, { method: 'POST', body: JSON.stringify({ contributor: cloudContributor(settings), [name]: batch }) });
           if (result.added[name] === undefined) break;
           uploaded += result.added[name];
           batch.forEach((row) => sent.add(row[0]));
