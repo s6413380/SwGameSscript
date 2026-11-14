@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.90
+// @version      5.91
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -80,7 +80,7 @@
   }
   // 統計類（收入、抽卡、測名表、打怪、耐久、挖礦、市場、雲端同步紀錄）每個幾十到幾百 KB，加起來又把 localStorage 擠滿，也搬過去
   const STATS_BIG_STORAGE_KEYS = ['aijijiCloud', 'autoClickerV2Income', 'aijijiDraws', 'aijijiNameWeights', 'autoClickerV2HuntStats', 'autoClickerV2DurTrack', 'autoClickerV2DurStats', 'autoClickerV2Mining', 'autoClickerV2MarketSales'];
-  const BIG_STORAGE_KEYS = new Set(['aijijiCloudEquipments', 'aijijiCloudScratch', 'aijijiCloudDraws', 'aijijiScratch', 'aijijiForgedEquipments', 'aijijiForgeMaterials', ...STATS_BIG_STORAGE_KEYS]);
+  const BIG_STORAGE_KEYS = new Set(['aijijiThemeImage', 'aijijiCloudEquipments', 'aijijiCloudScratch', 'aijijiCloudDraws', 'aijijiScratch', 'aijijiForgedEquipments', 'aijijiForgeMaterials', ...STATS_BIG_STORAGE_KEYS]);
   // 這些是累加的：資料庫開好之前讀到的是空的，那時寫的是「空的＋一筆」，資料庫裡已經有就以資料庫的為準（頂多少記那一筆）
   const KEEP_STORED_BIG_STORAGE_KEYS = new Set(STATS_BIG_STORAGE_KEYS);
   // 自己的鍛造紀錄沒辦法重抓：資料庫開好之前讀到的是空的，這段時間寫進來的只有新的幾件，開好時要跟資料庫裡的合併（同一件以新的為準）
@@ -458,6 +458,9 @@
     cinnamonTheme: false,
     // 風格2 的底色，其他藍色（按鈕、輸入框、框線）照這個色相跟彩度自動配
     cinnamonColor: '#4a8fd0',
+    // 風格2 背景圖：網址，或「（上傳的圖片）」＝存在這台瀏覽器的資料庫裡那張；變暗 %＝蓋一層黑，白字才看得清楚
+    cinnamonBgImage: '',
+    cinnamonBgDim: 40,
     itemStepSeconds: 1,
     crashReloadEnabled: true,
     combatEnabled: true,
@@ -1497,7 +1500,19 @@
       <label>小視窗裡裝備耐久低於 ${numberInput('miniLowDurability', 'min="0" style="flex:none;width:60px"')} 標紅（0＝不標）</label>
       <div class="row"><label style="flex:none"><input data-field="miniShowDamage" type="checkbox" style="width:auto"> 小視窗顯示輸出佔比</label><label style="flex:none"><input data-field="miniShowLoot" type="checkbox" style="width:auto"> 掉落</label></div>
       <label class="row"><input data-field="assistModeEnabled" type="checkbox" style="flex:none;width:auto"> <b>輔助模式</b>：只留手動打怪用的（補給、解異常、換裝、小視窗、統計），自動掛機、鍛造、挖礦、購卡的分頁和按鈕都收起來，而且會停掉、不能啟動</label>
-      <div class="row"><label style="flex:none"><input data-field="cinnamonTheme" type="checkbox" style="width:auto"> 風格2</label>顏色<input data-field="cinnamonColor" type="color" style="flex:none;width:44px;height:24px;padding:0 2px"><button data-action="theme-color-reset" style="flex:none">預設</button><span class="hint" style="margin:0">太淺會自動壓暗，白字才看得清楚</span></div>
+      <fieldset class="group">
+        <legend>外觀</legend>
+        <label class="row"><input data-field="cinnamonTheme" type="checkbox" style="flex:none;width:auto"> 風格2（下面的顏色、背景圖要勾這個才有用）</label>
+        <div class="row">色碼<input data-field="cinnamonColor" placeholder="#F4CFE0" spellcheck="false" style="flex:none;width:86px;font-family:monospace"><input data-role="theme-picker" type="color" title="用調色盤選" style="flex:none;width:36px;height:24px;padding:0 2px"><span data-role="theme-actual" title="實際用的底色" style="flex:none;width:22px;height:18px;border-radius:4px;border:1px solid #fff"></span><button data-action="theme-color-reset" style="flex:none">預設</button></div>
+        <div data-role="theme-presets" style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0"></div>
+        <div class="row">色相<input data-role="theme-h" class="theme-slider" type="range" min="0" max="360" style="flex:1"></div>
+        <div class="row">彩度<input data-role="theme-s" class="theme-slider" type="range" min="0" max="100" style="flex:1"></div>
+        <div class="row">亮度<input data-role="theme-l" class="theme-slider" type="range" min="0" max="100" style="flex:1"></div>
+        <div class="hint" data-role="theme-note"></div>
+        <div class="row">背景圖<input data-field="cinnamonBgImage" placeholder="圖片網址 https://…，或按上傳" style="flex:1;min-width:0"><button data-action="theme-image-upload" style="flex:none">上傳</button><button data-action="theme-image-clear" style="flex:none">清除</button><input data-role="theme-image-file" type="file" accept="image/*" style="display:none"></div>
+        <div class="row">背景圖變暗<input data-field="cinnamonBgDim" type="range" min="0" max="90" style="flex:1"><span data-role="theme-dim-text" style="flex:none;width:36px;text-align:right"></span></div>
+        <div class="hint">色碼可以直接打 #F4CFE0、F4CFE0、#fcf；太淺或太深會自動調到白字看得清楚的深淺（右邊小方塊是實際用的顏色）。上傳的圖只存在這台瀏覽器</div>
+      </fieldset>
       <fieldset class="group">
         <legend>多帳號總覽</legend>
         <label class="row"><input data-field="dashboardEnabled" type="checkbox" style="flex:none;width:auto"> 回報到總覽頁（每 5 秒）</label>
@@ -1971,6 +1986,11 @@
     [data-auto-clicker][data-cinnamon] [style*="background:#1f1f24"] { background:var(--cin-button) !important; }
     [data-auto-clicker][data-cinnamon] [style*="border:1px solid #2e2e34"], [data-auto-clicker][data-cinnamon] [style*="border-bottom:1px solid #2e2e34"],
     [data-auto-clicker][data-cinnamon] [style*="border:1px solid #34343c"] { border-color:var(--cin-line) !important; }
+    [data-auto-clicker][data-cinnamon][data-cin-image] { background-image:var(--cin-image) !important; background-size:cover !important; background-position:center !important; background-attachment:scroll !important; }
+    [data-auto-clicker] input.theme-slider.theme-slider[type="range"] { -webkit-appearance:none; appearance:none; height:10px; border-radius:5px; border:1px solid rgba(255,255,255,.5); background:var(--slider-bg) !important; padding:0; }
+    [data-auto-clicker] input.theme-slider::-webkit-slider-thumb { -webkit-appearance:none; width:14px; height:14px; border-radius:50%; background:#fff; border:2px solid #333; cursor:pointer; }
+    [data-auto-clicker] input.theme-slider::-moz-range-thumb { width:12px; height:12px; border-radius:50%; background:#fff; border:2px solid #333; cursor:pointer; }
+    [data-auto-clicker] [data-theme-preset] { width:auto; padding:2px 8px; font-size:12px; color:#fff; border:1px solid rgba(255,255,255,.6) !important; text-shadow:0 1px 2px rgba(0,0,0,.6); }
     [data-auto-clicker][data-alerting] { background:#c62828 !important; border:3px solid #ffe066 !important; }
     .auto-clicker-hover { outline: 3px solid #e33 !important; }
   `;
@@ -1978,14 +1998,112 @@
   document.head.appendChild(style);
   document.body.appendChild(panel);
 
+  const THEME_IMAGE_KEY = 'aijijiThemeImage';
+  const THEME_UPLOADED_MARK = '（上傳的圖片）';
+  const THEME_PRESETS = [
+    ['天空藍', '#4a8fd0'], ['灰藍', '#5a82a8'], ['粉紅', '#f4cfe0'], ['櫻花', '#e88aa8'],
+    ['薄荷', '#5fae9a'], ['薰衣草', '#9a86c8'], ['奶茶', '#b08d72'], ['石墨', '#5b5f66'],
+  ];
+  // 打錯色碼時退回這個
+  let lastThemeColor = '';
+
   function applyPanelTheme() {
     const settings = readSettingsFromPanel();
+    const hex = normalizeHex(settings.cinnamonColor) || lastThemeColor || defaultSettings.cinnamonColor;
+    lastThemeColor = hex;
     panel.toggleAttribute('data-cinnamon', Boolean(settings.cinnamonTheme));
-    Object.entries(cinnamonPalette(settings.cinnamonColor)).forEach(([name, color]) => panel.style.setProperty(`--cin-${name}`, color));
+    const palette = cinnamonPalette(hex);
+    Object.entries(palette).forEach(([name, color]) => panel.style.setProperty(`--cin-${name}`, color));
+    const image = themeImageUrl(settings);
+    const dim = Math.min(90, Math.max(0, Number(settings.cinnamonBgDim) || 0)) / 100;
+    panel.toggleAttribute('data-cin-image', Boolean(image));
+    panel.style.setProperty('--cin-image', image ? `linear-gradient(rgba(0,0,0,${dim}), rgba(0,0,0,${dim})), url("${image.replace(/"/g, '%22')}")` : 'none');
+    syncThemeControls(hex, palette, dim);
+  }
+
+  function themeImageUrl(settings) {
+    const value = String(settings.cinnamonBgImage || '').trim();
+    if (value === THEME_UPLOADED_MARK) return readJsonStorage(THEME_IMAGE_KEY, '') || '';
+    return /^(https?:\/\/|data:image\/)/i.test(value) ? value : '';
+  }
+
+  // 調色盤、三條拉桿、實際底色跟著目前的色碼；正在拉的那條不動它，免得跳
+  function syncThemeControls(hex, palette, dim) {
+    const { hue, saturation, lightness } = hexToHsl(hex);
+    const picker = panel.querySelector('[data-role="theme-picker"]');
+    if (picker && document.activeElement !== picker) picker.value = hex;
+    [['h', hue], ['s', saturation], ['l', lightness]].forEach(([part, value]) => {
+      const slider = panel.querySelector(`[data-role="theme-${part}"]`);
+      if (slider && document.activeElement !== slider) slider.value = Math.round(value);
+    });
+    const [h, s, l] = [hue, saturation, lightness].map((value) => Math.round(value));
+    const steps = (make) => Array.from({ length: 7 }, (_, index) => make(index / 6)).join(', ');
+    const backgrounds = {
+      h: `linear-gradient(to right, ${steps((part) => `hsl(${part * 360} ${Math.max(s, 40)}% ${Math.min(Math.max(l, 35), 65)}%)`)})`,
+      s: `linear-gradient(to right, hsl(${h} 0% ${l}%), hsl(${h} 100% ${l}%))`,
+      l: `linear-gradient(to right, hsl(${h} ${s}% 0%), hsl(${h} ${s}% 50%), hsl(${h} ${s}% 100%))`,
+    };
+    Object.entries(backgrounds).forEach(([part, background]) => {
+      const slider = panel.querySelector(`[data-role="theme-${part}"]`);
+      if (slider) slider.style.setProperty('--slider-bg', background);
+    });
+    const actual = panel.querySelector('[data-role="theme-actual"]');
+    if (actual) actual.style.background = palette.base;
+    const note = panel.querySelector('[data-role="theme-note"]');
+    if (note) note.textContent = l > 58 ? '這個顏色比較淺，白字會看不清楚，實際用的是右邊小方塊那個較深、較柔的顏色' : l < 28 ? '這個顏色太深，實際用的是右邊小方塊那個稍亮的顏色' : '';
+    const dimText = panel.querySelector('[data-role="theme-dim-text"]');
+    if (dimText) dimText.textContent = `${Math.round(dim * 100)}%`;
+  }
+
+  function renderThemePresets() {
+    const box = panel.querySelector('[data-role="theme-presets"]');
+    if (!box) return;
+    box.innerHTML = THEME_PRESETS.map(([name, hex]) => `<button type="button" data-theme-preset="${hex}" title="${hex}" style="background:${cinnamonPalette(hex).base}">${name}</button>`).join('');
+  }
+
+  // #F4CFE0、F4CFE0、#fcf 都收；看不懂回空字串
+  function normalizeHex(value) {
+    const match = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(value || '').trim());
+    if (!match) return '';
+    const digits = match[1].length === 3 ? [...match[1]].map((digit) => digit + digit).join('') : match[1];
+    return `#${digits.toLowerCase()}`;
+  }
+
+  function hslToHex(hue, saturation, lightness) {
+    const s = saturation / 100;
+    const l = lightness / 100;
+    const channel = (offset) => {
+      const k = (offset + hue / 30) % 12;
+      const value = l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+      return Math.round(value * 255).toString(16).padStart(2, '0');
+    };
+    return `#${channel(0)}${channel(8)}${channel(4)}`;
+  }
+
+  // 上傳的圖縮到長邊 1000 px 存成 JPEG，幾十 KB，不會把瀏覽器空間吃光
+  function shrinkThemeImage(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const image = new Image();
+      image.onload = () => {
+        const scale = Math.min(1, 1000 / Math.max(image.width, image.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(image.width * scale);
+        canvas.height = Math.round(image.height * scale);
+        canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(url);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      image.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error('讀不到這張圖'));
+      };
+      image.src = url;
+    });
   }
 
   function hexToHsl(hex) {
-    const match = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
+    const match = /^#?([0-9a-f]{6})$/i.exec(normalizeHex(hex));
     if (!match) return null;
     const [red, green, blue] = [0, 2, 4].map((offset) => parseInt(match[1].slice(offset, offset + 2), 16) / 255);
     const max = Math.max(red, green, blue);
@@ -2006,9 +2124,12 @@
   };
 
   function cinnamonPalette(hex) {
-    if (!hexToHsl(hex) || hex.toLowerCase() === defaultSettings.cinnamonColor) return CINNAMON_DEFAULT_PALETTE;
-    const { hue, saturation, lightness } = hexToHsl(hex);
+    if (!hexToHsl(hex) || normalizeHex(hex) === defaultSettings.cinnamonColor) return CINNAMON_DEFAULT_PALETTE;
+    const { hue, lightness } = hexToHsl(hex);
+    let { saturation } = hexToHsl(hex);
     const base = Math.min(58, Math.max(28, lightness));
+    // 粉嫩色（#F4CFE0）直接壓暗會變成很艷的桃紅；越淺的壓暗後彩度降越多，保留柔和的感覺
+    if (lightness > 58) saturation *= Math.max(0.3, (100 - lightness) / 42);
     const color = (light, alpha) => `hsl(${hue.toFixed(0)} ${saturation.toFixed(0)}% ${Math.min(97, Math.max(5, light)).toFixed(0)}%${alpha ? ` / ${alpha}` : ''})`;
     return {
       base: color(base), top: color(base + 10), bottom: color(base - 6), input: color(base - 11), button: color(base - 7), hover: color(base - 1),
@@ -12392,6 +12513,11 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       renderGrowthSummary();
     } else if (action === 'theme-color-reset') {
       setPanelField('cinnamonColor', defaultSettings.cinnamonColor);
+    } else if (action === 'theme-image-upload') {
+      panel.querySelector('[data-role="theme-image-file"]').click();
+    } else if (action === 'theme-image-clear') {
+      writeJsonStorage(THEME_IMAGE_KEY, '');
+      setPanelField('cinnamonBgImage', '');
     } else if (action === 'growth-top') {
       const box = panel.querySelector('[data-role="growth-top"]');
       if (box.innerHTML) box.innerHTML = '';
@@ -24682,7 +24808,45 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   panel.querySelector('[data-field="forgeRecipe"]').addEventListener('change', renderRecipePicker);
   panel.querySelector('[data-field="forgeRecipeType"]').addEventListener('change', renderRecipePicker);
   panel.querySelector('[data-role="recipe-filter"]').addEventListener('input', renderRecipePicker);
-  panel.querySelector('[data-field="cinnamonColor"]').addEventListener('input', applyPanelTheme);
+  // 色碼：打到看得懂就即時換；離開欄位時整理成 #rrggbb，看不懂就退回上一個
+  const themeColorInput = panel.querySelector('[data-field="cinnamonColor"]');
+  themeColorInput.addEventListener('input', () => normalizeHex(themeColorInput.value) && applyPanelTheme());
+  themeColorInput.addEventListener('change', () => {
+    const hex = normalizeHex(themeColorInput.value);
+    if (!hex) setStatus(`看不懂色碼「${themeColorInput.value}」，要像 #F4CFE0 這樣`);
+    themeColorInput.value = hex || lastThemeColor;
+  });
+  // 調色盤、拉桿：拉的時候即時看，放開才存
+  const setThemeColorLive = (hex) => {
+    themeColorInput.value = hex;
+    applyPanelTheme();
+  };
+  const themeSliderHex = () => hslToHex(...['h', 's', 'l'].map((part) => Number(panel.querySelector(`[data-role="theme-${part}"]`).value)));
+  panel.querySelector('[data-role="theme-picker"]').addEventListener('input', (event) => setThemeColorLive(event.target.value));
+  panel.querySelector('[data-role="theme-picker"]').addEventListener('change', (event) => setPanelField('cinnamonColor', event.target.value));
+  ['h', 's', 'l'].forEach((part) => {
+    const slider = panel.querySelector(`[data-role="theme-${part}"]`);
+    slider.addEventListener('input', () => setThemeColorLive(themeSliderHex()));
+    slider.addEventListener('change', () => setPanelField('cinnamonColor', themeSliderHex()));
+  });
+  panel.querySelector('[data-role="theme-presets"]').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-theme-preset]');
+    if (button) setPanelField('cinnamonColor', button.dataset.themePreset);
+  });
+  panel.querySelector('[data-field="cinnamonBgDim"]').addEventListener('input', applyPanelTheme);
+  panel.querySelector('[data-role="theme-image-file"]').addEventListener('change', async (event) => {
+    const file = event.target.files && event.target.files[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      writeJsonStorage(THEME_IMAGE_KEY, await shrinkThemeImage(file));
+      setPanelField('cinnamonBgImage', THEME_UPLOADED_MARK);
+      applyPanelTheme();
+    } catch (error) {
+      setStatus(`背景圖上傳失敗（${error.message}）`);
+    }
+  });
+  renderThemePresets();
   panel.querySelector('[data-field="recipeNameAdjust"]').addEventListener('change', renderRecipes);
   panel.querySelector('[data-field="materialNameAdjust"]').addEventListener('change', renderMaterialSummary);
   panel.querySelector('[data-role="recipe-goal"]').addEventListener('change', renderRecipes);
@@ -24870,7 +25034,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }
     if (event.target.dataset.recipeMine !== undefined || event.target.dataset.recipeQty !== undefined) updateRecipeFromPicker();
     refreshSupplyModes();
-    if (['cinnamonTheme', 'cinnamonColor'].includes(event.target.dataset.field)) applyPanelTheme();
+    if (['cinnamonTheme', 'cinnamonColor', 'cinnamonBgImage', 'cinnamonBgDim'].includes(event.target.dataset.field)) applyPanelTheme();
     saveSettings(readSettingsFromPanel());
     if (activeTab === 'forge') renderForgePlanOverview();
     if (/^card/.test(event.target.dataset.field || '')) {
@@ -24905,6 +25069,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   refreshSlotButtons();
   refreshSupplyModes();
   applyPanelTheme();
+  if (bigStorage.ready) bigStorage.ready.then(applyPanelTheme).catch(() => {});
   // 用到的常數在檔案後段才定義，要等全部載入完才裝
   installItemTableHelpers();
   installPageReport();
