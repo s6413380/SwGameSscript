@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.87
+// @version      5.88
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -456,6 +456,8 @@
     miniShowLoot: true,
     // 面板換成大耳狗風格（天空藍、雲朵、粉紅點綴），預設關
     cinnamonTheme: false,
+    // 風格2 的底色，其他藍色（按鈕、輸入框、框線）照這個色相跟彩度自動配
+    cinnamonColor: '#5a82a8',
     itemStepSeconds: 1,
     crashReloadEnabled: true,
     combatEnabled: true,
@@ -1487,7 +1489,7 @@
       <label>小視窗裡裝備耐久低於 ${numberInput('miniLowDurability', 'min="0" style="flex:none;width:60px"')} 標紅（0＝不標）</label>
       <div class="row"><label style="flex:none"><input data-field="miniShowDamage" type="checkbox" style="width:auto"> 小視窗顯示輸出佔比</label><label style="flex:none"><input data-field="miniShowLoot" type="checkbox" style="width:auto"> 掉落</label></div>
       <label class="row"><input data-field="assistModeEnabled" type="checkbox" style="flex:none;width:auto"> <b>輔助模式</b>：只留手動打怪用的（補給、解異常、換裝、小視窗、統計），自動掛機、鍛造、挖礦、購卡的分頁和按鈕都收起來，而且會停掉、不能啟動</label>
-      <label class="row"><input data-field="cinnamonTheme" type="checkbox" style="flex:none;width:auto"> 風格2</label>
+      <div class="row"><label style="flex:none"><input data-field="cinnamonTheme" type="checkbox" style="width:auto"> 風格2</label>顏色<input data-field="cinnamonColor" type="color" style="flex:none;width:44px;height:24px;padding:0 2px"><button data-action="theme-color-reset" style="flex:none">預設</button><span class="hint" style="margin:0">太淺會自動壓暗，白字才看得清楚</span></div>
       <fieldset class="group">
         <legend>多帳號總覽</legend>
         <label class="row"><input data-field="dashboardEnabled" type="checkbox" style="flex:none;width:auto"> 回報到總覽頁（每 5 秒）</label>
@@ -1923,9 +1925,9 @@
     [data-auto-clicker] table.combat { width:100%; border-collapse:collapse; font:11px monospace; margin:4px 0; }
     [data-auto-clicker] table.combat th, [data-auto-clicker] table.combat td { padding:1px 3px; text-align:right; border-bottom:1px solid #2e2e34; }
     [data-auto-clicker] table.combat th:first-child, [data-auto-clicker] table.combat td:first-child { text-align:left; }
-    /* 大耳狗風格：灰藍底（彩度壓低，看久不刺眼）、白雲、粉紅點綴；白字照樣看得清楚 */
+    /* 大耳狗風格：底色自選（applyPanelTheme 算出 --cin-* 各色）、白雲、粉紅點綴；白字照樣看得清楚 */
     [data-auto-clicker][data-cinnamon] {
-      background-color:#5a82a8 !important; border:2px solid #e8eff6 !important; box-shadow:0 6px 24px rgba(50,80,110,.5) !important;
+      background-color:var(--cin-base) !important; border:2px solid var(--cin-border) !important; box-shadow:0 6px 24px var(--cin-shadow) !important;
       background-image:
         radial-gradient(circle at 86% 3%, rgba(255,255,255,.55) 0 16px, transparent 17px),
         radial-gradient(circle at 93% 4.5%, rgba(255,255,255,.55) 0 20px, transparent 21px),
@@ -1934,31 +1936,31 @@
         radial-gradient(circle at 20% 56.5%, rgba(255,255,255,.18) 0 28px, transparent 29px),
         radial-gradient(circle at 88% 90%, rgba(255,255,255,.16) 0 24px, transparent 25px),
         radial-gradient(circle at 95% 91%, rgba(255,255,255,.16) 0 18px, transparent 19px),
-        linear-gradient(180deg, #7b9dbf 0%, #5a82a8 45%, #4c7398 100%) !important;
+        linear-gradient(180deg, var(--cin-top) 0%, var(--cin-base) 45%, var(--cin-bottom) 100%) !important;
       background-attachment:local !important; }
     [data-auto-clicker][data-cinnamon] input, [data-auto-clicker][data-cinnamon] textarea, [data-auto-clicker][data-cinnamon] select,
-    [data-auto-clicker][data-cinnamon] [style*="background:#2a2a30"] { background:#42678c !important; border-color:#b6cbe0 !important; }
-    [data-auto-clicker][data-cinnamon] input::placeholder, [data-auto-clicker][data-cinnamon] textarea::placeholder { color:#cdd9e6; }
+    [data-auto-clicker][data-cinnamon] [style*="background:#2a2a30"] { background:var(--cin-input) !important; border-color:var(--cin-line) !important; }
+    [data-auto-clicker][data-cinnamon] input::placeholder, [data-auto-clicker][data-cinnamon] textarea::placeholder { color:var(--cin-placeholder); }
     [data-auto-clicker][data-cinnamon] input[type="checkbox"], [data-auto-clicker][data-cinnamon] input[type="range"] { accent-color:#ff9cc7; background:transparent !important; }
-    [data-auto-clicker][data-cinnamon] button { background:#4a6f94; border-color:#b6cbe0; }
-    [data-auto-clicker][data-cinnamon] button:hover { background:#587ea5; }
-    [data-auto-clicker][data-cinnamon] .tab-groups { border-bottom-color:#b6cbe0; }
-    [data-auto-clicker][data-cinnamon] .tab-groups button { background:#42678c; color:#e8eff6; border-color:#b6cbe0; }
+    [data-auto-clicker][data-cinnamon] button { background:var(--cin-button); border-color:var(--cin-line); }
+    [data-auto-clicker][data-cinnamon] button:hover { background:var(--cin-hover); }
+    [data-auto-clicker][data-cinnamon] .tab-groups { border-bottom-color:var(--cin-line); }
+    [data-auto-clicker][data-cinnamon] .tab-groups button { background:var(--cin-input); color:var(--cin-border); border-color:var(--cin-line); }
     [data-auto-clicker][data-cinnamon] .tab-groups button[data-active] { background:#ff9cc7; color:#5a2140; border-color:#ffd1e6; }
-    [data-auto-clicker][data-cinnamon] .tabs button { background:#42678c; border-color:#b6cbe0; }
-    [data-auto-clicker][data-cinnamon] .tabs button[data-active] { background:#fff; color:#3f6185; border-color:#ffd1e6; }
-    [data-auto-clicker][data-cinnamon] fieldset.group { border-color:#d4e0ec; background:rgba(255,255,255,.06); }
+    [data-auto-clicker][data-cinnamon] .tabs button { background:var(--cin-input); border-color:var(--cin-line); }
+    [data-auto-clicker][data-cinnamon] .tabs button[data-active] { background:#fff; color:var(--cin-tab-text); border-color:#ffd1e6; }
+    [data-auto-clicker][data-cinnamon] fieldset.group { border-color:var(--cin-line-soft); background:rgba(255,255,255,.06); }
     [data-auto-clicker][data-cinnamon] fieldset.group > legend::before { content:'☁ '; color:#fff; }
-    [data-auto-clicker][data-cinnamon] fieldset.group.folded > legend::before { content:'☁ '; color:#d4e0ec; }
-    [data-auto-clicker][data-cinnamon] .hint, [data-auto-clicker][data-cinnamon] .global-row { color:#e7eef5; }
-    [data-auto-clicker][data-cinnamon] .subhead, [data-auto-clicker][data-cinnamon] .divider, [data-auto-clicker][data-cinnamon] .tab-groups { border-color:#d4e0ec; }
-    [data-auto-clicker][data-cinnamon] .monitor, [data-auto-clicker][data-cinnamon] pre[data-role="log"] { background:#3b5d7f; border:1px solid #b6cbe0; }
-    [data-auto-clicker][data-cinnamon] table.combat th, [data-auto-clicker][data-cinnamon] table.combat td { border-bottom-color:#8eabc8; }
-    [data-auto-clicker][data-cinnamon] [style*="color:#a0a0aa"], [data-auto-clicker][data-cinnamon] [style*="color: #a0a0aa"] { color:#dce6f0 !important; }
+    [data-auto-clicker][data-cinnamon] fieldset.group.folded > legend::before { content:'☁ '; color:var(--cin-line-soft); }
+    [data-auto-clicker][data-cinnamon] .hint, [data-auto-clicker][data-cinnamon] .global-row { color:var(--cin-text); }
+    [data-auto-clicker][data-cinnamon] .subhead, [data-auto-clicker][data-cinnamon] .divider, [data-auto-clicker][data-cinnamon] .tab-groups { border-color:var(--cin-line-soft); }
+    [data-auto-clicker][data-cinnamon] .monitor, [data-auto-clicker][data-cinnamon] pre[data-role="log"] { background:var(--cin-monitor); border:1px solid var(--cin-line); }
+    [data-auto-clicker][data-cinnamon] table.combat th, [data-auto-clicker][data-cinnamon] table.combat td { border-bottom-color:var(--cin-table-line); }
+    [data-auto-clicker][data-cinnamon] [style*="color:#a0a0aa"], [data-auto-clicker][data-cinnamon] [style*="color: #a0a0aa"] { color:var(--cin-text-dim) !important; }
     [data-auto-clicker][data-cinnamon] [style*="background:#1c1c21"], [data-auto-clicker][data-cinnamon] [style*="background:#222228"],
-    [data-auto-clicker][data-cinnamon] [style*="background:#1f1f24"] { background:#4a6f94 !important; }
+    [data-auto-clicker][data-cinnamon] [style*="background:#1f1f24"] { background:var(--cin-button) !important; }
     [data-auto-clicker][data-cinnamon] [style*="border:1px solid #2e2e34"], [data-auto-clicker][data-cinnamon] [style*="border-bottom:1px solid #2e2e34"],
-    [data-auto-clicker][data-cinnamon] [style*="border:1px solid #34343c"] { border-color:#b6cbe0 !important; }
+    [data-auto-clicker][data-cinnamon] [style*="border:1px solid #34343c"] { border-color:var(--cin-line) !important; }
     [data-auto-clicker][data-alerting] { background:#c62828 !important; border:3px solid #ffe066 !important; }
     .auto-clicker-hover { outline: 3px solid #e33 !important; }
   `;
@@ -1967,7 +1969,35 @@
   document.body.appendChild(panel);
 
   function applyPanelTheme() {
-    panel.toggleAttribute('data-cinnamon', Boolean(readSettingsFromPanel().cinnamonTheme));
+    const settings = readSettingsFromPanel();
+    panel.toggleAttribute('data-cinnamon', Boolean(settings.cinnamonTheme));
+    Object.entries(cinnamonPalette(settings.cinnamonColor)).forEach(([name, color]) => panel.style.setProperty(`--cin-${name}`, color));
+  }
+
+  function hexToHsl(hex) {
+    const match = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
+    if (!match) return null;
+    const [red, green, blue] = [0, 2, 4].map((offset) => parseInt(match[1].slice(offset, offset + 2), 16) / 255);
+    const max = Math.max(red, green, blue);
+    const min = Math.min(red, green, blue);
+    const lightness = (max + min) / 2;
+    const delta = max - min;
+    if (!delta) return { hue: 0, saturation: 0, lightness: lightness * 100 };
+    const saturation = delta / (1 - Math.abs(2 * lightness - 1));
+    const hue = max === red ? ((green - blue) / delta + 6) % 6 : max === green ? (blue - red) / delta + 2 : (red - green) / delta + 4;
+    return { hue: hue * 60, saturation: saturation * 100, lightness: lightness * 100 };
+  }
+
+  // 深淺照預設灰藍那套的相對差距；底色亮度夾在 28～58，太淺白字看不清、太深按鈕跟底分不出來
+  function cinnamonPalette(hex) {
+    const { hue, saturation, lightness } = hexToHsl(hex) || hexToHsl(defaultSettings.cinnamonColor);
+    const base = Math.min(58, Math.max(28, lightness));
+    const color = (light, alpha) => `hsl(${hue.toFixed(0)} ${saturation.toFixed(0)}% ${Math.min(97, Math.max(5, light)).toFixed(0)}%${alpha ? ` / ${alpha}` : ''})`;
+    return {
+      base: color(base), top: color(base + 10), bottom: color(base - 6), input: color(base - 11), button: color(base - 7), hover: color(base - 1),
+      monitor: color(base - 15), 'tab-text': color(base - 13), 'table-line': color(base + 16), shadow: color(25, 0.5),
+      line: color(80), 'line-soft': color(88), border: color(94), text: color(93), 'text-dim': color(90), placeholder: color(85),
+    };
   }
 
   // 長說明一多，「開始」被擠到很下面：預設只露第一行，點一下展開、再點收起。
@@ -12341,6 +12371,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       syncGrowth(readSettingsFromPanel());
     } else if (action === 'growth-refresh') {
       renderGrowthSummary();
+    } else if (action === 'theme-color-reset') {
+      setPanelField('cinnamonColor', defaultSettings.cinnamonColor);
     } else if (action === 'growth-top') {
       const box = panel.querySelector('[data-role="growth-top"]');
       if (box.innerHTML) box.innerHTML = '';
@@ -24525,6 +24557,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   panel.querySelector('[data-field="forgeRecipe"]').addEventListener('change', renderRecipePicker);
   panel.querySelector('[data-field="forgeRecipeType"]').addEventListener('change', renderRecipePicker);
   panel.querySelector('[data-role="recipe-filter"]').addEventListener('input', renderRecipePicker);
+  panel.querySelector('[data-field="cinnamonColor"]').addEventListener('input', applyPanelTheme);
   panel.querySelector('[data-field="recipeNameAdjust"]').addEventListener('change', renderRecipes);
   panel.querySelector('[data-field="materialNameAdjust"]').addEventListener('change', renderMaterialSummary);
   panel.querySelector('[data-role="recipe-goal"]').addEventListener('change', renderRecipes);
@@ -24712,7 +24745,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }
     if (event.target.dataset.recipeMine !== undefined || event.target.dataset.recipeQty !== undefined) updateRecipeFromPicker();
     refreshSupplyModes();
-    if (event.target.dataset.field === 'cinnamonTheme') applyPanelTheme();
+    if (['cinnamonTheme', 'cinnamonColor'].includes(event.target.dataset.field)) applyPanelTheme();
     saveSettings(readSettingsFromPanel());
     if (activeTab === 'forge') renderForgePlanOverview();
     if (/^card/.test(event.target.dataset.field || '')) {
