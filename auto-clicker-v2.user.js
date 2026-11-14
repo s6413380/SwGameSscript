@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.96
+// @version      5.97
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -9965,25 +9965,39 @@
   }
 
   // 自己勾不出戰的隊員醒著（全隊休息完、手動完成休息、移動完）：打怪前先讓它休息。
-  // 讓它休息失敗就先不打，免得它被拉去打；隔一陣子再試
+  // 讓它休息失敗就先不打，免得它被拉去打；隔一陣子再試。
+  // 血和體力都滿的不能休息（休息結束後一定是這樣），等也不會變：這輪讓它出戰，打完掉了血／體力再讓它休息
+  const benchFullHeroIds = new Set();
+
   function restChosenBench(settings) {
     const chosen = chosenBenchHeroIds(settings);
     const away = state.unbenchedForMove || new Set();
-    const awake = huntTeam().filter((hero) => chosen.includes(hero.id) && hero.actionState === 0 && !away.has(hero.id));
+    const awake = huntTeam().filter((hero) => chosen.includes(hero.id) && hero.actionState === 0 && !away.has(hero.id) && !benchFullHeroIds.has(hero.id));
     if (!awake.length) return false;
     const names = awake.map((hero) => hero.name).join('、');
     const runId = state.runId;
+    const full = [];
     setStatus(`${names} 設成不出戰，先讓它休息`);
     (async () => {
       for (const hero of awake) {
-        const rested = await requestGameApi(`${HEROES_API}/${hero.id}/rest`, { method: 'POST' });
+        let rested;
+        try {
+          rested = await requestGameApi(`${HEROES_API}/${hero.id}/rest`, { method: 'POST' });
+        } catch (error) {
+          if (!/已經滿|已滿/.test(String(error.message))) throw error;
+          benchFullHeroIds.add(hero.id);
+          full.push(hero.name);
+          continue;
+        }
         if (runId !== state.runId) return;
         syncGameHeroAction(rested, 'rest');
         state.heroStats.set(hero.id, { ...state.heroStats.get(hero.id), ...(rested && rested.id ? rested : {}), actionState: 2 });
       }
     })()
       .then(() => {
-        if (runId === state.runId) state.timerId = planTick(() => tick(settings), randomGap(1500, 4000));
+        if (runId !== state.runId) return;
+        if (full.length) setStatus(`${full.join('、')} 血和體力都滿，遊戲不讓休息，這輪先出戰，打完再讓它休息`);
+        state.timerId = planTick(() => tick(settings), randomGap(1500, 4000));
       })
       .catch((error) => {
         if (runId !== state.runId) return;
@@ -10615,6 +10629,7 @@
       if (runId !== state.runId) return;
       state.apiHuntFailures = 0;
       state.apiPartyCooldownErrors = 0;
+      benchFullHeroIds.clear();
       syncGameHuntView(data);
       clearItemSkips();
       if (!type) {
