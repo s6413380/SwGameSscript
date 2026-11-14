@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.93
+// @version      5.94
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -460,7 +460,7 @@
     cinnamonColor: '#4a8fd0',
     // 風格2 背景圖：網址，或「（上傳的圖片）」＝存在這台瀏覽器的資料庫裡那張；變暗 %＝蓋一層黑，白字才看得清楚
     cinnamonBgImage: '',
-    cinnamonBgDim: 40,
+    cinnamonBgDim: 25,
     itemStepSeconds: 1,
     crashReloadEnabled: true,
     combatEnabled: true,
@@ -1361,7 +1361,7 @@
           <div class="hint">勾選＝排進佇列；每個角色可以有自己的類型、名稱、配方。平常用「配方」頁的 ④ 給誰用 就好</div>
           <label class="row"><input data-field="forgeFillGameForm" type="checkbox" style="flex:none;width:auto"> 送出前把類型、名稱、材料也填到遊戲的鍛造頁</label>
           <div class="row"><label style="flex:none"><input data-field="forgeBuffEnabled" type="checkbox" style="width:auto"> 開爐前用效率道具</label><input data-field="forgeBuffItems" placeholder="魔爪、保力達蠻牛" style="flex:1;min-width:0"></div>
-          <div class="hint">勾了之後在上面「鍛造計畫」（或讀取角色的清單）逐個勾「道具」，只有勾的角色會用。還有效（剩 10 分鐘以上）就不用；只用效果寫鍛造、裁縫、工藝、效率的，挖礦用的不會浪費在這裡</div>
+          <div class="hint">勾了之後在上面「鍛造計畫」、配方頁「④ 給誰用」（或讀取角色的清單）逐個勾「道具」，只有勾的角色會用。還有效（剩 10 分鐘以上）就不用；只用效果寫鍛造、裁縫、工藝、效率的，挖礦用的不會浪費在這裡</div>
         </fieldset>
           <fieldset class="group" data-fold="closed">
             <legend>按鈕鍛造（沒勾「用 API 鍛造」才用）</legend>
@@ -1990,6 +1990,7 @@
     [data-auto-clicker][data-cinnamon] [style*="background:#1f1f24"] { background:var(--cin-button) !important; }
     [data-auto-clicker][data-cinnamon] [style*="border:1px solid #2e2e34"], [data-auto-clicker][data-cinnamon] [style*="border-bottom:1px solid #2e2e34"],
     [data-auto-clicker][data-cinnamon] [style*="border:1px solid #34343c"] { border-color:var(--cin-line) !important; }
+    [data-auto-clicker][data-cinnamon] { text-shadow:0 1px 2px rgba(0,0,0,.28); }
     [data-auto-clicker][data-cinnamon][data-cin-image] { background-image:var(--cin-image) !important; background-size:cover !important; background-position:center !important; background-attachment:scroll !important; }
     [data-auto-clicker] input.theme-slider.theme-slider[type="range"] { -webkit-appearance:none; appearance:none; height:10px; border-radius:5px; border:1px solid rgba(255,255,255,.5); background:var(--slider-bg) !important; padding:0; }
     [data-auto-clicker] input.theme-slider::-webkit-slider-thumb { -webkit-appearance:none; width:14px; height:14px; border-radius:50%; background:#fff; border:2px solid #333; cursor:pointer; }
@@ -2054,7 +2055,7 @@
     const actual = panel.querySelector('[data-role="theme-actual"]');
     if (actual) actual.style.background = palette.base;
     const note = panel.querySelector('[data-role="theme-note"]');
-    if (note) note.textContent = l > 58 ? '這個顏色比較淺，白字會看不清楚，實際用的是右邊小方塊那個較深、較柔的顏色' : l < 28 ? '這個顏色太深，實際用的是右邊小方塊那個稍亮的顏色' : '';
+    if (note) note.textContent = l > 64 ? '這個顏色比較淺，白字會看不清楚，實際用的是右邊小方塊那個較深、較柔的顏色' : l < 28 ? '這個顏色太深，實際用的是右邊小方塊那個稍亮的顏色' : '';
     const dimText = panel.querySelector('[data-role="theme-dim-text"]');
     if (dimText) dimText.textContent = `${Math.round(dim * 100)}%`;
   }
@@ -2120,7 +2121,7 @@
     return { hue: hue * 60, saturation: saturation * 100, lightness: lightness * 100 };
   }
 
-  // 深淺照灰藍（#5a82a8）那套的相對差距；底色亮度夾在 28～58，太淺白字看不清、太深按鈕跟底分不出來
+  // 底色亮度夾在 28～64，太淺白字看不清、太深按鈕跟底分不出來；按鈕、輸入框只比底色暗一點，整體接近選的顏色
   const CINNAMON_DEFAULT_PALETTE = {
     base: '#4a8fd0', top: '#6cb2ee', bottom: '#3d7cbf', input: '#2f6aa8', button: '#3572b3', hover: '#4683c4',
     monitor: '#2a5d93', 'tab-text': '#2d5f93', 'table-line': '#7fb6e6', shadow: 'rgba(40,100,170,.55)',
@@ -2131,13 +2132,13 @@
     if (!hexToHsl(hex) || normalizeHex(hex) === defaultSettings.cinnamonColor) return CINNAMON_DEFAULT_PALETTE;
     const { hue, lightness } = hexToHsl(hex);
     let { saturation } = hexToHsl(hex);
-    const base = Math.min(58, Math.max(28, lightness));
+    const base = Math.min(64, Math.max(28, lightness));
     // 粉嫩色（#F4CFE0）直接壓暗會變成很艷的桃紅；越淺的壓暗後彩度降越多，保留柔和的感覺
-    if (lightness > 58) saturation *= Math.max(0.3, (100 - lightness) / 42);
+    if (lightness > 64) saturation *= Math.max(0.45, (100 - lightness) / 36);
     const color = (light, alpha) => `hsl(${hue.toFixed(0)} ${saturation.toFixed(0)}% ${Math.min(97, Math.max(5, light)).toFixed(0)}%${alpha ? ` / ${alpha}` : ''})`;
     return {
-      base: color(base), top: color(base + 10), bottom: color(base - 6), input: color(base - 11), button: color(base - 7), hover: color(base - 1),
-      monitor: color(base - 15), 'tab-text': color(base - 13), 'table-line': color(base + 16), shadow: color(25, 0.5),
+      base: color(base), top: color(base + 7), bottom: color(base - 3), input: color(base - 7), button: color(base - 5), hover: color(base + 1),
+      monitor: color(base - 9), 'tab-text': color(base - 22), 'table-line': color(base + 14), shadow: color(25, 0.5),
       line: color(80), 'line-soft': color(88), border: color(94), text: color(93), 'text-dim': color(90), placeholder: color(85),
     };
   }
@@ -21750,6 +21751,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
             ${(plan.recipe || last) ? `<button data-action="recipe-load" data-hero="${hero.id}" style="${small}" title="把這個角色的配方（沒有就用上次鍛造的）載到上面來改">載入</button>` : ''}
             ${sameRecipe ? '<span style="flex:none;color:#4ade80">✓ 使用中</span>' : `<button data-action="recipe-queue" data-hero="${hero.id}" style="${small};font-weight:bold" title="${inQueue ? '改用上面的配方' : '排進自動鍛造佇列，用上面的配方'}">${editing ? '存回' : inQueue ? '改用' : '加入'}</button>`}
             ${inQueue ? `<button data-action="forge-unqueue" data-hero="${hero.id}" style="${small}">移出</button>` : ''}
+            ${forgeBuffCheckbox(settings, hero.id)}
             <button data-action="recipe-forge-once" data-hero="${hero.id}" style="${small}" ${unavailable ? 'disabled' : ''}>鍛一次</button>
           </div>
           ${editing ? '<div style="color:#93c5fd">← 上面正在改這個角色的配方</div>' : ''}
@@ -23964,6 +23966,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       saveSettings(readSettingsFromPanel());
     }
     renderForgePlanOverview();
+    renderRecipeHeroes();
     if (panel.querySelector('[data-forge-plan-hero]')) renderForgeApiHeroChoices();
   });
 
