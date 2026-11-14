@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.91
+// @version      5.92
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -583,6 +583,8 @@
     // 出發挖礦前用效率道具（還有效就不用）；只用效果跟挖礦、伐木有關的
     miningBuffEnabled: false,
     miningBuffItems: '魔爪、保力達蠻牛',
+    // 只有這些角色用（角色 id，逗號分隔；在挖礦角色清單逐個勾）
+    miningBuffHeroIds: '',
     miningCureItems: '中毒=解毒劑、劇毒=解毒劑、重度燒傷=應急急救包、中度燒傷=蘆薈、輕度燒傷=蘆薈、燃燒=蘆薈',
     // 中度燒傷吃蘆薈 4～5 次降到輕度，再 4～5 次才消失
     miningCureMaxUses: 12,
@@ -1676,7 +1678,7 @@
       <label class="row"><input data-field="miningConditionRest" type="checkbox" style="flex:none;width:auto"> 有異常狀態（中毒…）就不出發、正在挖的提早收，並跳出提醒</label>
       <div class="hint">異常狀態下挖礦可能會死。有異常的角色留在城裡不動，好了才再出發</div>
       <div class="row"><label style="flex:none"><input data-field="miningBuffEnabled" type="checkbox" style="width:auto"> 出發前用效率道具</label><input data-field="miningBuffItems" placeholder="魔爪、保力達蠻牛" style="flex:1;min-width:0"></div>
-      <div class="hint">還有效（剩 10 分鐘以上）就不用；只用效果寫挖礦、伐木、效率的。工頭不用</div>
+      <div class="hint">勾了之後在下面角色清單逐個勾「道具」，只有勾的角色會用。還有效（剩 10 分鐘以上）就不用；只用效果寫挖礦、伐木、效率的。工頭不用</div>
       <label class="row"><input data-field="miningCureEnabled" type="checkbox" style="flex:none;width:auto"> 有異常先吃藥，最多吃 ${numberInput('miningCureMaxUses', 'min="1" max="20"')} 次，沒好才去休息</label>
       <div class="row">吃什麼<input data-field="miningCureItems" placeholder="中毒=解毒劑、輕度燒傷=蘆薈" style="flex:1;min-width:0"></div>
       <div class="hint">異常名稱=道具名稱，用「、」分隔；名稱前加「重度／中度／輕度」就只在那個程度吃。道具名稱有包含就算（「蘆薈」也會用到「蘆薈汁」）</div>
@@ -1684,7 +1686,7 @@
       <input data-field="miningIgnoreConditions" type="hidden">
       <div style="font-size:12px">不理會這些異常（勾了照常挖）：<span data-role="mining-ignore"></span></div>
       <div class="row"><input data-role="mining-ignore-name" placeholder="沒看過的異常名稱，手動加" style="flex:1;min-width:0"><button data-action="mining-ignore-add">加入</button></div>
-      <input data-field="miningPlans" type="hidden"><input data-field="miningOrder" type="hidden"><input data-field="miningForemanId" type="hidden"><input data-field="miningForemanParkSite" type="hidden"><input data-field="miningForemanParkSites" type="hidden">
+      <input data-field="miningPlans" type="hidden"><input data-field="miningBuffHeroIds" type="hidden"><input data-field="miningOrder" type="hidden"><input data-field="miningForemanId" type="hidden"><input data-field="miningForemanParkSite" type="hidden"><input data-field="miningForemanParkSites" type="hidden">
       <div class="subhead">角色（選地點＝要挖；沒在跑「開始挖礦」時每 5 分鐘讀一次）</div>
       <div class="hint">要挖的角色一起出發、一起收：任一個時間到就照上面的順序（↑↓ 調整）全部收完，再一個一個出發</div>
       <div data-role="mining-heroes" style="font-size:12px"></div>
@@ -21219,10 +21221,18 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return (saved.uses[`${heroId}:${itemName}`] || 0) - now;
   }
 
+  function miningBuffHeroIds(settings) {
+    return String(settings.miningBuffHeroIds || '')
+      .split(',')
+      .map(Number)
+      .filter(Boolean);
+  }
+
   async function useBuffItems(settings, kind, hero) {
     const result = { hero, used: [], missing: [] };
     const names = buffItemNames(settings, kind);
     if (!settings[kind === 'forge' ? 'forgeBuffEnabled' : 'miningBuffEnabled'] || !names.length) return result;
+    if (kind === 'mining' && !miningBuffHeroIds(settings).includes(Number(hero.id))) return result;
     const label = kind === 'forge' ? '鍛造' : '挖礦';
     try {
       let statuses = Array.isArray(hero.statuses) ? hero.statuses : (await requestGameApi(`${HEROES_API}/${hero.id}/statuses`)).statuses || [];
@@ -23726,6 +23736,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const order = miningOrderedIds(settings, plannedMiningIds(settings));
     const rank = (hero) => (order.includes(hero.id) ? order.indexOf(hero.id) : Infinity);
     const foremanIds = miningForemanIds(settings);
+    const buffIds = miningBuffHeroIds(settings);
     const selectStyle = 'flex:none;max-width:130px;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px';
     const parkSelect = (hero) => {
       const current = foremanParkSite(settings, hero.id);
@@ -23776,6 +23787,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
               <div style="flex:1;min-width:0"><b>${escapeHtml(hero.name)}</b> <span style="color:#a0a0aa">挖礦 ${hero.mining ?? '?'}</span>
                 <div style="color:${hero.actionState === 4 ? '#60a5fa' : '#a0a0aa'}">${escapeHtml(miningHeroText(hero, data, now, settings))}${conditions.length ? ` <span style="color:#fb923c">${escapeHtml(conditions.join('、'))}</span>` : ''}${blocked ? ` <span style="color:#f87171">${blocked}</span>` : ''}</div></div>
               ${orderButtons}
+              ${settings.miningBuffEnabled ? `<label style="flex:none;white-space:nowrap" title="出發前用效率道具"><input type="checkbox" data-mining-buff="${hero.id}" ${buffIds.includes(hero.id) ? 'checked' : ''} style="width:auto">道具</label>` : ''}
               <select data-mining-hero="${hero.id}" style="flex:none;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px">${options}</select>
             </div>`;
           })
@@ -23932,7 +23944,16 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   panel.addEventListener('change', (event) => {
     if (!event.target.dataset) return;
-    if (event.target.dataset.miningForemanPark !== undefined) {
+    if (event.target.dataset.field === 'miningBuffEnabled') {
+      renderMiningHeroes();
+      return;
+    }
+    if (event.target.dataset.miningBuff !== undefined) {
+      const heroId = Number(event.target.dataset.miningBuff);
+      const ids = miningBuffHeroIds(readSettingsFromPanel()).filter((id) => id !== heroId);
+      if (event.target.checked) ids.push(heroId);
+      setPanelField('miningBuffHeroIds', ids.join(','));
+    } else if (event.target.dataset.miningForemanPark !== undefined) {
       const sites = foremanParkSites(readSettingsFromPanel());
       sites[Number(event.target.dataset.miningForemanPark)] = Number(event.target.value) || 0;
       setPanelField('miningForemanParkSites', JSON.stringify(sites));
