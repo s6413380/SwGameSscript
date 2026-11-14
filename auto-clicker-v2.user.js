@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.88
+// @version      5.89
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -457,7 +457,7 @@
     // 面板換成大耳狗風格（天空藍、雲朵、粉紅點綴），預設關
     cinnamonTheme: false,
     // 風格2 的底色，其他藍色（按鈕、輸入框、框線）照這個色相跟彩度自動配
-    cinnamonColor: '#5a82a8',
+    cinnamonColor: '#4a8fd0',
     itemStepSeconds: 1,
     crashReloadEnabled: true,
     combatEnabled: true,
@@ -1988,9 +1988,16 @@
     return { hue: hue * 60, saturation: saturation * 100, lightness: lightness * 100 };
   }
 
-  // 深淺照預設灰藍那套的相對差距；底色亮度夾在 28～58，太淺白字看不清、太深按鈕跟底分不出來
+  // 深淺照灰藍（#5a82a8）那套的相對差距；底色亮度夾在 28～58，太淺白字看不清、太深按鈕跟底分不出來
+  const CINNAMON_DEFAULT_PALETTE = {
+    base: '#4a8fd0', top: '#6cb2ee', bottom: '#3d7cbf', input: '#2f6aa8', button: '#3572b3', hover: '#4683c4',
+    monitor: '#2a5d93', 'tab-text': '#2d5f93', 'table-line': '#7fb6e6', shadow: 'rgba(40,100,170,.55)',
+    line: '#a9d6ff', 'line-soft': '#cfe8ff', border: '#e6f4ff', text: '#e3f1ff', 'text-dim': '#d6ebff', placeholder: '#c9e4ff',
+  };
+
   function cinnamonPalette(hex) {
-    const { hue, saturation, lightness } = hexToHsl(hex) || hexToHsl(defaultSettings.cinnamonColor);
+    if (!hexToHsl(hex) || hex.toLowerCase() === defaultSettings.cinnamonColor) return CINNAMON_DEFAULT_PALETTE;
+    const { hue, saturation, lightness } = hexToHsl(hex);
     const base = Math.min(58, Math.max(28, lightness));
     const color = (light, alpha) => `hsl(${hue.toFixed(0)} ${saturation.toFixed(0)}% ${Math.min(97, Math.max(5, light)).toFixed(0)}%${alpha ? ` / ${alpha}` : ''})`;
     return {
@@ -2207,8 +2214,10 @@
     if (tabId === 'growth') renderGrowthSummary();
     if (tabId === 'material' || tabId === 'recipe' || tabId === 'forgerCompare') {
       // 測名表過一陣子才重抓；抓到新的再重畫
+      const weightsBefore = (loadNameWeights() || {}).fetchedAt;
       refreshNameWeights()
-        .then(() => {
+        .then((weights) => {
+          if (weights && weights.fetchedAt === weightsBefore) return;
           if (activeTab === 'material') renderMaterialSummary();
           if (activeTab === 'recipe') renderRecipes();
           if (activeTab === 'forgerCompare') renderForgerCompare();
@@ -16210,7 +16219,20 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     });
     // 附魔：全部類型一起看，有放這個材料時比沒放時出現率高多少
     const samples = [...forgedRecords().values()].filter((equipment) => Array.isArray(equipment.materials) && (!forger || equipment.forger === forger));
-    const enchantNames = [...new Set(samples.flatMap((sample) => Object.keys(sample.enchantments || {})))];
+    const enchantTotals = new Map();
+    const withCounts = new Map();
+    const withEnchants = new Map();
+    samples.forEach((sample) => {
+      const enchants = Object.keys(sample.enchantments || {});
+      enchants.forEach((enchant) => enchantTotals.set(enchant, (enchantTotals.get(enchant) || 0) + 1));
+      new Set(sample.materials.map(([material]) => material)).forEach((material) => {
+        withCounts.set(material, (withCounts.get(material) || 0) + 1);
+        if (!withEnchants.has(material)) withEnchants.set(material, new Map());
+        const counts = withEnchants.get(material);
+        enchants.forEach((enchant) => counts.set(enchant, (counts.get(enchant) || 0) + 1));
+      });
+    });
+    const enchantNames = [...enchantTotals.keys()];
     return [...byMaterial.values()].map((entry) => {
       const percent = {};
       const error = {};
@@ -16219,12 +16241,15 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         percent[field] = weight ? entry.weighted[field] / weight : 0;
         error[field] = weight ? Math.sqrt(entry.errors[field]) / weight : 0;
       });
-      const has = (sample) => sample.materials.some(([material]) => material === entry.name);
-      const withMaterial = samples.filter(has);
-      const without = samples.filter((sample) => !has(sample));
-      const rate = (group, enchant) => (group.length ? group.filter((sample) => sample.enchantments && enchant in sample.enchantments).length / group.length : 0);
+      const withCount = withCounts.get(entry.name) || 0;
+      const withoutCount = samples.length - withCount;
+      const counts = withEnchants.get(entry.name) || new Map();
       const enchants = enchantNames
-        .map((enchant) => ({ enchant, rate: rate(withMaterial, enchant), lift: rate(withMaterial, enchant) - rate(without, enchant) }))
+        .map((enchant) => {
+          const hits = counts.get(enchant) || 0;
+          const rate = withCount ? hits / withCount : 0;
+          return { enchant, rate, lift: rate - (withoutCount ? (enchantTotals.get(enchant) - hits) / withoutCount : 0) };
+        })
         .filter(({ lift }) => lift >= 0.1)
         .sort((first, second) => second.lift - first.lift);
       // 傾向：比誤差大的正向屬性裡最大的；重量是越輕越好，用負值算
@@ -16337,7 +16362,11 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       <table style="width:100%;border-collapse:collapse;font-size:12px">${head}${body}</table>`;
   }
 
-  function renderMaterialSummary() {
+  function renderMaterialSummary(...args) {
+    return perfTimed('材料統計', () => renderMaterialSummaryUntimed(...args));
+  }
+
+  function renderMaterialSummaryUntimed() {
     const mode = panel.querySelector('[data-role="material-mode"]').value;
     const typeSelect = panel.querySelector('[data-role="material-type"]');
     const types = [...new Set([...forgedRecords().values()].map((item) => item.type).filter(Boolean))];
