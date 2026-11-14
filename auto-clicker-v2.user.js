@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.92
+// @version      5.93
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -547,6 +547,8 @@
     // 開爐前對鍛造的角色用效率道具（還有效就不用）；只用效果跟鍛造有關的
     forgeBuffEnabled: false,
     forgeBuffItems: '魔爪、保力達蠻牛',
+    // 只有這些角色用（角色 id，逗號分隔；在鍛造計畫、角色清單逐個勾）
+    forgeBuffHeroIds: '',
     recipeNameAdjust: true,
     forgeRecipeType: '單手劍',
     // API 鍛造：勾選的角色輪流用配方開爐；開幾爐（0＝不限）。名稱不能叫 forgeApi…，那是鍛造體力補給的欄位
@@ -1354,12 +1356,12 @@
         <fieldset class="group" data-fold="closed">
           <legend>編輯佇列（列出所有角色）</legend>
           <div class="row"><button data-action="forge-api-heroes">讀取角色</button></div>
-          <input data-field="forgeByApiHeroIds" type="hidden"><input data-field="forgeByApiPlans" type="hidden">
+          <input data-field="forgeByApiHeroIds" type="hidden"><input data-field="forgeBuffHeroIds" type="hidden"><input data-field="forgeByApiPlans" type="hidden">
           <div data-role="forge-api-heroes" style="font-size:12px;max-height:200px;overflow:auto"></div>
           <div class="hint">勾選＝排進佇列；每個角色可以有自己的類型、名稱、配方。平常用「配方」頁的 ④ 給誰用 就好</div>
           <label class="row"><input data-field="forgeFillGameForm" type="checkbox" style="flex:none;width:auto"> 送出前把類型、名稱、材料也填到遊戲的鍛造頁</label>
           <div class="row"><label style="flex:none"><input data-field="forgeBuffEnabled" type="checkbox" style="width:auto"> 開爐前用效率道具</label><input data-field="forgeBuffItems" placeholder="魔爪、保力達蠻牛" style="flex:1;min-width:0"></div>
-          <div class="hint">還有效（剩 10 分鐘以上）就不用；只用效果寫鍛造、裁縫、工藝、效率的，挖礦用的不會浪費在這裡</div>
+          <div class="hint">勾了之後在上面「鍛造計畫」（或讀取角色的清單）逐個勾「道具」，只有勾的角色會用。還有效（剩 10 分鐘以上）就不用；只用效果寫鍛造、裁縫、工藝、效率的，挖礦用的不會浪費在這裡</div>
         </fieldset>
           <fieldset class="group" data-fold="closed">
             <legend>按鈕鍛造（沒勾「用 API 鍛造」才用）</legend>
@@ -21221,8 +21223,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return (saved.uses[`${heroId}:${itemName}`] || 0) - now;
   }
 
-  function miningBuffHeroIds(settings) {
-    return String(settings.miningBuffHeroIds || '')
+  function buffHeroIds(settings, kind) {
+    return String(settings[kind === 'forge' ? 'forgeBuffHeroIds' : 'miningBuffHeroIds'] || '')
       .split(',')
       .map(Number)
       .filter(Boolean);
@@ -21232,7 +21234,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const result = { hero, used: [], missing: [] };
     const names = buffItemNames(settings, kind);
     if (!settings[kind === 'forge' ? 'forgeBuffEnabled' : 'miningBuffEnabled'] || !names.length) return result;
-    if (kind === 'mining' && !miningBuffHeroIds(settings).includes(Number(hero.id))) return result;
+    if (!buffHeroIds(settings, kind).includes(Number(hero.id))) return result;
     const label = kind === 'forge' ? '鍛造' : '挖礦';
     try {
       let statuses = Array.isArray(hero.statuses) ? hero.statuses : (await requestGameApi(`${HEROES_API}/${hero.id}/statuses`)).statuses || [];
@@ -21670,6 +21672,12 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     renderRecipeHeroes();
   }
 
+  function forgeBuffCheckbox(settings, heroId) {
+    if (!settings.forgeBuffEnabled) return '';
+    const checked = buffHeroIds(settings, 'forge').includes(Number(heroId));
+    return `<label style="flex:none;white-space:nowrap" title="開爐前用效率道具"><input type="checkbox" data-forge-buff="${heroId}" ${checked ? 'checked' : ''} style="width:auto">道具</label>`;
+  }
+
   function renderForgeApiHeroChoices() {
     const heroes = forgeHeroes;
     const settings = readSettingsFromPanel();
@@ -21684,6 +21692,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         return `<div data-forge-plan-hero="${hero.id}" style="border-bottom:1px solid #2e2e34;padding:3px 0">
           <label class="row"><input type="checkbox" data-forge-api-hero value="${hero.id}" ${chosen.includes(hero.id) ? 'checked' : ''} style="width:auto;flex:none">
             ${escapeHtml(hero.name)}（鍛 ${hero.forge ?? '?'}／裁 ${hero.tailor ?? '?'}／工 ${hero.craft ?? '?'}）${forgeCountText(plan.recipe)}</label>
+          ${settings.forgeBuffEnabled ? `<div class="row" style="margin:0">${forgeBuffCheckbox(settings, hero.id)}</div>` : ''}
           <div class="row"><select data-forge-plan="type" style="${fieldStyle}">${Object.keys(MATERIAL_CAPS).map((type) => `<option ${type === plan.type ? 'selected' : ''}>${type}</option>`).join('')}</select>
             <input data-forge-plan="name" list="autoClickerTodayNames" value="${escapeHtml(plan.name || '')}" placeholder="名稱（空白＝配方頁的）" style="${fieldStyle}"></div>
           <div class="row"><input data-forge-plan="recipe" value="${escapeHtml(plan.recipe || '')}" placeholder="配方，例如 泥土×4、楊木×2" style="${fieldStyle}">
@@ -21854,6 +21863,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
               const options = favoriteOptionsHtml(settings, row.type, '★ 換最愛');
               return options ? `<select data-forge-fav="${row.heroId}" data-type="${escapeHtml(row.type)}" style="flex:none;max-width:110px;padding:1px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px">${options}</select>` : '';
             })()}
+            ${forgeBuffCheckbox(settings, row.heroId)}
             <button data-action="forge-unqueue" data-hero="${row.heroId}" style="padding:0 6px" title="移出佇列（配方會留著）">移出</button></div>
           <div style="margin:2px 0"><span style="padding:0 6px;border-radius:9px;background:#3b2f5c;color:#ddd6fe">${escapeHtml(row.type || '?')}</span>
             用途<select data-forge-purpose="${row.heroId}" title="用：武器挑攻擊、防具挑防禦；賣（鍊金）：挑耐久、智、幸，不看重量" style="padding:1px;color:${row.purpose === 'sell' ? '#fbbf24' : '#fff'};background:#2a2a30;border:1px solid #44444c;border-radius:5px">
@@ -23736,7 +23746,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const order = miningOrderedIds(settings, plannedMiningIds(settings));
     const rank = (hero) => (order.includes(hero.id) ? order.indexOf(hero.id) : Infinity);
     const foremanIds = miningForemanIds(settings);
-    const buffIds = miningBuffHeroIds(settings);
+    const buffIds = buffHeroIds(settings, 'mining');
     const selectStyle = 'flex:none;max-width:130px;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px';
     const parkSelect = (hero) => {
       const current = foremanParkSite(settings, hero.id);
@@ -23944,13 +23954,28 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   panel.addEventListener('change', (event) => {
     if (!event.target.dataset) return;
+    const forgeBuffChanged = event.target.dataset.forgeBuff !== undefined;
+    if (!forgeBuffChanged && event.target.dataset.field !== 'forgeBuffEnabled') return;
+    if (forgeBuffChanged) {
+      const heroId = Number(event.target.dataset.forgeBuff);
+      const ids = buffHeroIds(readSettingsFromPanel(), 'forge').filter((id) => id !== heroId);
+      if (event.target.checked) ids.push(heroId);
+      setPanelField('forgeBuffHeroIds', ids.join(','));
+      saveSettings(readSettingsFromPanel());
+    }
+    renderForgePlanOverview();
+    if (panel.querySelector('[data-forge-plan-hero]')) renderForgeApiHeroChoices();
+  });
+
+  panel.addEventListener('change', (event) => {
+    if (!event.target.dataset) return;
     if (event.target.dataset.field === 'miningBuffEnabled') {
       renderMiningHeroes();
       return;
     }
     if (event.target.dataset.miningBuff !== undefined) {
       const heroId = Number(event.target.dataset.miningBuff);
-      const ids = miningBuffHeroIds(readSettingsFromPanel()).filter((id) => id !== heroId);
+      const ids = buffHeroIds(readSettingsFromPanel(), 'mining').filter((id) => id !== heroId);
       if (event.target.checked) ids.push(heroId);
       setPanelField('miningBuffHeroIds', ids.join(','));
     } else if (event.target.dataset.miningForemanPark !== undefined) {
