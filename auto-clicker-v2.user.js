@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.95
+// @version      5.96
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1669,6 +1669,8 @@
       <div class="hint">馬上收正在挖的角色，一個地點一個地點收（未滿 3 分鐘的收不了）；勾「先派工頭」又有設工頭的話，每個地點先讓工頭進去 3 分鐘再收，收完收回工頭再換下一個地點。有在跑「開始挖礦」的話，收完會照設定再出發</div>
       <div class="hint">選了地點的角色在城裡閒著就去挖（狩獵隊伍、鍛造佇列裡的角色不會被拿去），時間到收礦再出發；遊戲規定至少挖 3 分鐘。可以跟掛機、鍛造同時跑</div>
       <div class="row">挖 ${numberInput('miningIntervalHours', 'min="0.1" step="0.5"')} 小時收一次再挖（每次前後飄 ${numberInput('miningIntervalJitterPercent', 'min="0" max="50"')} %）</div>
+      <div class="row"><label style="flex:none"><input data-field="miningBuffEnabled" type="checkbox" style="width:auto"> 出發前用效率道具</label><input data-field="miningBuffItems" placeholder="魔爪、保力達蠻牛" style="flex:1;min-width:0"></div>
+      <div class="hint">勾了之後在最下面「角色」清單每個角色右邊勾「道具」，只有勾的角色會用。還有效（剩 10 分鐘以上）就不用；只用效果寫挖礦、伐木、效率的。工頭不用</div>
       <div class="row"><button data-action="mining-potions">重新讀取道具</button><span style="color:#a0a0aa">都不勾＝任何這類道具；補到差不到半瓶就滿為止</span></div>
       <label class="row"><input data-field="miningHpPotionEnabled" type="checkbox" style="flex:none;width:auto"> 出發前把 HP 補滿</label>
       <input data-field="miningHpPotionNames" type="hidden">
@@ -1679,8 +1681,6 @@
       <div class="hint">沒有道具時，體力不到三成或 HP 不到一半會先休息再挖</div>
       <label class="row"><input data-field="miningConditionRest" type="checkbox" style="flex:none;width:auto"> 有異常狀態（中毒…）就不出發、正在挖的提早收，並跳出提醒</label>
       <div class="hint">異常狀態下挖礦可能會死。有異常的角色留在城裡不動，好了才再出發</div>
-      <div class="row"><label style="flex:none"><input data-field="miningBuffEnabled" type="checkbox" style="width:auto"> 出發前用效率道具</label><input data-field="miningBuffItems" placeholder="魔爪、保力達蠻牛" style="flex:1;min-width:0"></div>
-      <div class="hint">勾了之後在下面角色清單逐個勾「道具」，只有勾的角色會用。還有效（剩 10 分鐘以上）就不用；只用效果寫挖礦、伐木、效率的。工頭不用</div>
       <label class="row"><input data-field="miningCureEnabled" type="checkbox" style="flex:none;width:auto"> 有異常先吃藥，最多吃 ${numberInput('miningCureMaxUses', 'min="1" max="20"')} 次，沒好才去休息</label>
       <div class="row">吃什麼<input data-field="miningCureItems" placeholder="中毒=解毒劑、輕度燒傷=蘆薈" style="flex:1;min-width:0"></div>
       <div class="hint">異常名稱=道具名稱，用「、」分隔；名稱前加「重度／中度／輕度」就只在那個程度吃。道具名稱有包含就算（「蘆薈」也會用到「蘆薈汁」）</div>
@@ -10378,16 +10378,12 @@
     }, fireAt - Date.now());
   }
 
+  // 伺服器連續回錯幾次就停下那個功能（打怪、鍛造、挖礦、效率道具），不要一直撞
+  const ERROR_PAUSE_LIMIT = 4;
+
   function handleApiHuntError(settings, error) {
     if (error.captchaRequired) {
       pauseForCaptcha(settings);
-      return;
-    }
-    // 狀態錯誤多半是隊伍裡有人剛被拿去做別的事：重讀隊伍，下一輪由 waitForBusyHuntTeam 等它，不算失敗
-    if (isHeroStateError(error) && (state.apiHeroStateErrors = (state.apiHeroStateErrors || 0) + 1) < 10) {
-      state.heroStatsAt = 0;
-      setStatus(`API 打怪：伺服器說英雄狀態不對（第 ${state.apiHeroStateErrors} 次），重讀隊伍後再試`);
-      state.timerId = planTick(() => tick(settings), randomGap(10000, 20000));
       return;
     }
     if (/CD|冷卻/.test(String(error && error.message)) && inPartyNow() && (state.apiPartyCooldownErrors = (state.apiPartyCooldownErrors || 0) + 1) < 20) {
@@ -10398,11 +10394,19 @@
       return;
     }
     state.apiHuntFailures = (state.apiHuntFailures || 0) + 1;
-    if (state.apiHuntFailures >= 3) {
-      pauseWithAlert(`API 打怪連續失敗：${error.message}`);
+    if (state.apiHuntFailures >= ERROR_PAUSE_LIMIT) {
+      pauseWithAlert(`API 打怪連續 ${state.apiHuntFailures} 次出錯，最後一次：${error.message}`);
       return;
     }
-    setStatus(`API 打怪失敗（${error.message}），稍後重試`);
+    const attempt = `第 ${state.apiHuntFailures}/${ERROR_PAUSE_LIMIT} 次`;
+    // 狀態錯誤多半是隊伍裡有人剛被拿去做別的事：重讀隊伍，下一輪由 waitForBusyHuntTeam 等它
+    if (isHeroStateError(error)) {
+      state.heroStatsAt = 0;
+      setStatus(`API 打怪：伺服器說英雄狀態不對（${attempt}），重讀隊伍後再試`);
+      state.timerId = planTick(() => tick(settings), randomGap(10000, 20000));
+      return;
+    }
+    setStatus(`API 打怪失敗（${error.message}），稍後重試（${attempt}）`);
     state.timerId = planTick(() => tick(settings), randomGap(5000, 10000));
   }
 
@@ -10610,7 +10614,6 @@
       if (data && data.huntInfo) state.huntInfo = withKnownTeammate(data.huntInfo);
       if (runId !== state.runId) return;
       state.apiHuntFailures = 0;
-      state.apiHeroStateErrors = 0;
       state.apiPartyCooldownErrors = 0;
       syncGameHuntView(data);
       clearItemSkips();
@@ -21201,6 +21204,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   const BUFF_REFRESH_MILLISECONDS = 10 * 60000;
   const BUFF_EFFECT_WORDS = { forge: ['鍛造', '裁縫', '工藝', '效率'], mining: ['挖礦', '伐木', '效率'] };
   const buffMissingNotified = new Set();
+  const buffFailures = { forge: 0, mining: 0 };
 
   function buffItemNames(settings, kind) {
     return String(settings[kind === 'forge' ? 'forgeBuffItems' : 'miningBuffItems'] || '')
@@ -21268,9 +21272,16 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       }
       writeJsonStorage(BUFF_ITEMS_KEY, saved);
       result.hero = { ...hero, statuses };
+      buffFailures[kind] = 0;
     } catch (error) {
       if (error.captchaRequired) throw error;
-      logItemUse(`［${label}］${hero.name || hero.id} 用效率道具失敗（${error.message}），照樣${kind === 'forge' ? '開爐' : '出發'}`);
+      buffFailures[kind]++;
+      logItemUse(`［${label}］${hero.name || hero.id} 用效率道具失敗（${error.message}），照樣${kind === 'forge' ? '開爐' : '出發'}（第 ${buffFailures[kind]}/${ERROR_PAUSE_LIMIT} 次）`);
+      if (buffFailures[kind] >= ERROR_PAUSE_LIMIT) {
+        buffFailures[kind] = 0;
+        setPanelField(kind === 'forge' ? 'forgeBuffEnabled' : 'miningBuffEnabled', false);
+        alertUser(`${label}：效率道具連續 ${ERROR_PAUSE_LIMIT} 次用不了，已取消勾選（最後一次：${error.message}）`);
+      }
       return result;
     }
     if (result.used.length) logItemUse(`［${label}］${hero.name || hero.id} 用了 ${result.used.join('、')}`);
@@ -22012,7 +22023,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   // API 鍛造自己跑一條線，不佔用打怪的流程：同一個分頁可以一邊打怪一邊 API 鍛造。
   // 不用定時巡：有空的角色就開爐，否則睡到最早那爐的完成時間（遊戲有給 actionCompleteTime）再來收
-  const forgeRunner = { running: false, runId: 0, timerId: null, started: 0, captchaWaiting: false, captchaCheckedAt: 0, failures: 0, nameWaiting: '', stuck: new Map(), collectRoll: null };
+  const forgeRunner = { running: false, runId: 0, timerId: null, started: 0, captchaWaiting: false, captchaCheckedAt: 0, failures: 0, nameWaiting: '', stuck: new Map(), stuckCounts: new Map(), tooManyErrors: '', collectRoll: null };
   // 某一爐一直收不了（伺服器回錯）：那個角色先跳過一陣子，其他爐照常收、照常開，不要整個鍛造停下來
   const FORGE_STUCK_MILLISECONDS = 10 * 60000;
 
@@ -22022,14 +22033,17 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   function markForgeHeroStuck(hero, reason, actions) {
     forgeRunner.stuck.set(hero.id, Date.now() + FORGE_STUCK_MILLISECONDS);
-    actions.push(`${hero.name} 收不了（${reason}），先跳過，10 分鐘後再試`);
+    const count = (forgeRunner.stuckCounts.get(hero.id) || 0) + 1;
+    forgeRunner.stuckCounts.set(hero.id, count);
+    if (count >= ERROR_PAUSE_LIMIT) forgeRunner.tooManyErrors = `${hero.name} 連續 ${count} 次收不了，最後一次：${reason}`;
+    actions.push(`${hero.name} 收不了（${reason}），先跳過，10 分鐘後再試（第 ${count}/${ERROR_PAUSE_LIMIT} 次）`);
   }
   // 名稱是哪一天定的（自動換上或手動改名稱）；存起來，重開腳本、重整頁面後才知道今天的名稱定了沒
   const FORGE_NAME_DAY_KEY = 'autoClickerV2ForgeNameDay';
   // 分數只高一點點不換，免得樣本數變動時兩個名稱換來換去
   const FORGE_NAME_UPGRADE_MARGIN = 0.005;
   // 遊戲回錯誤或連線失敗時重試幾次才停（例如伺服器偶爾 502、掛機剛好同時動到同一個角色）
-  const FORGE_RETRY_LIMIT = 5;
+  const FORGE_RETRY_LIMIT = ERROR_PAUSE_LIMIT - 1;
   // 鍛造坊數量＝基本 2 間＋擴建次數（/api/profile 的 forgeExpanded）；當成 6 間的話，真的都滿時會送到不存在的鍛造坊被拒
   const FORGE_BASE_SHOPS = 2;
   const FORGE_SHOPS_FRESH_MILLISECONDS = 10 * 60000;
@@ -22205,6 +22219,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     forgeRunner.runId++;
     forgeRunner.started = 0;
     forgeRunner.failures = 0;
+    forgeRunner.stuckCounts.clear();
+    forgeRunner.tooManyErrors = '';
     forgeRunner.nameWaiting = '';
     forgeRunner.captchaWaiting = false;
     writeJsonStorage(runLockKey(true), { tab: tabKey, at: Date.now() });
@@ -22368,8 +22384,13 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         }
         heroes = completed.heroes || heroes;
         if (cancelled()) return;
+        forgeRunner.stuckCounts.delete(hero.id);
         actions.push(`${hero.name} 完成鍛造`);
         syncGameCompleteForge(completed, hero.id);
+      }
+      if (forgeRunner.tooManyErrors) {
+        pauseForgeRunner(forgeRunner.tooManyErrors);
+        return;
       }
       const forging = heroes.filter((hero) => hero.actionState === 5);
       const limit = settings.forgeByApiCount;
@@ -22505,7 +22526,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   const MINING_LOG_LIMIT = 60;
   // 遊戲角色頁「行動紀錄」讀這個；API 收的也寫進去，遊戲裡看得到
   const GAME_ACTION_RESULTS_KEY = 'miningResults';
-  const miningRunner = { running: false, runId: 0, timerId: null, failures: 0, collected: 0, stoppedReason: '' };
+  const miningRunner = { running: false, runId: 0, timerId: null, failures: 0, collected: 0, stoppedReason: '', heroErrors: new Map(), tooManyErrors: '' };
+
+  function noteMiningHeroError(hero, error, actions) {
+    const count = (miningRunner.heroErrors.get(hero.id) || 0) + 1;
+    miningRunner.heroErrors.set(hero.id, count);
+    if (count >= ERROR_PAUSE_LIMIT) miningRunner.tooManyErrors = `${hero.name} 連續 ${count} 次出錯，最後一次：${error.message}`;
+    actions.push(`${hero.name}：${error.message}（第 ${count}/${ERROR_PAUSE_LIMIT} 次）`);
+  }
   const miningWatch = { busy: false };
   // 玩家手動收礦、派出去、休息過的角色，這麼久之內自動挖礦不去動它，之後再跟大家一起收
   const MINING_MANUAL_HOLD_MINUTES = 20;
@@ -23498,9 +23526,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           try {
             actions.push(...(await miningHeroStep(settings, hero, plans, data, Date.now(), waits, opened, roundHours)));
             startedEarly.add(hero.id);
+            miningRunner.heroErrors.delete(hero.id);
           } catch (error) {
             if (error.captchaRequired) throw error;
-            actions.push(`${hero.name}：${error.message}`);
+            noteMiningHeroError(hero, error, actions);
           }
         }
       };
@@ -23515,11 +23544,20 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       for (const hero of free.map((item) => byId.get(item.id)).filter((item) => !startedEarly.has(item.id))) {
         try {
           actions.push(...(await miningHeroStep(settings, hero, plans, data, now, waits, opened, roundHours)));
+          miningRunner.heroErrors.delete(hero.id);
         } catch (error) {
           if (error.captchaRequired) throw error;
-          actions.push(`${hero.name}：${error.message}`);
+          noteMiningHeroError(hero, error, actions);
         }
         if (cancelled()) return;
+      }
+      if (miningRunner.tooManyErrors) {
+        const reason = miningRunner.tooManyErrors;
+        miningLog(actions.join('、'));
+        stopMiningRunner(`出錯停下：${reason}`);
+        dashboard.alert = `挖礦：${reason}`;
+        alertUser(`挖礦：${reason}`, { paused: true });
+        return;
       }
       for (const foreman of foremen) {
         actions.push(...(await parkForeman(settings, foreman, data, opened, waits)));
@@ -23632,7 +23670,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       return;
     }
     saveSettings(readSettingsFromPanel());
-    Object.assign(miningRunner, { running: true, failures: 0, collected: 0, stoppedReason: '' });
+    Object.assign(miningRunner, { running: true, failures: 0, collected: 0, stoppedReason: '', tooManyErrors: '' });
+    miningRunner.heroErrors.clear();
     miningRunner.runId++;
     writeJsonStorage(MINING_LOCK_KEY, { tab: tabKey, at: Date.now() });
     miningLog('開始挖礦');
@@ -23799,7 +23838,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
               <div style="flex:1;min-width:0"><b>${escapeHtml(hero.name)}</b> <span style="color:#a0a0aa">挖礦 ${hero.mining ?? '?'}</span>
                 <div style="color:${hero.actionState === 4 ? '#60a5fa' : '#a0a0aa'}">${escapeHtml(miningHeroText(hero, data, now, settings))}${conditions.length ? ` <span style="color:#fb923c">${escapeHtml(conditions.join('、'))}</span>` : ''}${blocked ? ` <span style="color:#f87171">${blocked}</span>` : ''}</div></div>
               ${orderButtons}
-              ${settings.miningBuffEnabled ? `<label style="flex:none;white-space:nowrap" title="出發前用效率道具"><input type="checkbox" data-mining-buff="${hero.id}" ${buffIds.includes(hero.id) ? 'checked' : ''} style="width:auto">道具</label>` : ''}
+              ${settings.miningBuffEnabled ? `<label style="flex:none;white-space:nowrap;color:#facc15" title="出發前用效率道具"><input type="checkbox" data-mining-buff="${hero.id}" ${buffIds.includes(hero.id) ? 'checked' : ''} style="width:auto">道具</label>` : ''}
               <select data-mining-hero="${hero.id}" style="flex:none;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px">${options}</select>
             </div>`;
           })
