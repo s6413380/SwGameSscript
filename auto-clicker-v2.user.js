@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.89
+// @version      5.90
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -541,6 +541,9 @@
     sellGapWarnPercent: 30,
     // API 鍛造前把配方填進遊戲的鍛造表單（人在鍛造頁時才有作用）
     forgeFillGameForm: true,
+    // 開爐前對鍛造的角色用效率道具（還有效就不用）；只用效果跟鍛造有關的
+    forgeBuffEnabled: false,
+    forgeBuffItems: '魔爪、保力達蠻牛',
     recipeNameAdjust: true,
     forgeRecipeType: '單手劍',
     // API 鍛造：勾選的角色輪流用配方開爐；開幾爐（0＝不限）。名稱不能叫 forgeApi…，那是鍛造體力補給的欄位
@@ -574,6 +577,9 @@
     miningConditionRestMinutes: 60,
     // 有異常先吃對應的道具（異常名稱=道具名稱，可加程度），吃到上限還沒好才照上面去休息
     miningCureEnabled: true,
+    // 出發挖礦前用效率道具（還有效就不用）；只用效果跟挖礦、伐木有關的
+    miningBuffEnabled: false,
+    miningBuffItems: '魔爪、保力達蠻牛',
     miningCureItems: '中毒=解毒劑、劇毒=解毒劑、重度燒傷=應急急救包、中度燒傷=蘆薈、輕度燒傷=蘆薈、燃燒=蘆薈',
     // 中度燒傷吃蘆薈 4～5 次降到輕度，再 4～5 次才消失
     miningCureMaxUses: 12,
@@ -1347,6 +1353,8 @@
           <div data-role="forge-api-heroes" style="font-size:12px;max-height:200px;overflow:auto"></div>
           <div class="hint">勾選＝排進佇列；每個角色可以有自己的類型、名稱、配方。平常用「配方」頁的 ④ 給誰用 就好</div>
           <label class="row"><input data-field="forgeFillGameForm" type="checkbox" style="flex:none;width:auto"> 送出前把類型、名稱、材料也填到遊戲的鍛造頁</label>
+          <div class="row"><label style="flex:none"><input data-field="forgeBuffEnabled" type="checkbox" style="width:auto"> 開爐前用效率道具</label><input data-field="forgeBuffItems" placeholder="魔爪、保力達蠻牛" style="flex:1;min-width:0"></div>
+          <div class="hint">還有效（剩 10 分鐘以上）就不用；只用效果寫鍛造、裁縫、工藝、效率的，挖礦用的不會浪費在這裡</div>
         </fieldset>
           <fieldset class="group" data-fold="closed">
             <legend>按鈕鍛造（沒勾「用 API 鍛造」才用）</legend>
@@ -1652,6 +1660,8 @@
       <div class="hint">沒有道具時，體力不到三成或 HP 不到一半會先休息再挖</div>
       <label class="row"><input data-field="miningConditionRest" type="checkbox" style="flex:none;width:auto"> 有異常狀態（中毒…）就不出發、正在挖的提早收，並跳出提醒</label>
       <div class="hint">異常狀態下挖礦可能會死。有異常的角色留在城裡不動，好了才再出發</div>
+      <div class="row"><label style="flex:none"><input data-field="miningBuffEnabled" type="checkbox" style="width:auto"> 出發前用效率道具</label><input data-field="miningBuffItems" placeholder="魔爪、保力達蠻牛" style="flex:1;min-width:0"></div>
+      <div class="hint">還有效（剩 10 分鐘以上）就不用；只用效果寫挖礦、伐木、效率的。工頭不用</div>
       <label class="row"><input data-field="miningCureEnabled" type="checkbox" style="flex:none;width:auto"> 有異常先吃藥，最多吃 ${numberInput('miningCureMaxUses', 'min="1" max="20"')} 次，沒好才去休息</label>
       <div class="row">吃什麼<input data-field="miningCureItems" placeholder="中毒=解毒劑、輕度燒傷=蘆薈" style="flex:1;min-width:0"></div>
       <div class="hint">異常名稱=道具名稱，用「、」分隔；名稱前加「重度／中度／輕度」就只在那個程度吃。道具名稱有包含就算（「蘆薈」也會用到「蘆薈汁」）</div>
@@ -21054,8 +21064,91 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return true;
   }
 
+  // 效率道具（魔爪、保力達蠻牛…）：對角色用，效果掛在角色的狀態上，到 endTime 為止。
+  // 狀態名稱不一定等於道具名稱，用過一次就比對前後的狀態記下來；沒記到之前看自己記的到期時間
+  const BUFF_ITEMS_KEY = 'autoClickerV2BuffItems';
+  const BUFF_REFRESH_MILLISECONDS = 10 * 60000;
+  const BUFF_EFFECT_WORDS = { forge: ['鍛造', '裁縫', '工藝', '效率'], mining: ['挖礦', '伐木', '效率'] };
+  const buffMissingNotified = new Set();
+
+  function buffItemNames(settings, kind) {
+    return String(settings[kind === 'forge' ? 'forgeBuffItems' : 'miningBuffItems'] || '')
+      .split(/[\s,，、]+/)
+      .map((name) => name.trim())
+      .filter(Boolean);
+  }
+
+  // 道具沒寫效果就當有關；有寫就要提到這件事用得到的能力
+  function buffItemFits(item, kind) {
+    const effects = [].concat(item.effectTexts || []).join(' ');
+    return !effects || BUFF_EFFECT_WORDS[kind].some((word) => effects.includes(word));
+  }
+
+  function buffRemaining(saved, statuses, heroId, itemName, now) {
+    const statusName = saved.statusNames[itemName];
+    const status = statuses.find((candidate) => candidate.kind !== 'condition' && (candidate.name === itemName || (statusName && candidate.name === statusName)));
+    if (status) return (Date.parse(status.endTime) || 0) - now;
+    // 已經知道狀態叫什麼卻沒看到＝過期了；不知道才信自己記的
+    if (statusName) return 0;
+    return (saved.uses[`${heroId}:${itemName}`] || 0) - now;
+  }
+
+  async function useBuffItems(settings, kind, hero) {
+    const result = { hero, used: [], missing: [] };
+    const names = buffItemNames(settings, kind);
+    if (!settings[kind === 'forge' ? 'forgeBuffEnabled' : 'miningBuffEnabled'] || !names.length) return result;
+    const label = kind === 'forge' ? '鍛造' : '挖礦';
+    try {
+      let statuses = Array.isArray(hero.statuses) ? hero.statuses : (await requestGameApi(`${HEROES_API}/${hero.id}/statuses`)).statuses || [];
+      const items = (await requestGameApi(ITEMS_API)).items || [];
+      const saved = { statusNames: {}, uses: {}, ...readJsonStorage(BUFF_ITEMS_KEY, {}) };
+      for (const name of names) {
+        const item = items.find((candidate) => candidate.name === name) || items.find((candidate) => String(candidate.name).includes(name));
+        if (item && !buffItemFits(item, kind)) continue;
+        if (!item || !(item.available > 0)) {
+          result.missing.push(name);
+          continue;
+        }
+        const now = Date.now();
+        const remaining = buffRemaining(saved, statuses, hero.id, item.name, now);
+        if (remaining > BUFF_REFRESH_MILLISECONDS) continue;
+        await wait(itemRequestGap());
+        const reply = await requestGameApi(`${ITEMS_API}/${item.id}/use`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ quantity: 1, heroId: hero.id }),
+        });
+        syncGameItemUse(reply);
+        item.available--;
+        const after = reply.heroStatuses !== undefined ? reply.heroStatuses || [] : (await requestGameApi(`${HEROES_API}/${hero.id}/statuses`)).statuses || [];
+        const added = after.find((status) => status.kind !== 'condition' && !statuses.some((old) => old.name === status.name && old.endTime === status.endTime));
+        if (added) saved.statusNames[item.name] = added.name;
+        saved.uses[`${hero.id}:${item.name}`] = now + Math.max(0, remaining) + (Number(item.effectDurationSec) || 0) * 1000;
+        statuses = after;
+        result.used.push(item.name);
+      }
+      writeJsonStorage(BUFF_ITEMS_KEY, saved);
+      result.hero = { ...hero, statuses };
+    } catch (error) {
+      if (error.captchaRequired) throw error;
+      logItemUse(`［${label}］${hero.name || hero.id} 用效率道具失敗（${error.message}），照樣${kind === 'forge' ? '開爐' : '出發'}`);
+      return result;
+    }
+    if (result.used.length) logItemUse(`［${label}］${hero.name || hero.id} 用了 ${result.used.join('、')}`);
+    const newlyMissing = result.missing.filter((name) => !buffMissingNotified.has(`${kind}:${name}`));
+    if (newlyMissing.length) {
+      newlyMissing.forEach((name) => buffMissingNotified.add(`${kind}:${name}`));
+      logItemUse(`［${label}］沒有 ${newlyMissing.join('、')} 了，先不用`);
+    }
+    return result;
+  }
+
   async function sendForge(body) {
     const settings = readSettingsFromPanel();
+    if (settings.forgeBuffEnabled) {
+      const hero = forgeHeroes.find((candidate) => candidate.id === body.heroId) || { id: body.heroId };
+      await useBuffItems(settings, 'forge', hero);
+    }
     const onForgePage = Boolean(document.getElementById('name')) && !panel.contains(document.getElementById('name'));
     if (settings.forgeFillGameForm && onForgePage && (await switchGameForgeShop(settings, body.target).catch(() => false))) {
       await fillGameForgeForm(body).catch(() => false);
@@ -23182,6 +23275,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       done.push(`${hero.name} 先休息 ${minutes} 分鐘`);
     } else {
       const site = Number(plans[hero.id]);
+      const buff = await useBuffItems(settings, 'mining', hero);
+      hero = buff.hero;
+      if (buff.used.length) done.push(`${hero.name} 用了 ${buff.used.join('、')}`);
       syncGameHeroAction(await requestGameApi(`${HEROES_API}/${hero.id}/mining/${site}`, { method: 'POST' }), 'mine');
       const hours = roundHours;
       data.active[hero.id] = { kind: 'mine', at: Date.now(), sp: hero.sp, hp: hero.hp, site, hours };
