@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.94
+// @version      5.95
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1335,6 +1335,8 @@
       <fieldset class="group">
         <legend>鍛造佇列</legend>
         <div class="hint" style="margin-top:0">每個角色類型旁邊的「用途」選 <b>用</b> 或 <b>賣</b>：<b>用</b>＝自己用（武器挑攻防、大衣挑智防幸，重量也算）；<b style="color:#fbbf24">賣</b>＝做來鍊金（挑攻防智幸耐總和高的名稱，不管重量）。新增角色到「配方」頁 ④ 給誰用 按「加入」</div>
+        <div class="row"><label style="flex:none"><input data-field="forgeBuffEnabled" type="checkbox" style="width:auto"> 開爐前用效率道具</label><input data-field="forgeBuffItems" placeholder="魔爪、保力達蠻牛" style="flex:1;min-width:0"></div>
+        <div class="hint">勾了之後在下面每張角色卡片、配方頁「④ 給誰用」逐個勾「道具」，只有勾的角色會用。還有效（剩 10 分鐘以上）就不用；只用效果寫鍛造、裁縫、工藝、效率的，挖礦用的不會浪費在這裡</div>
         <div data-role="forge-plan-overview" style="font-size:12px"></div>
       </fieldset>
       <fieldset class="group" data-fold="closed">
@@ -1360,8 +1362,6 @@
           <div data-role="forge-api-heroes" style="font-size:12px;max-height:200px;overflow:auto"></div>
           <div class="hint">勾選＝排進佇列；每個角色可以有自己的類型、名稱、配方。平常用「配方」頁的 ④ 給誰用 就好</div>
           <label class="row"><input data-field="forgeFillGameForm" type="checkbox" style="flex:none;width:auto"> 送出前把類型、名稱、材料也填到遊戲的鍛造頁</label>
-          <div class="row"><label style="flex:none"><input data-field="forgeBuffEnabled" type="checkbox" style="width:auto"> 開爐前用效率道具</label><input data-field="forgeBuffItems" placeholder="魔爪、保力達蠻牛" style="flex:1;min-width:0"></div>
-          <div class="hint">勾了之後在上面「鍛造計畫」、配方頁「④ 給誰用」（或讀取角色的清單）逐個勾「道具」，只有勾的角色會用。還有效（剩 10 分鐘以上）就不用；只用效果寫鍛造、裁縫、工藝、效率的，挖礦用的不會浪費在這裡</div>
         </fieldset>
           <fieldset class="group" data-fold="closed">
             <legend>按鈕鍛造（沒勾「用 API 鍛造」才用）</legend>
