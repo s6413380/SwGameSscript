@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.97
+// @version      5.98
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -591,6 +591,9 @@
     // 中度燒傷吃蘆薈 4～5 次降到輕度，再 4～5 次才消失
     miningCureMaxUses: 12,
     miningIntervalHours: 6,
+    // 自動修練：{角色 id: 'train'（修練）| 'master'（老師傅）}，在挖礦角色清單的下拉選
+    practicePlans: '',
+    practiceHours: 2,
     miningIntervalJitterPercent: 15,
     miningPotionEnabled: true,
     miningPotionNames: '',
@@ -1688,7 +1691,9 @@
       <input data-field="miningIgnoreConditions" type="hidden">
       <div style="font-size:12px">不理會這些異常（勾了照常挖）：<span data-role="mining-ignore"></span></div>
       <div class="row"><input data-role="mining-ignore-name" placeholder="沒看過的異常名稱，手動加" style="flex:1;min-width:0"><button data-action="mining-ignore-add">加入</button></div>
-      <input data-field="miningPlans" type="hidden"><input data-field="miningBuffHeroIds" type="hidden"><input data-field="miningOrder" type="hidden"><input data-field="miningForemanId" type="hidden"><input data-field="miningForemanParkSite" type="hidden"><input data-field="miningForemanParkSites" type="hidden">
+      <input data-field="miningPlans" type="hidden"><input data-field="practicePlans" type="hidden"><input data-field="miningBuffHeroIds" type="hidden"><input data-field="miningOrder" type="hidden"><input data-field="miningForemanId" type="hidden"><input data-field="miningForemanParkSite" type="hidden"><input data-field="miningForemanParkSites" type="hidden">
+      <div class="row">修練 ${numberInput('practiceHours', 'min="0.1" step="0.5"')} 小時收一次再修練</div>
+      <div class="hint">下面角色的下拉選「修練」或「老師傅」，按「開始挖礦」就會一起跑（只修練不挖礦也可以）。老師傅一直待在修練中；修練的角色時間到，要老師傅正在修練才收，不然等它</div>
       <div class="subhead">角色（選地點＝要挖；沒在跑「開始挖礦」時每 5 分鐘讀一次）</div>
       <div class="hint">要挖的角色一起出發、一起收：任一個時間到就照上面的順序（↑↓ 調整）全部收完，再一個一個出發</div>
       <div data-role="mining-heroes" style="font-size:12px"></div>
@@ -22603,6 +22608,87 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return [...heroIds].sort((first, second) => rank(first) - rank(second));
   }
 
+  const PRACTICE_ROLES = { train: '修練', master: '老師傅' };
+
+  function practicePlans(settings) {
+    try {
+      const plans = JSON.parse(settings.practicePlans || '{}');
+      return plans && typeof plans === 'object' ? plans : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function practiceIds(settings, role) {
+    const plans = practicePlans(settings);
+    return Object.keys(plans)
+      .filter((id) => plans[id] === role)
+      .map(Number);
+  }
+
+  async function startPractice(hero, opened) {
+    await openGameHeroPage(hero, opened);
+    syncGameHeroAction(await requestGameApi(`${HEROES_API}/${hero.id}/training`, { method: 'POST' }), 'train');
+    hero.actionState = 7;
+    hero.actionStart = new Date().toISOString();
+  }
+
+  // 遊戲規定：修練的角色結束時，老師傅要正在修練。老師傅閒著就讓它去修練、一直待著；
+  // 修練的角色時間到才收，收的當下老師傅不在修練就等下一輪
+  async function practiceStep(settings, byId, data, opened, waits) {
+    const masters = practiceIds(settings, 'master').map((id) => byId.get(id)).filter(Boolean);
+    const trainees = practiceIds(settings, 'train').map((id) => byId.get(id)).filter(Boolean);
+    if (!masters.length && !trainees.length) return [];
+    const actions = [];
+    const canStart = (hero) => !hero.actionState && !hero.perished && hero.hp > 0 && inTownHero(hero) && !inHuntTeam(hero) && !forgeByApiHeroIds(settings).includes(hero.id);
+    for (const master of masters) {
+      if (!canStart(master)) continue;
+      try {
+        await startPractice(master, opened);
+        miningRunner.heroErrors.delete(master.id);
+        actions.push(`老師傅 ${master.name} 去修練`);
+      } catch (error) {
+        if (error.captchaRequired) throw error;
+        noteMiningHeroError(master, error, actions);
+      }
+    }
+    const masterReady = masters.some((master) => master.actionState === 7);
+    const hours = Math.max(0.1, Number(settings.practiceHours) || 2);
+    const now = Date.now();
+    for (let trainee of trainees) {
+      try {
+        if (trainee.actionState === 7) {
+          const dueAt = Math.max((Date.parse(trainee.actionStart) || now) + hours * 3600000, canCompleteNow(trainee, now) ? 0 : Date.parse(trainee.actionCompleteTime) || 0);
+          if (dueAt > now) {
+            waits.push(dueAt);
+            continue;
+          }
+          if (!masterReady) {
+            if (!miningNotified.has(`practice:${trainee.id}`)) actions.push(`${trainee.name} 修練時間到，${masters.length ? '老師傅不在修練中' : '還沒選老師傅'}，先不收`);
+            miningNotified.add(`practice:${trainee.id}`);
+            waits.push(now + randomGap(5, 10) * 60000);
+            continue;
+          }
+          miningNotified.delete(`practice:${trainee.id}`);
+          trainee = await completeMiningAction(settings, await openGameHeroPage(trainee, opened), data, 'train');
+          data.log[0].trainee = true;
+          saveMining(data);
+          actions.push(`${trainee.name} 修練完`);
+        }
+        if (canStart(trainee)) {
+          await startPractice(trainee, opened);
+          waits.push(Date.now() + hours * 3600000);
+          actions.push(`${trainee.name} 去修練（約 ${hours} 小時後收）`);
+        }
+        miningRunner.heroErrors.delete(trainee.id);
+      } catch (error) {
+        if (error.captchaRequired) throw error;
+        noteMiningHeroError(trainee, error, actions);
+      }
+    }
+    return actions;
+  }
+
   function plannedMiningIds(settings) {
     const plans = miningPlans(settings);
     return Object.keys(plans)
@@ -23493,8 +23579,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       .filter((id) => MINING_SITES[plans[id]])
       .map(Number)
       .filter((id) => !foremanIds.includes(id));
-    if (!heroIds.length) {
-      stopMiningRunner('還沒選要挖礦的角色（挖礦頁每個角色選地點）');
+    if (!heroIds.length && !Object.keys(practicePlans(settings)).length) {
+      stopMiningRunner('還沒選要挖礦或修練的角色（挖礦頁每個角色選地點或修練）');
       return;
     }
     try {
@@ -23566,6 +23652,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         }
         if (cancelled()) return;
       }
+      actions.push(...(await practiceStep(settings, byId, data, opened, waits)));
+      if (cancelled()) return;
       if (miningRunner.tooManyErrors) {
         const reason = miningRunner.tooManyErrors;
         miningLog(actions.join('、'));
@@ -23749,6 +23837,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }
     const hpText = `HP ${hero.hp}/${hero.fullHp}`;
     if (hero.actionState === 2) return `休息了 ${durationText(actionMinutes(hero, now))}・${hpText}`;
+    if (hero.actionState === 7) return `修練了 ${durationText(actionMinutes(hero, now))}`;
     if (hero.actionState) return `${HERO_ACTION_NAMES[hero.actionState] || '移動'}中`;
     if (!inTownHero(hero)) return '在城外';
     return `閒置・${spText(hero.sp)}・${hpText}`;
@@ -23846,8 +23935,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
                 ${parkSelect(hero)}
                 <button data-mining-foreman-remove="${hero.id}" style="flex:none">不當工頭</button></div>`;
             }
-            const options = [['', '不挖'], ...Object.entries(MINING_SITES)]
-              .map(([value, name]) => `<option value="${value}" ${String(plans[hero.id] || '') === value ? 'selected' : ''}>${name}</option>`)
+            const current = String(practicePlans(settings)[hero.id] || plans[hero.id] || '');
+            const options = [['', '不挖'], ...Object.entries(MINING_SITES), ...Object.entries(PRACTICE_ROLES)]
+              .map(([value, name]) => `<option value="${value}" ${current === value ? 'selected' : ''}>${name}</option>`)
               .join('');
             return `<div class="row" style="margin:0;padding:3px 0;border-bottom:1px solid #2e2e34">
               <div style="flex:1;min-width:0"><b>${escapeHtml(hero.name)}</b> <span style="color:#a0a0aa">挖礦 ${hero.mining ?? '?'}</span>
@@ -23925,7 +24015,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           .reverse()
           .map((entry) => {
             if (entry.kind === 'foreman') return `<div style="color:#a0a0aa">工頭 ${escapeHtml(entry.name)} 待了 ${miningDurationText(entry.minutes)}</div>`;
-            if (entry.kind === 'train') return `<div style="color:#a0a0aa">工頭 ${escapeHtml(entry.name)} 修練了 ${miningDurationText(entry.minutes)}${entry.text ? `（${escapeHtml(entry.text)}）` : ''}</div>`;
+            if (entry.kind === 'train') return `<div style="color:#a0a0aa">${entry.trainee ? '' : '工頭 '}${escapeHtml(entry.name)} 修練了 ${miningDurationText(entry.minutes)}${entry.text ? `（${escapeHtml(entry.text)}）` : ''}</div>`;
             if (entry.kind !== 'mine') return `<div style="color:#a0a0aa">${escapeHtml(entry.name)} 休息 ${miningDurationText(entry.minutes)}</div>`;
             const parts = miningEntryParts(entry);
             const spent = parts.map(([, text]) => /消耗了\s*([\d,]+)\s*點體力/.exec(text)).find(Boolean);
@@ -24047,6 +24137,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const plans = miningPlans(readSettingsFromPanel());
       delete plans[heroId];
       setPanelField('miningPlans', JSON.stringify(plans));
+      const practice = practicePlans(readSettingsFromPanel());
+      delete practice[heroId];
+      setPanelField('practicePlans', JSON.stringify(practice));
     } else {
       return;
     }
@@ -24060,9 +24153,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const heroId = event.target.dataset && event.target.dataset.miningHero;
     if (!heroId) return;
     const plans = miningPlans(readSettingsFromPanel());
-    if (event.target.value) plans[heroId] = Number(event.target.value);
-    else delete plans[heroId];
+    const practice = practicePlans(readSettingsFromPanel());
+    const value = event.target.value;
+    delete plans[heroId];
+    delete practice[heroId];
+    if (PRACTICE_ROLES[value]) practice[heroId] = value;
+    else if (value) plans[heroId] = Number(value);
     setPanelField('miningPlans', JSON.stringify(plans));
+    setPanelField('practicePlans', JSON.stringify(practice));
     saveSettings(readSettingsFromPanel());
     event.target.blur();
     renderMiningHeroes();
