@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.98
+// @version      5.99
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1693,7 +1693,7 @@
       <div class="row"><input data-role="mining-ignore-name" placeholder="沒看過的異常名稱，手動加" style="flex:1;min-width:0"><button data-action="mining-ignore-add">加入</button></div>
       <input data-field="miningPlans" type="hidden"><input data-field="practicePlans" type="hidden"><input data-field="miningBuffHeroIds" type="hidden"><input data-field="miningOrder" type="hidden"><input data-field="miningForemanId" type="hidden"><input data-field="miningForemanParkSite" type="hidden"><input data-field="miningForemanParkSites" type="hidden">
       <div class="row">修練 ${numberInput('practiceHours', 'min="0.1" step="0.5"')} 小時收一次再修練</div>
-      <div class="hint">下面角色的下拉選「修練」或「老師傅」，按「開始挖礦」就會一起跑（只修練不挖礦也可以）。老師傅一直待在修練中；修練的角色時間到，要老師傅正在修練才收，不然等它</div>
+      <div class="hint">下面角色的下拉選「修練」或「老師傅」，按「開始挖礦」就會一起跑（只修練不挖礦也可以）。出發前補 HP／體力、異常、太低先休息都跟挖礦一樣。老師傅一直待在修練中；修練的角色時間到，要老師傅正在修練才收，不然等它</div>
       <div class="subhead">角色（選地點＝要挖；沒在跑「開始挖礦」時每 5 分鐘讀一次）</div>
       <div class="hint">要挖的角色一起出發、一起收：任一個時間到就照上面的順序（↑↓ 調整）全部收完，再一個一個出發</div>
       <div data-role="mining-heroes" style="font-size:12px"></div>
@@ -22640,20 +22640,24 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const trainees = practiceIds(settings, 'train').map((id) => byId.get(id)).filter(Boolean);
     if (!masters.length && !trainees.length) return [];
     const actions = [];
-    const canStart = (hero) => !hero.actionState && !hero.perished && hero.hp > 0 && inTownHero(hero) && !inHuntTeam(hero) && !forgeByApiHeroIds(settings).includes(hero.id);
+    const hours = Math.max(0.1, Number(settings.practiceHours) || 2);
+    // 閒著或休息中：交給 miningHeroStep 補體力、休息完再去修練；回傳有沒有出發
+    const prepare = async (hero, role) => {
+      if (hero.actionState !== 0 && hero.actionState !== 2) return false;
+      const practice = { role, hours };
+      actions.push(...(await miningHeroStep(settings, hero, {}, data, Date.now(), waits, opened, 0, practice)));
+      return Boolean(practice.started);
+    };
     for (const master of masters) {
-      if (!canStart(master)) continue;
       try {
-        await startPractice(master, opened);
+        if (await prepare(master, 'master')) master.actionState = 7;
         miningRunner.heroErrors.delete(master.id);
-        actions.push(`老師傅 ${master.name} 去修練`);
       } catch (error) {
         if (error.captchaRequired) throw error;
         noteMiningHeroError(master, error, actions);
       }
     }
     const masterReady = masters.some((master) => master.actionState === 7);
-    const hours = Math.max(0.1, Number(settings.practiceHours) || 2);
     const now = Date.now();
     for (let trainee of trainees) {
       try {
@@ -22675,11 +22679,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           saveMining(data);
           actions.push(`${trainee.name} 修練完`);
         }
-        if (canStart(trainee)) {
-          await startPractice(trainee, opened);
-          waits.push(Date.now() + hours * 3600000);
-          actions.push(`${trainee.name} 去修練（約 ${hours} 小時後收）`);
-        }
+        await prepare(trainee, 'train');
         miningRunner.heroErrors.delete(trainee.id);
       } catch (error) {
         if (error.captchaRequired) throw error;
@@ -23493,7 +23493,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }
   }
 
-  async function miningHeroStep(settings, hero, plans, data, now, waits, opened, roundHours) {
+  async function miningHeroStep(settings, hero, plans, data, now, waits, opened, roundHours, practice = null) {
     const record = data.active[hero.id];
     const done = [];
     if (hero.actionState === 4) return done;
@@ -23550,6 +23550,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       data.active[hero.id] = { kind: 'rest', at: Date.now(), sp: hero.sp, hp: hero.hp, minutes };
       waits.push(Date.now() + minutes * 60000);
       done.push(`${hero.name} 先休息 ${minutes} 分鐘`);
+    } else if (practice) {
+      await startPractice(hero, opened);
+      practice.started = true;
+      if (practice.role === 'master') done.push(`老師傅 ${hero.name} 去修練`);
+      else {
+        waits.push(Date.now() + practice.hours * 3600000);
+        done.push(`${hero.name} 去修練（約 ${practice.hours} 小時後收）`);
+      }
     } else {
       const site = Number(plans[hero.id]);
       const buff = await useBuffItems(settings, 'mining', hero);
