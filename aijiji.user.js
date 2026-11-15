@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.02
+// @version      6.03
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1702,7 +1702,7 @@
       <div class="row"><input data-role="mining-ignore-name" placeholder="沒看過的異常名稱，手動加" style="flex:1;min-width:0"><button data-action="mining-ignore-add">加入</button></div>
       <input data-field="miningPlans" type="hidden"><input data-field="practicePlans" type="hidden"><input data-field="miningBuffHeroIds" type="hidden"><input data-field="miningOrder" type="hidden"><input data-field="miningForemanId" type="hidden"><input data-field="miningForemanParkSite" type="hidden"><input data-field="miningForemanParkSites" type="hidden">
       <div class="row">修練 ${numberInput('practiceHours', 'min="0.1" step="0.5"')} 小時收一次再修練</div>
-      <div class="hint">下面角色的下拉選「修練」或「老師傅」，按「開始挖礦」就會一起跑（只修練不挖礦也可以）。出發前補 HP／體力、異常、太低先休息都跟挖礦一樣。老師傅一直待在修練中；修練的角色時間到，要老師傅正在修練才收，不然等它</div>
+      <div class="hint">下面角色的下拉選「修練」或「老師傅」，按「開始挖礦」就會一起跑（只修練不挖礦也可以）。出發前補 HP／體力、異常、太低先休息都跟挖礦一樣。修練的角色時間到，要老師傅正在修練才收，不然等它；老師傅也是時間到就收、補完再去，但學生快到時間時先不收它</div>
       <div class="subhead">角色（選地點＝要挖；沒在跑「開始挖礦」時每 5 分鐘讀一次）</div>
       <div class="hint">要挖的角色一起出發、一起收：任一個時間到就照上面的順序（↑↓ 調整）全部收完，再一個一個出發</div>
       <div data-role="mining-heroes" style="font-size:12px"></div>
@@ -22686,10 +22686,11 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }
     const masterReady = masters.some((master) => master.actionState === 7);
     const now = Date.now();
+    const dueAtOf = (hero) => Math.max((Date.parse(hero.actionStart) || now) + hours * 3600000, canCompleteNow(hero, now) ? 0 : Date.parse(hero.actionCompleteTime) || 0);
     for (let trainee of trainees) {
       try {
         if (trainee.actionState === 7) {
-          const dueAt = Math.max((Date.parse(trainee.actionStart) || now) + hours * 3600000, canCompleteNow(trainee, now) ? 0 : Date.parse(trainee.actionCompleteTime) || 0);
+          const dueAt = dueAtOf(trainee);
           if (dueAt > now) {
             waits.push(dueAt);
             continue;
@@ -22711,6 +22712,31 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       } catch (error) {
         if (error.captchaRequired) throw error;
         noteMiningHeroError(trainee, error, actions);
+      }
+    }
+    // 老師傅原本一直不收，體力扣光也不會補：一樣修練時間到就收、補藥水再去。
+    // 學生快到時間（15 分鐘內）就先不收，免得學生要收時老師傅剛好不在修練；有別的老師傅還在修練就不用等
+    const traineeSoon = trainees.some((trainee) => trainee.actionState === 7 && dueAtOf(trainee) - now < 15 * 60000);
+    for (const master of masters) {
+      if (master.actionState !== 7 || dueAtOf(master) > now) {
+        if (master.actionState === 7) waits.push(dueAtOf(master));
+        continue;
+      }
+      const othersTraining = masters.some((other) => other !== master && other.actionState === 7);
+      if (traineeSoon && !othersTraining) {
+        waits.push(now + randomGap(15, 25) * 60000);
+        continue;
+      }
+      try {
+        const after = await completeMiningAction(settings, await openGameHeroPage(master, opened), data, 'train');
+        data.log[0].trainee = true;
+        saveMining(data);
+        actions.push(`老師傅 ${master.name} 修練完`);
+        master.actionState = (await prepare(after, 'master')) ? 7 : after.actionState;
+        miningRunner.heroErrors.delete(master.id);
+      } catch (error) {
+        if (error.captchaRequired) throw error;
+        noteMiningHeroError(master, error, actions);
       }
     }
     return actions;
