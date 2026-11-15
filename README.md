@@ -8,8 +8,8 @@
 
 | 檔案 | 用途 |
 |---|---|
-| `auto-clicker-v2.user.js` | 主程式：自動化、API 攔截、遊戲內面板、統計分析 |
-| `auto-clicker-v2.loader.user.js` | 載入器：瀏覽器只裝這個，開頁面時從中繼站載入最新主程式 |
+| `aijiji.user.js` | 主程式：自動化、API 攔截、遊戲內面板、統計分析 |
+| `aijiji.loader.user.js` | 載入器：瀏覽器只裝這個，開頁面時從中繼站載入最新主程式 |
 | `monitor-server.ps1`、`啟動中繼站.cmd` | 本機中繼站（Windows 內建 PowerShell） |
 | `monitor-dashboard.html` | 多帳號總覽頁 |
 | `cloud-sheet.gs` | 雲端共享用的 Google Apps Script |
@@ -17,7 +17,7 @@
 
 ## 安裝與自動更新
 
-瀏覽器只要在 Tampermonkey 安裝 `auto-clicker-v2.loader.user.js`（載入器）。每次打開遊戲頁，載入器會同時抓本機中繼站和這個 repo 的 `auto-clicker-v2.user.js`，用版本比較新的那份；都抓不到才用上次的版本。已開著的分頁每 10 分鐘看一次 `version.txt`，有新版就趁空檔自動重新整理。中繼站只有多帳號總覽與遠端操作才需要。
+瀏覽器只要在 Tampermonkey 安裝 `aijiji.loader.user.js`（載入器）。每次打開遊戲頁，載入器會同時抓本機中繼站和這個 repo 的 `aijiji.user.js`，用版本比較新的那份；都抓不到才用上次的版本。已開著的分頁每 10 分鐘看一次 `version.txt`，有新版就趁空檔自動重新整理。中繼站只有多帳號總覽與遠端操作才需要。
 
 ## 雲端同步
 

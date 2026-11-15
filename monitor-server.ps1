@@ -1,4 +1,4 @@
-# Multi-account monitor relay for auto-clicker-v2.user.js
+# Multi-account monitor relay for aijiji.user.js
 # Each game tab POSTs its status to /status?id=<accountId>; open http://localhost:8787/ to see all accounts.
 # Usage: powershell -ExecutionPolicy Bypass -File .\monitor-server.ps1
 param([int]$Port = 8787, [int]$StaleMinutes = 10, [int]$TurnSwitchMinMs = 500, [int]$TurnSwitchMaxMs = 1500, [int]$TransferSwitchMinMs = 600, [int]$TransferSwitchMaxMs = 1500, [int]$TurnPlanSpacingMs = 1500, [int]$TurnPlanMaxShiftMs = 3000)
@@ -8,8 +8,11 @@ $dashboardPath = Join-Path $PSScriptRoot 'monitor-dashboard.html'
 $growthDir = Join-Path $PSScriptRoot 'growth-data'
 # The loader is installed once per browser profile and pulls the main script from here on every page load
 $userScripts = @{
-  '/auto-clicker-v2.user.js' = (Join-Path $PSScriptRoot 'auto-clicker-v2.user.js')
-  '/auto-clicker-v2.loader.user.js' = (Join-Path $PSScriptRoot 'auto-clicker-v2.loader.user.js')
+  '/aijiji.user.js' = (Join-Path $PSScriptRoot 'aijiji.user.js')
+  '/aijiji.loader.user.js' = (Join-Path $PSScriptRoot 'aijiji.loader.user.js')
+  # Old names (before 6.02): loaders already installed in browsers still ask for these
+  '/auto-clicker-v2.user.js' = (Join-Path $PSScriptRoot 'aijiji.user.js')
+  '/auto-clicker-v2.loader.user.js' = (Join-Path $PSScriptRoot 'aijiji.loader.user.js')
 }
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 # Raw JSON per account, kept as text so Chinese and numbers pass through untouched
@@ -495,7 +498,7 @@ function Handle-Request($context) {
   # Tampermonkey in every browser profile installs and updates the userscript from here, so one edit reaches all of them
   # Tabs poll this to notice a new version without downloading the whole script
   if ($request.HttpMethod -eq 'GET' -and $path -eq '/version') {
-    $script = [System.IO.File]::ReadAllText($userScripts['/auto-clicker-v2.user.js'], $utf8)
+    $script = [System.IO.File]::ReadAllText($userScripts['/aijiji.user.js'], $utf8)
     $match = [regex]::Match($script, '@version\s+(\S+)')
     Send-Response $response 200 'text/plain; charset=utf-8' $match.Groups[1].Value
     return

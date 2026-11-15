@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         器靈（載入器）
 // @namespace    local.auto-clicker
-// @version      2.3
+// @version      2.4
 // @description  每次開頁面載入最新的器靈：本機中繼站和 GitHub 都抓，用版本比較新的；都失敗才用上次的版本
 // @match        https://myteam.swordgale.online/*
 // @grant        none
-// @downloadURL  http://localhost:8787/auto-clicker-v2.loader.user.js
+// @downloadURL  http://localhost:8787/aijiji.loader.user.js
 // ==/UserScript==
 
 (function () {
@@ -14,23 +14,23 @@
   // 本機中繼站（開發時改完立刻生效）和 GitHub（朋友不用開中繼站也能自動更新）都抓，用版本比較新的；
   // 朋友電腦的中繼站可能還放著舊版，所以不能有中繼站就只用中繼站。都失敗才用上次成功的快取
   const SOURCES = [
-    { label: '中繼站最新版', url: 'http://localhost:8787/auto-clicker-v2.user.js', timeout: 3000 },
+    { label: '中繼站最新版', url: 'http://localhost:8787/aijiji.user.js', timeout: 3000 },
     // 加時間參數避開 GitHub 的 5 分鐘快取
-    { label: 'GitHub 最新版', url: () => `https://raw.githubusercontent.com/s6413380/SwGameSscript/main/auto-clicker-v2.user.js?t=${Date.now()}`, timeout: 15000 },
+    { label: 'GitHub 最新版', url: () => `https://raw.githubusercontent.com/s6413380/SwGameSscript/main/aijiji.user.js?t=${Date.now()}`, timeout: 15000 },
   ];
-  const CACHE_STORAGE_KEY = 'autoClickerV2LoaderCache';
+  const CACHE_STORAGE_KEY = 'aijijiLoaderCache';
   // 快取是整份主程式（快 1MB），放 localStorage 會跟遊戲搶那 5MB；改放 IndexedDB，跟主程式的資料庫分開，免得版本號互相影響
-  const CACHE_DB_NAME = 'autoClickerV2Loader';
+  const CACHE_DB_NAME = 'aijijiLoader';
   // 共用的雲端試算表網址放在載入器裡（私下傳給朋友），GitHub 上的公開主程式就不用帶著它
   // 公開版不附網址：要用共用試算表就把 Apps Script 網址填在這裡，或在面板「其他 → 雲端」填
   const CLOUD_URL = '';
 
   function run(code, source) {
-    window.__autoClickerCloudUrl = CLOUD_URL;
-    window.__autoClickerSource = source;
+    window.__aijijiCloudUrl = CLOUD_URL;
+    window.__aijijiSource = source;
     const script = document.createElement('script');
-    // sourceURL 讓瀏覽器的錯誤訊息指到 auto-clicker-v2.user.js，而不是一段匿名程式
-    script.textContent = `${code}\n//# sourceURL=auto-clicker-v2.user.js`;
+    // sourceURL 讓瀏覽器的錯誤訊息指到 aijiji.user.js，而不是一段匿名程式
+    script.textContent = `${code}\n//# sourceURL=aijiji.user.js`;
     (document.head || document.documentElement).appendChild(script);
     script.remove();
     console.info(`[器靈 載入器] 已載入（${source}）`);

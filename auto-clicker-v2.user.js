@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.01
+// @version      6.02
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
-// @updateURL    https://raw.githubusercontent.com/s6413380/SwGameSscript/main/auto-clicker-v2.user.js
-// @downloadURL  https://raw.githubusercontent.com/s6413380/SwGameSscript/main/auto-clicker-v2.user.js
+// @updateURL    https://raw.githubusercontent.com/s6413380/SwGameSscript/main/aijiji.user.js
+// @downloadURL  https://raw.githubusercontent.com/s6413380/SwGameSscript/main/aijiji.user.js
 // ==/UserScript==
 
 (function () {
@@ -79,7 +79,7 @@
     // 瀏覽器不支援長任務就只看腳本自己的數字
   }
   // 統計類（收入、抽卡、測名表、打怪、耐久、挖礦、市場、雲端同步紀錄）每個幾十到幾百 KB，加起來又把 localStorage 擠滿，也搬過去
-  const STATS_BIG_STORAGE_KEYS = ['aijijiCloud', 'autoClickerV2Income', 'aijijiDraws', 'aijijiNameWeights', 'autoClickerV2HuntStats', 'autoClickerV2DurTrack', 'autoClickerV2DurStats', 'autoClickerV2Mining', 'autoClickerV2MarketSales'];
+  const STATS_BIG_STORAGE_KEYS = ['aijijiCloud', 'aijijiIncome', 'aijijiDraws', 'aijijiNameWeights', 'aijijiHuntStats', 'aijijiDurTrack', 'aijijiDurStats', 'aijijiMining', 'aijijiMarketSales'];
   const BIG_STORAGE_KEYS = new Set(['aijijiThemeImage', 'aijijiCloudEquipments', 'aijijiCloudScratch', 'aijijiCloudDraws', 'aijijiScratch', 'aijijiForgedEquipments', 'aijijiForgeMaterials', ...STATS_BIG_STORAGE_KEYS]);
   // 這些是累加的：資料庫開好之前讀到的是空的，那時寫的是「空的＋一筆」，資料庫裡已經有就以資料庫的為準（頂多少記那一筆）
   const KEEP_STORED_BIG_STORAGE_KEYS = new Set(STATS_BIG_STORAGE_KEYS);
@@ -131,16 +131,20 @@
   const OLD_BIG_STORAGE_DB = 'autoClickerV2';
   const BIG_STORAGE_COPIED_KEY = 'aijijiOldDatabaseCopied';
 
+  // 6.02 起全部改成 aijiji 開頭（舊的是 autoClickerV2 開頭）
+  const OLD_KEY_PREFIX = 'autoClickerV2';
+
   function renamedStorageKey(key) {
     if (RENAMED_STORAGE_KEYS.has(key)) return RENAMED_STORAGE_KEYS.get(key);
-    return String(key).startsWith(OLD_GROWTH_STORAGE_PREFIX) ? GROWTH_STORAGE_PREFIX + String(key).slice(OLD_GROWTH_STORAGE_PREFIX.length) : key;
+    if (String(key).startsWith(OLD_GROWTH_STORAGE_PREFIX)) return GROWTH_STORAGE_PREFIX + String(key).slice(OLD_GROWTH_STORAGE_PREFIX.length);
+    return /^autoClickerV2[A-Z]/.test(key) ? 'aijiji' + String(key).slice(OLD_KEY_PREFIX.length) : key;
   }
 
-  // 新名稱已經有東西就以新的為準（別的分頁先搬過了）
-  function moveRenamedLocalStorage() {
+  // 新名稱已經有東西就以新的為準（別的分頁先搬過了）。寫成功才刪舊的，空間滿搬不動就留著下次再搬
+  function moveRenamedStorage(storage) {
     let keys = [];
     try {
-      keys = Object.keys(localStorage);
+      keys = Object.keys(storage);
     } catch {
       return;
     }
@@ -148,14 +152,19 @@
       const renamed = renamedStorageKey(key);
       if (renamed === key) return;
       try {
-        if (localStorage.getItem(renamed) === null) localStorage.setItem(renamed, localStorage.getItem(key));
-        localStorage.removeItem(key);
+        if (storage.getItem(renamed) === null) storage.setItem(renamed, storage.getItem(key));
+        if (storage.getItem(renamed) !== null) storage.removeItem(key);
       } catch {
-        // 搬不動（空間滿）就留著舊的，下次開再搬
+        // 搬不動就留著舊的，下次開再搬
       }
     });
   }
-  moveRenamedLocalStorage();
+  moveRenamedStorage(localStorage);
+  try {
+    moveRenamedStorage(sessionStorage);
+  } catch {
+    // 沒有 sessionStorage 就算了
+  }
 
   // 體力與血條共用同一套補給邏輯：每條數值對應一格道具欄與一個使用按鈕，綁在同一列設定。
   // 陣列順序就是檢查優先順序，血條排前面，先保命再補體力
@@ -210,13 +219,13 @@
     ['stats', '統計', ['income', 'combat', 'huntStats', 'loot', 'growth', 'draw', 'scratch', 'sales']],
     ['other', '其他', ['pick', 'transfer', 'cardBuy', 'players', 'alert', 'cloud', 'log', 'api', 'backup']],
   ];
-  const TAB_STORAGE_KEY = 'autoClickerV2Tab';
+  const TAB_STORAGE_KEY = 'aijijiTab';
   // 鍛造完成的回應在載入途中就可能進來，標記要賣的清單鍵放前面
-  const SELL_MARKED_KEY = 'autoClickerV2SellMarkedEquipments';
+  const SELL_MARKED_KEY = 'aijijiSellMarkedEquipments';
   // 每個角色上次鍛造了什麼；正在配方頁改的是哪個角色的配方（按 ④ 的「載入」）。面板一建好就可能畫配方頁，所以放最前面
-  const HERO_LAST_FORGE_KEY = 'autoClickerV2HeroLastForge';
+  const HERO_LAST_FORGE_KEY = 'aijijiHeroLastForge';
   const recipeEditing = { heroId: 0 };
-  const GROUP_TABS_STORAGE_KEY = 'autoClickerV2GroupTabs';
+  const GROUP_TABS_STORAGE_KEY = 'aijijiGroupTabs';
 
   function tabGroupOf(tabId) {
     return (TAB_GROUPS.find(([, , tabIds]) => tabIds.includes(tabId)) || TAB_GROUPS[0])[0];
@@ -285,15 +294,15 @@
   ];
   // 區域表預設內容改過就加一：已經存過設定的人也補上新的預設區域（只補一次，刪掉了不會再冒出來）
   const AREA_PRESET_VERSION = 4;
-  const LOOT_RARE_PAUSE_OFF_KEY = 'autoClickerV2LootRarePauseOff';
-  const RELAY_OFF_ONCE_KEY = 'autoClickerV2RelayOffOnce';
-  const SEVERE_POISON_RULE_KEY = 'autoClickerV2SeverePoisonRule';
-  const MINING_BURN_ALOE_KEY = 'autoClickerV2MiningBurnAloe';
-  const HUNT_CURE_USES_KEY = 'autoClickerV2HuntCureUses';
+  const LOOT_RARE_PAUSE_OFF_KEY = 'aijijiLootRarePauseOff';
+  const RELAY_OFF_ONCE_KEY = 'aijijiRelayOffOnce';
+  const SEVERE_POISON_RULE_KEY = 'aijijiSeverePoisonRule';
+  const MINING_BURN_ALOE_KEY = 'aijijiMiningBurnAloe';
+  const HUNT_CURE_USES_KEY = 'aijijiHuntCureUses';
   const PLAYER_IGNORE_DEFAULT = '大草原1-3、黑暗山洞1-3';
-  const PLAYER_IGNORE_DEFAULT_KEY = 'autoClickerV2PlayerIgnoreDefault';
-  const SLEEP_MERGED_KEY = 'autoClickerV2SleepMergedIntoOff';
-  const AREA_PRESET_KEY = 'autoClickerV2AreaPreset';
+  const PLAYER_IGNORE_DEFAULT_KEY = 'aijijiPlayerIgnoreDefault';
+  const SLEEP_MERGED_KEY = 'aijijiSleepMergedIntoOff';
+  const AREA_PRESET_KEY = 'aijijiAreaPreset';
 
   function areaKey(areaIndex, name) {
     return `area${areaIndex + 1}${name}`;
@@ -1093,7 +1102,7 @@
       <div style="border-top:1px dashed #3a3a40;padding-top:3px;margin-top:3px">
         <div class="row">${areaIndex + 1}. <input data-field="${key('Name')}" placeholder="區域名稱">
           ${pickButtonHtml(key('Enter'), '進入', { text: true })}</div>
-        <div class="row">從<input data-field="${key('Parent')}" list="auto-clicker-areas" placeholder="（地形留空）" style="width:70px;flex:none">
+        <div class="row">從<input data-field="${key('Parent')}" list="aijiji-areas" placeholder="（地形留空）" style="width:70px;flex:none">
           第 ${numberInput(key('ParentStage'), 'min="0"')} 關進入 ${pickButtonHtml(key('Return'), '返回', { text: true })}</div>
       </div>`;
   }
@@ -1294,7 +1303,7 @@
         第 ${numberInput('stageTargetNumber', 'min="0"')} 關</div>
       <div class="hint">選項來自下面的區域表。目標是分支時關卡填 0＝進去就開始刷；大區填 0＝進到大區就好。
         API 打怪不用設定下面的按鈕：換大區會先回城再前往，分支裡可以再有分支（母區域填分支名稱）；不在目標那條路上就直接去目標大區第 1 層，再一路走進去。走到分支入口時遊戲會告訴腳本有哪些分支，區域表沒有的會自動補上</div>
-      <datalist id="auto-clicker-areas"></datalist>
+      <datalist id="aijiji-areas"></datalist>
       <div class="row">城鎮<input data-field="townName" placeholder="初始之鎮" style="width:90px;flex:none">${pickButtonHtml('stageTown', '回城', { text: true })}</div>
       <div class="hint">在城鎮時直接按目標大區（到第 1 關再前行）；目標填城鎮名稱＝回城</div>
       <div class="row">${pickButtonHtml('selectorD', '前行', { text: true })} ${pickButtonHtml('stageBack', '後退', { text: true })} ${pickButtonHtml('stageFinishMove', '完成移動', { text: true })}</div>
@@ -1408,10 +1417,10 @@
             ${EQUIP_PARTS.map((part) => `<div data-equip-rule-block="${part.id}">
               <div class="hint" style="margin:0">${part.name}（${part.types.join('、')}）的條件，只用在換這個部位</div>
               <div class="row" style="flex-wrap:wrap">${EQUIP_RULE_STATS.map(([name, , label]) => `<span style="white-space:nowrap">${label} ${numberInput(equipRuleKey(part.id, `Min${name}`), 'min="0" style="flex:none;width:52px"')}～${numberInput(equipRuleKey(part.id, `Max${name}`), 'min="0" style="flex:none;width:52px"')}</span>`).join(' ')}<span class="hint" style="margin:0">0＝不限</span></div>
-              <div class="row">附魔<input data-field="${equipRuleKey(part.id, 'Enchants')}" list="autoClickerEnchantNames" style="min-width:0;flex:1" placeholder="例如 物理減傷、火焰傷害≥20；留空＝不限">
+              <div class="row">附魔<input data-field="${equipRuleKey(part.id, 'Enchants')}" list="aijiji-enchant-names" style="min-width:0;flex:1" placeholder="例如 物理減傷、火焰傷害≥20；留空＝不限">
                 <select data-field="${equipRuleKey(part.id, 'EnchantMode')}" style="flex:none;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="any">有一個就行</option><option value="all">全部都要</option></select></div>
             </div>`).join('')}
-            <datalist id="autoClickerEnchantNames"></datalist>
+            <datalist id="aijiji-enchant-names"></datalist>
             <div data-role="equip-rule-enchants" style="font-size:12px"></div>
             <div data-role="equip-rule-preview" class="hint"></div>
             <div class="row"><button data-action="equip-rule-preview">看符合的裝備</button></div>
@@ -1723,8 +1732,8 @@
         <div data-role="recipe-picker" style="font-size:12px;max-height:260px;overflow:auto"></div>
       </fieldset>
       <div class="subhead">③ 名稱</div>
-      <div class="row">名稱<input data-field="forgeRecipeName" list="autoClickerTodayNames" placeholder="名稱每天影響數值，自己取"><button data-action="name-sheet-refresh">更新測名表</button></div>
-      <datalist id="autoClickerTodayNames"></datalist>
+      <div class="row">名稱<input data-field="forgeRecipeName" list="aijiji-today-names" placeholder="名稱每天影響數值，自己取"><button data-action="name-sheet-refresh">更新測名表</button></div>
+      <datalist id="aijiji-today-names"></datalist>
       <div data-role="name-suggest" style="font-size:12px;max-height:180px;overflow:auto"></div>
       <div class="subhead">④ 給誰用（按「加入」就排進自動鍛造佇列）</div>
       <div data-role="recipe-heroes" style="font-size:12px;max-height:300px;overflow:auto"></div>
@@ -1829,7 +1838,7 @@
         <legend>要找的卡（每行一條）</legend>
         <input type="hidden" data-field="cardBuyRules">
         <div data-role="card-rules"></div>
-        <datalist id="autoClickerCardTypes"></datalist>
+        <datalist id="aijiji-card-types"></datalist>
         <div class="row"><button data-action="card-rule-add">＋ 新增一張要找的卡</button></div>
         <div class="hint">卡片名稱是卡片種類（例如房東阿姨），不是玩家取的名字；打字時會列出看過的卡。空著的條件＝不限，等級兩格填一樣＝剛好那一級。沒填價格的只提醒；勾「只提醒不買」的開了自動購買也不買</div>
       </fieldset>
@@ -1907,60 +1916,60 @@
     maxHeight: '90vh', overflowY: 'auto',
     boxShadow: '0 6px 20px rgba(0,0,0,.5)',
   });
-  // 黑底白字；提示視窗也掛 data-auto-clicker，按鈕樣式共用
+  // 黑底白字；提示視窗也掛 data-aijiji，按鈕樣式共用
   const style = document.createElement('style');
   style.textContent = `
-    [data-auto-clicker] .row { display:flex; gap:6px; align-items:center; margin:5px 0; }
-    [data-auto-clicker][data-enlarged] .choices,
-    [data-auto-clicker][data-enlarged] [style*="max-height"] { max-height:60vh !important; }
-    [data-auto-clicker] label:not(.row) { display:block; margin:5px 0; }
-    [data-auto-clicker] input, [data-auto-clicker] textarea {
+    [data-aijiji] .row { display:flex; gap:6px; align-items:center; margin:5px 0; }
+    [data-aijiji][data-enlarged] .choices,
+    [data-aijiji][data-enlarged] [style*="max-height"] { max-height:60vh !important; }
+    [data-aijiji] label:not(.row) { display:block; margin:5px 0; }
+    [data-aijiji] input, [data-aijiji] textarea {
       flex:1; min-width:0; padding:3px 5px; font:12px monospace; color:#fff;
       background:#2a2a30; border:1px solid #44444c; border-radius:5px; }
-    [data-auto-clicker] input::placeholder, [data-auto-clicker] textarea::placeholder { color:#7d7d86; }
-    [data-auto-clicker] input[type="checkbox"] { accent-color:#fff; }
-    [data-auto-clicker] input[type="range"] { accent-color:#fff; background:transparent; border:none; }
-    [data-auto-clicker] button {
+    [data-aijiji] input::placeholder, [data-aijiji] textarea::placeholder { color:#7d7d86; }
+    [data-aijiji] input[type="checkbox"] { accent-color:#fff; }
+    [data-aijiji] input[type="range"] { accent-color:#fff; background:transparent; border:none; }
+    [data-aijiji] button {
       padding:3px 9px; cursor:pointer; font-size:12px; color:#fff; background:#3a3a42;
       border:1px solid #4a4a52; border-radius:5px; }
-    [data-auto-clicker] button:hover { background:#4a4a54; }
-    [data-auto-clicker] .tab-groups { display:flex; gap:4px; margin-bottom:6px; padding-bottom:6px; border-bottom:1px solid #3a3a40; }
-    [data-auto-clicker] .tab-groups button { flex:1; padding:4px 0; color:#ccc; background:#1f1f24; border-color:#3a3a40; font-weight:bold; }
-    [data-auto-clicker] .tab-groups button[data-active] { background:#3b82f6; color:#fff; border-color:#3b82f6; }
-    [data-auto-clicker] .tabs { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:10px; }
-    [data-auto-clicker] .tabs button { padding:2px 8px; color:#fff; background:#2a2a30; border-color:#3a3a40; }
-    [data-auto-clicker] .tabs button:hover { background:#3a3a42; }
-    [data-auto-clicker][data-assist] [data-assist-hide] { display:none !important; }
-    [data-auto-clicker] .tabs button[data-active] { background:#fff; color:#111; border-color:#fff; font-weight:bold; }
-    [data-auto-clicker] fieldset.group { border:1px solid #3a3a40; border-radius:8px; margin:8px 0; padding:4px 8px 8px; }
-    [data-auto-clicker] fieldset.group legend { font-weight:bold; padding:0 4px; cursor:pointer; user-select:none; }
-    [data-auto-clicker] fieldset.group > legend::before { content:'▾ '; color:#7a7a84; }
-    [data-auto-clicker] fieldset.group.folded > legend::before { content:'▸ '; }
-    [data-auto-clicker] fieldset.group.folded { padding-bottom:0; }
-    [data-auto-clicker] fieldset.group fieldset.group { margin:6px 0; padding:2px 6px 6px; }
-    [data-auto-clicker] fieldset.group.folded > :not(legend) { display:none !important; }
-    [data-auto-clicker] .hint { font-size:12px; color:#a0a0aa; margin:3px 0; }
-    [data-auto-clicker] .global-row { font-size:12px; color:#a0a0aa; }
-    [data-auto-clicker] .global-row button[data-current="run"] { background:#2e7d32; border-color:#2e7d32; color:#fff; font-weight:bold; }
-    [data-auto-clicker] .global-row button[data-current="temp"] { background:#e65100; border-color:#e65100; color:#fff; font-weight:bold; }
-    [data-auto-clicker] .global-row button[data-low-current] { background:#2e7d32; border-color:#2e7d32; color:#fff; font-weight:bold; }
-    [data-auto-clicker] .global-row button[data-current="stop"] { background:#c62828; border-color:#c62828; color:#fff; font-weight:bold; }
-    [data-auto-clicker] .hint.fold { cursor:pointer; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:1; overflow:hidden; }
-    [data-auto-clicker] .hint.fold::before { content:'▸ '; color:#7a7a84; }
-    [data-auto-clicker] .hint.fold.open { display:block; }
-    [data-auto-clicker] .hint.fold.open::before { content:'▾ '; }
-    [data-auto-clicker] .subhead { font-weight:bold; font-size:12px; margin:8px 0 2px; border-bottom:1px solid #3a3a40; }
-    [data-auto-clicker] .choices { font-size:12px; max-height:140px; overflow:auto; }
-    [data-auto-clicker] .choices label { margin:2px 0; }
-    [data-auto-clicker] .divider { border:none; border-top:1px solid #3a3a40; margin:10px 0 8px; }
-    [data-auto-clicker] .monitor { margin-top:4px; padding:4px 6px; font:12px monospace; white-space:pre-line;
+    [data-aijiji] button:hover { background:#4a4a54; }
+    [data-aijiji] .tab-groups { display:flex; gap:4px; margin-bottom:6px; padding-bottom:6px; border-bottom:1px solid #3a3a40; }
+    [data-aijiji] .tab-groups button { flex:1; padding:4px 0; color:#ccc; background:#1f1f24; border-color:#3a3a40; font-weight:bold; }
+    [data-aijiji] .tab-groups button[data-active] { background:#3b82f6; color:#fff; border-color:#3b82f6; }
+    [data-aijiji] .tabs { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:10px; }
+    [data-aijiji] .tabs button { padding:2px 8px; color:#fff; background:#2a2a30; border-color:#3a3a40; }
+    [data-aijiji] .tabs button:hover { background:#3a3a42; }
+    [data-aijiji][data-assist] [data-assist-hide] { display:none !important; }
+    [data-aijiji] .tabs button[data-active] { background:#fff; color:#111; border-color:#fff; font-weight:bold; }
+    [data-aijiji] fieldset.group { border:1px solid #3a3a40; border-radius:8px; margin:8px 0; padding:4px 8px 8px; }
+    [data-aijiji] fieldset.group legend { font-weight:bold; padding:0 4px; cursor:pointer; user-select:none; }
+    [data-aijiji] fieldset.group > legend::before { content:'▾ '; color:#7a7a84; }
+    [data-aijiji] fieldset.group.folded > legend::before { content:'▸ '; }
+    [data-aijiji] fieldset.group.folded { padding-bottom:0; }
+    [data-aijiji] fieldset.group fieldset.group { margin:6px 0; padding:2px 6px 6px; }
+    [data-aijiji] fieldset.group.folded > :not(legend) { display:none !important; }
+    [data-aijiji] .hint { font-size:12px; color:#a0a0aa; margin:3px 0; }
+    [data-aijiji] .global-row { font-size:12px; color:#a0a0aa; }
+    [data-aijiji] .global-row button[data-current="run"] { background:#2e7d32; border-color:#2e7d32; color:#fff; font-weight:bold; }
+    [data-aijiji] .global-row button[data-current="temp"] { background:#e65100; border-color:#e65100; color:#fff; font-weight:bold; }
+    [data-aijiji] .global-row button[data-low-current] { background:#2e7d32; border-color:#2e7d32; color:#fff; font-weight:bold; }
+    [data-aijiji] .global-row button[data-current="stop"] { background:#c62828; border-color:#c62828; color:#fff; font-weight:bold; }
+    [data-aijiji] .hint.fold { cursor:pointer; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:1; overflow:hidden; }
+    [data-aijiji] .hint.fold::before { content:'▸ '; color:#7a7a84; }
+    [data-aijiji] .hint.fold.open { display:block; }
+    [data-aijiji] .hint.fold.open::before { content:'▾ '; }
+    [data-aijiji] .subhead { font-weight:bold; font-size:12px; margin:8px 0 2px; border-bottom:1px solid #3a3a40; }
+    [data-aijiji] .choices { font-size:12px; max-height:140px; overflow:auto; }
+    [data-aijiji] .choices label { margin:2px 0; }
+    [data-aijiji] .divider { border:none; border-top:1px solid #3a3a40; margin:10px 0 8px; }
+    [data-aijiji] .monitor { margin-top:4px; padding:4px 6px; font:12px monospace; white-space:pre-line;
       background:#111114; border-radius:6px; }
-    [data-auto-clicker] pre[data-role="log"] { background:#111114; border-radius:6px; padding:4px 6px; }
-    [data-auto-clicker] table.combat { width:100%; border-collapse:collapse; font:11px monospace; margin:4px 0; }
-    [data-auto-clicker] table.combat th, [data-auto-clicker] table.combat td { padding:1px 3px; text-align:right; border-bottom:1px solid #2e2e34; }
-    [data-auto-clicker] table.combat th:first-child, [data-auto-clicker] table.combat td:first-child { text-align:left; }
+    [data-aijiji] pre[data-role="log"] { background:#111114; border-radius:6px; padding:4px 6px; }
+    [data-aijiji] table.combat { width:100%; border-collapse:collapse; font:11px monospace; margin:4px 0; }
+    [data-aijiji] table.combat th, [data-aijiji] table.combat td { padding:1px 3px; text-align:right; border-bottom:1px solid #2e2e34; }
+    [data-aijiji] table.combat th:first-child, [data-aijiji] table.combat td:first-child { text-align:left; }
     /* 大耳狗風格：底色自選（applyPanelTheme 算出 --cin-* 各色）、白雲、粉紅點綴；白字照樣看得清楚 */
-    [data-auto-clicker][data-cinnamon] {
+    [data-aijiji][data-cinnamon] {
       background-color:var(--cin-base) !important; border:2px solid var(--cin-border) !important; box-shadow:0 6px 24px var(--cin-shadow) !important;
       background-image:
         radial-gradient(circle at 86% 3%, rgba(255,255,255,.55) 0 16px, transparent 17px),
@@ -1972,39 +1981,39 @@
         radial-gradient(circle at 95% 91%, rgba(255,255,255,.16) 0 18px, transparent 19px),
         linear-gradient(180deg, var(--cin-top) 0%, var(--cin-base) 45%, var(--cin-bottom) 100%) !important;
       background-attachment:local !important; }
-    [data-auto-clicker][data-cinnamon] input, [data-auto-clicker][data-cinnamon] textarea, [data-auto-clicker][data-cinnamon] select,
-    [data-auto-clicker][data-cinnamon] [style*="background:#2a2a30"] { background:var(--cin-input) !important; border-color:var(--cin-line) !important; }
-    [data-auto-clicker][data-cinnamon] input::placeholder, [data-auto-clicker][data-cinnamon] textarea::placeholder { color:var(--cin-placeholder); }
-    [data-auto-clicker][data-cinnamon] input[type="checkbox"], [data-auto-clicker][data-cinnamon] input[type="range"] { accent-color:#ff9cc7; background:transparent !important; }
-    [data-auto-clicker][data-cinnamon] button { background:var(--cin-button); border-color:var(--cin-line); }
-    [data-auto-clicker][data-cinnamon] button:hover { background:var(--cin-hover); }
-    [data-auto-clicker][data-cinnamon] .tab-groups { border-bottom-color:var(--cin-line); }
-    [data-auto-clicker][data-cinnamon] .tab-groups button { background:var(--cin-input); color:var(--cin-border); border-color:var(--cin-line); }
-    [data-auto-clicker][data-cinnamon] .tab-groups button[data-active] { background:#ff9cc7; color:#5a2140; border-color:#ffd1e6; }
-    [data-auto-clicker][data-cinnamon] .tabs button { background:var(--cin-input); border-color:var(--cin-line); }
-    [data-auto-clicker][data-cinnamon] .tabs button[data-active] { background:#fff; color:var(--cin-tab-text); border-color:#ffd1e6; }
-    [data-auto-clicker][data-cinnamon] fieldset.group { border-color:var(--cin-line-soft); background:rgba(255,255,255,.06); }
-    [data-auto-clicker][data-cinnamon] fieldset.group > legend::before { content:'☁ '; color:#fff; }
-    [data-auto-clicker][data-cinnamon] fieldset.group.folded > legend::before { content:'☁ '; color:var(--cin-line-soft); }
-    [data-auto-clicker][data-cinnamon] .hint, [data-auto-clicker][data-cinnamon] .global-row { color:var(--cin-text); }
-    [data-auto-clicker][data-cinnamon] .subhead, [data-auto-clicker][data-cinnamon] .divider, [data-auto-clicker][data-cinnamon] .tab-groups { border-color:var(--cin-line-soft); }
-    [data-auto-clicker][data-cinnamon] .monitor, [data-auto-clicker][data-cinnamon] pre[data-role="log"] { background:var(--cin-monitor); border:1px solid var(--cin-line); }
-    [data-auto-clicker][data-cinnamon] table.combat th, [data-auto-clicker][data-cinnamon] table.combat td { border-bottom-color:var(--cin-table-line); }
-    [data-auto-clicker][data-cinnamon] [style*="color:#a0a0aa"], [data-auto-clicker][data-cinnamon] [style*="color: #a0a0aa"] { color:var(--cin-text-dim) !important; }
-    [data-auto-clicker][data-cinnamon] [style*="background:#1c1c21"], [data-auto-clicker][data-cinnamon] [style*="background:#222228"],
-    [data-auto-clicker][data-cinnamon] [style*="background:#1f1f24"] { background:var(--cin-button) !important; }
-    [data-auto-clicker][data-cinnamon] [style*="border:1px solid #2e2e34"], [data-auto-clicker][data-cinnamon] [style*="border-bottom:1px solid #2e2e34"],
-    [data-auto-clicker][data-cinnamon] [style*="border:1px solid #34343c"] { border-color:var(--cin-line) !important; }
-    [data-auto-clicker][data-cinnamon] { text-shadow:0 1px 2px rgba(0,0,0,.28); }
-    [data-auto-clicker][data-cinnamon][data-cin-image] { background-image:var(--cin-image) !important; background-size:cover !important; background-position:center !important; background-attachment:scroll !important; }
-    [data-auto-clicker] input.theme-slider.theme-slider[type="range"] { -webkit-appearance:none; appearance:none; height:10px; border-radius:5px; border:1px solid rgba(255,255,255,.5); background:var(--slider-bg) !important; padding:0; }
-    [data-auto-clicker] input.theme-slider::-webkit-slider-thumb { -webkit-appearance:none; width:14px; height:14px; border-radius:50%; background:#fff; border:2px solid #333; cursor:pointer; }
-    [data-auto-clicker] input.theme-slider::-moz-range-thumb { width:12px; height:12px; border-radius:50%; background:#fff; border:2px solid #333; cursor:pointer; }
-    [data-auto-clicker] [data-theme-preset] { width:auto; padding:2px 8px; font-size:12px; color:#fff; border:1px solid rgba(255,255,255,.6) !important; text-shadow:0 1px 2px rgba(0,0,0,.6); }
-    [data-auto-clicker][data-alerting] { background:#c62828 !important; border:3px solid #ffe066 !important; }
-    .auto-clicker-hover { outline: 3px solid #e33 !important; }
+    [data-aijiji][data-cinnamon] input, [data-aijiji][data-cinnamon] textarea, [data-aijiji][data-cinnamon] select,
+    [data-aijiji][data-cinnamon] [style*="background:#2a2a30"] { background:var(--cin-input) !important; border-color:var(--cin-line) !important; }
+    [data-aijiji][data-cinnamon] input::placeholder, [data-aijiji][data-cinnamon] textarea::placeholder { color:var(--cin-placeholder); }
+    [data-aijiji][data-cinnamon] input[type="checkbox"], [data-aijiji][data-cinnamon] input[type="range"] { accent-color:#ff9cc7; background:transparent !important; }
+    [data-aijiji][data-cinnamon] button { background:var(--cin-button); border-color:var(--cin-line); }
+    [data-aijiji][data-cinnamon] button:hover { background:var(--cin-hover); }
+    [data-aijiji][data-cinnamon] .tab-groups { border-bottom-color:var(--cin-line); }
+    [data-aijiji][data-cinnamon] .tab-groups button { background:var(--cin-input); color:var(--cin-border); border-color:var(--cin-line); }
+    [data-aijiji][data-cinnamon] .tab-groups button[data-active] { background:#ff9cc7; color:#5a2140; border-color:#ffd1e6; }
+    [data-aijiji][data-cinnamon] .tabs button { background:var(--cin-input); border-color:var(--cin-line); }
+    [data-aijiji][data-cinnamon] .tabs button[data-active] { background:#fff; color:var(--cin-tab-text); border-color:#ffd1e6; }
+    [data-aijiji][data-cinnamon] fieldset.group { border-color:var(--cin-line-soft); background:rgba(255,255,255,.06); }
+    [data-aijiji][data-cinnamon] fieldset.group > legend::before { content:'☁ '; color:#fff; }
+    [data-aijiji][data-cinnamon] fieldset.group.folded > legend::before { content:'☁ '; color:var(--cin-line-soft); }
+    [data-aijiji][data-cinnamon] .hint, [data-aijiji][data-cinnamon] .global-row { color:var(--cin-text); }
+    [data-aijiji][data-cinnamon] .subhead, [data-aijiji][data-cinnamon] .divider, [data-aijiji][data-cinnamon] .tab-groups { border-color:var(--cin-line-soft); }
+    [data-aijiji][data-cinnamon] .monitor, [data-aijiji][data-cinnamon] pre[data-role="log"] { background:var(--cin-monitor); border:1px solid var(--cin-line); }
+    [data-aijiji][data-cinnamon] table.combat th, [data-aijiji][data-cinnamon] table.combat td { border-bottom-color:var(--cin-table-line); }
+    [data-aijiji][data-cinnamon] [style*="color:#a0a0aa"], [data-aijiji][data-cinnamon] [style*="color: #a0a0aa"] { color:var(--cin-text-dim) !important; }
+    [data-aijiji][data-cinnamon] [style*="background:#1c1c21"], [data-aijiji][data-cinnamon] [style*="background:#222228"],
+    [data-aijiji][data-cinnamon] [style*="background:#1f1f24"] { background:var(--cin-button) !important; }
+    [data-aijiji][data-cinnamon] [style*="border:1px solid #2e2e34"], [data-aijiji][data-cinnamon] [style*="border-bottom:1px solid #2e2e34"],
+    [data-aijiji][data-cinnamon] [style*="border:1px solid #34343c"] { border-color:var(--cin-line) !important; }
+    [data-aijiji][data-cinnamon] { text-shadow:0 1px 2px rgba(0,0,0,.28); }
+    [data-aijiji][data-cinnamon][data-cin-image] { background-image:var(--cin-image) !important; background-size:cover !important; background-position:center !important; background-attachment:scroll !important; }
+    [data-aijiji] input.theme-slider.theme-slider[type="range"] { -webkit-appearance:none; appearance:none; height:10px; border-radius:5px; border:1px solid rgba(255,255,255,.5); background:var(--slider-bg) !important; padding:0; }
+    [data-aijiji] input.theme-slider::-webkit-slider-thumb { -webkit-appearance:none; width:14px; height:14px; border-radius:50%; background:#fff; border:2px solid #333; cursor:pointer; }
+    [data-aijiji] input.theme-slider::-moz-range-thumb { width:12px; height:12px; border-radius:50%; background:#fff; border:2px solid #333; cursor:pointer; }
+    [data-aijiji] [data-theme-preset] { width:auto; padding:2px 8px; font-size:12px; color:#fff; border:1px solid rgba(255,255,255,.6) !important; text-shadow:0 1px 2px rgba(0,0,0,.6); }
+    [data-aijiji][data-alerting] { background:#c62828 !important; border:3px solid #ffe066 !important; }
+    .aijiji-hover { outline: 3px solid #e33 !important; }
   `;
-  panel.setAttribute('data-auto-clicker', '');
+  panel.setAttribute('data-aijiji', '');
   document.head.appendChild(style);
   document.body.appendChild(panel);
 
@@ -2157,7 +2166,7 @@
     hint.title = '點一下展開／收起';
   });
   // 區塊點標題收起／展開；每個區塊的開關記在這台瀏覽器，重整後照舊
-  const FOLDED_GROUPS_KEY = 'autoClickerV2FoldedGroups';
+  const FOLDED_GROUPS_KEY = 'aijijiFoldedGroups';
   const foldedGroups = readJsonStorage(FOLDED_GROUPS_KEY, {});
   panel.querySelectorAll('fieldset.group').forEach((group) => {
     const legend = group.querySelector(':scope > legend');
@@ -2182,7 +2191,7 @@
   });
 
   const alertDialog = document.createElement('div');
-  alertDialog.setAttribute('data-auto-clicker', '');
+  alertDialog.setAttribute('data-aijiji', '');
   alertDialog.innerHTML = `
     <div data-role="alert-title" style="font-weight:bold;font-size:18px;color:#c00">⚠ 愛吉吉已暫停</div>
     <div data-role="alert-message" style="margin:12px 0;font-size:14px"></div>
@@ -2201,7 +2210,7 @@
 
   // 不打斷人的提醒：右下角疊幾個小框，過一陣子自己消失
   const toastBox = document.createElement('div');
-  toastBox.setAttribute('data-auto-clicker', '');
+  toastBox.setAttribute('data-aijiji', '');
   Object.assign(toastBox.style, {
     position: 'fixed', right: '16px', bottom: '16px', zIndex: 2147483647, display: 'flex',
     flexDirection: 'column', gap: '6px', maxWidth: '340px', font: '13px sans-serif',
@@ -2210,7 +2219,7 @@
 
   // 瀏覽器內建的 confirm 開著時整個分頁的程式都會停住（掛機、鍛造跟著卡），執行中要問的事改用這個
   const confirmDialog = document.createElement('div');
-  confirmDialog.setAttribute('data-auto-clicker', '');
+  confirmDialog.setAttribute('data-aijiji', '');
   confirmDialog.innerHTML = `
     <div data-role="confirm-message" style="white-space:pre-line;margin:0 0 14px;font-size:14px;text-align:left"></div>
     <button data-confirm="yes" style="font-weight:bold;margin-right:8px">確定</button><button data-confirm="no">取消</button>
@@ -2247,8 +2256,8 @@
     });
   }
 
-  const MINIMIZED_STORAGE_KEY = 'autoClickerV2Minimized';
-  const ENLARGED_STORAGE_KEY = 'autoClickerV2Enlarged';
+  const MINIMIZED_STORAGE_KEY = 'aijijiMinimized';
+  const ENLARGED_STORAGE_KEY = 'aijijiEnlarged';
   const panelBody = panel.querySelector('[data-role="body"]');
   const miniStatusElement = panel.querySelector('[data-role="mini-status"]');
 
@@ -3041,7 +3050,7 @@
   const ZONE_USERS_PATTERN = /\/api\/zoneUsers(?:[?#]|$)/;
   // 只有查資料那支；/api/users/{id}/attack 這類不算
   const USER_DETAIL_PATTERN = /\/api\/users\/(\d+)(?:[?#]|$)/;
-  const PLAYER_WATCH_KEY = 'autoClickerV2PlayerWatch';
+  const PLAYER_WATCH_KEY = 'aijijiPlayerWatch';
   const PLAYER_SEEN_LIMIT = 100;
   const PLAYER_LOOKUP_LIMIT = 30;
   // 遊戲玩家資料頁的統計欄位，照遊戲的順序
@@ -3215,9 +3224,9 @@
   const DASHBOARD_PROFILE_FRESH_MILLISECONDS = 60000;
   // 同一個帳號常開兩個分頁（一個鍛造、一個推圖），只用帳號 id 回報會互相蓋掉、指令也會被另一頁拿走。
   // 每個分頁另外取一個代號放 sessionStorage：重新整理還是同一個，換分頁就不同
-  const TAB_KEY_STORAGE_KEY = 'autoClickerV2TabKey';
+  const TAB_KEY_STORAGE_KEY = 'aijijiTabKey';
   // 這個分頁上次按的是掛機還是鍛造，停著的時候總覽頁也認得出是哪個分頁
-  const TAB_ROLE_STORAGE_KEY = 'autoClickerV2TabRole';
+  const TAB_ROLE_STORAGE_KEY = 'aijijiTabRole';
   const tabKey = (() => {
     try {
       const saved = sessionStorage.getItem(TAB_KEY_STORAGE_KEY);
@@ -3282,9 +3291,9 @@
     'intervalMaxSeconds',
   ];
   // 重新整理後要自動開始的模式；只放這個分頁的 sessionStorage，關掉分頁就沒了
-  const RESUME_AFTER_RELOAD_KEY = 'autoClickerV2ResumeAfterReload';
+  const RESUME_AFTER_RELOAD_KEY = 'aijijiResumeAfterReload';
   // 遊戲沒有錯誤邊界：畫面渲染出一次錯，整個 #root 就被清空變黑屏，只能重新整理
-  const CRASH_LOG_KEY = 'autoClickerV2CrashLog';
+  const CRASH_LOG_KEY = 'aijijiCrashLog';
   const CRASH_LOG_LIMIT = 10;
   const CRASH_BLANK_MILLISECONDS = 8000;
   // 剛重新整理又黑掉就不再自動重新整理，免得一直重整
@@ -3307,7 +3316,7 @@
   const GITHUB_UPDATE_CHECK_MILLISECONDS = 10 * 60000;
 
   // 為了哪一版重新整理過；重新整理後還是舊版，代表這個分頁的主程式不是從載入器來的，重新整理也沒用
-  const UPDATE_TRIED_KEY = 'autoClickerV2UpdateTried';
+  const UPDATE_TRIED_KEY = 'aijijiUpdateTried';
 
   async function fetchVersionText(url) {
     const response = await window.fetch(url, { cache: 'no-store' });
@@ -4024,7 +4033,7 @@
     return message;
   }
 
-  const TRANSFER_TARGETS_KEY = 'autoClickerV2TransferTargets';
+  const TRANSFER_TARGETS_KEY = 'aijijiTransferTargets';
 
   function selectedTransferTarget() {
     const typedId = Number(panel.querySelector('[data-role="transfer-target-id"]').value) || 0;
@@ -4057,17 +4066,17 @@
   const TRANSFER_CLOUD_ANSWER_POLL_MILLISECONDS = 5000;
   const TRANSFER_REQUEST_EVENTS = ['request', 'heroRequest'];
   // 同一個帳號開好幾個分頁時，處理過的要求記在共用的地方，不會重複掛單
-  const TRANSFER_HANDLED_KEY = 'autoClickerV2TransferHandled';
+  const TRANSFER_HANDLED_KEY = 'aijijiTransferHandled';
 
   // 查拍賣的英雄：花的錢和張數存起來，自動更新重新整理後才不會從 0 算、超過預算
-  const CARD_BUY_STATE_KEY = 'autoClickerV2CardBuy';
+  const CARD_BUY_STATE_KEY = 'aijijiCardBuy';
   // 提醒過的掛單記起來，同一張卡不會每一輪都叫
-  const CARD_NOTIFIED_KEY = 'autoClickerV2CardNotified';
+  const CARD_NOTIFIED_KEY = 'aijijiCardNotified';
   const CARD_NOTIFIED_LIMIT = 300;
   // 同一個帳號（同一個瀏覽器）開好幾個分頁時，誰最近查過誰負責，免得兩邊各買一張
-  const CARD_BUY_LOCK_KEY = 'autoClickerV2CardBuyLock';
+  const CARD_BUY_LOCK_KEY = 'aijijiCardBuyLock';
   // 提醒另外留一份清單，不會被之後的「查過了」「沒有符合」蓋掉
-  const CARD_ALERT_HISTORY_KEY = 'autoClickerV2CardAlertHistory';
+  const CARD_ALERT_HISTORY_KEY = 'aijijiCardAlertHistory';
   const CARD_ALERT_HISTORY_LIMIT = 50;
   const CARD_BUY_MIN_SECONDS = 10;
   const POTENTIAL_ORDER = ['F', 'E', 'D', 'C', 'B', 'A', 'S'];
@@ -4077,7 +4086,7 @@
   const cardBuy = { checkedAt: 0, busy: false, burstLeft: 5 };
 
   // 找卡清單：一列一張卡，欄位改了就轉回原本的規則文字（cardBuyRules）存，舊設定照樣能用
-  const CARD_TYPES_KEY = 'autoClickerV2CardTypes';
+  const CARD_TYPES_KEY = 'aijijiCardTypes';
   const CARD_TYPES_LIMIT = 300;
   const CARD_RULE_SELECT_STYLE = 'flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px';
 
@@ -4095,7 +4104,7 @@
       .map((grade) => `<option value="${grade}" ${grade === (rule.minPotential || '') ? 'selected' : ''}>${grade || '不限'}</option>`)
       .join('');
     return `<div class="card-rule" style="border:1px solid #3a3a40;border-radius:6px;padding:4px 6px;margin:4px 0">
-      <div class="row"><input data-card-rule="type" list="autoClickerCardTypes" value="${escapeHtml(rule.type || '')}" placeholder="卡片名稱（例如房東阿姨）" style="flex:1;min-width:0">
+      <div class="row"><input data-card-rule="type" list="aijiji-card-types" value="${escapeHtml(rule.type || '')}" placeholder="卡片名稱（例如房東阿姨）" style="flex:1;min-width:0">
         <button data-action="card-rule-remove" title="刪掉這張">✕</button></div>
       <div class="row">價格 ≤ ${number('maxPrice', rule.maxPrice, '90px')}　潛能 ≥ <select data-card-rule="minPotential" style="${CARD_RULE_SELECT_STYLE}">${potentials}</select></div>
       <div class="row">等級 ${number('minLevel', rule.minLevel, '50px')} ～ ${number('maxLevel', rule.maxLevel === Infinity ? '' : rule.maxLevel, '50px')}
@@ -4107,7 +4116,7 @@
     const rules = parseCardBuyRules(panel.querySelector('[data-field="cardBuyRules"]').value);
     panel.querySelector('[data-role="card-rules"]').innerHTML = rules.map((rule) => cardRuleRowHtml(rule)).join('');
     const types = [...new Set([...readJsonStorage(CARD_TYPES_KEY, []), ...readJsonStorage(DRAW_LOG_KEY, []).map((draw) => draw.type)])].filter(Boolean);
-    panel.querySelector('#autoClickerCardTypes').innerHTML = types.map((type) => `<option value="${escapeHtml(type)}"></option>`).join('');
+    panel.querySelector('#aijiji-card-types').innerHTML = types.map((type) => `<option value="${escapeHtml(type)}"></option>`).join('');
   }
 
   function cardRuleText(rule) {
@@ -4296,7 +4305,7 @@
   const CARD_BREAK_MIN_MILLISECONDS = 5 * 60000;
   const CARD_BREAK_MAX_MILLISECONDS = 20 * 60000;
   // 切到主動查的時間：開太久會忘記關，到時間自動切回被動
-  const CARD_ACTIVE_SINCE_KEY = 'autoClickerV2CardActiveSince';
+  const CARD_ACTIVE_SINCE_KEY = 'aijijiCardActiveSince';
   const MARKET_HEROES_PATTERN = /\/api\/trades\?type=heroes(?![^#]*own=true)/;
   const MARKET_GOODS_PATTERN = /\/api\/trades\?type=(items|mines)(?![^#]*own=true)/;
   const RELEASED_MARKET_PATTERN = /\/api\/releasedHeroMarket(?:[?#]|$)/;
@@ -5166,7 +5175,7 @@
     'huntReactMinSeconds',
     'huntReactMaxSeconds',
   ];
-  const SHARED_SETTINGS_AT_KEY = 'autoClickerV2SharedSettingsAt';
+  const SHARED_SETTINGS_AT_KEY = 'aijijiSharedSettingsAt';
   const SHARED_SETTINGS_POLL_MILLISECONDS = 10000;
   const sharedSettings = { at: Number(readJsonStorage(SHARED_SETTINGS_AT_KEY, 0)) || 0, checkedAt: 0, text: '' };
 
@@ -5982,7 +5991,7 @@
           return `<span style="white-space:nowrap">${label} ${box('min', limit.min)}～${box('max', limit.max)}</span>`;
         }).join(' ')}<span class="hint" style="margin:0">空白＝不限</span></div>
         <div style="margin-left:18px"><label style="display:block">${checkbox(`needEnchant:${part.id}`, partPlan.needEnchant)} 換上的一定要有附魔</label>
-          <input type="text" ${input(`enchants:${part.id}`)} value="${escapeHtml(partPlan.enchants || '')}" list="autoClickerEnchantNames" placeholder="指定附魔（任一個就行），例如 物理減傷、火焰傷害≥20；留空＝任何附魔" style="width:100%;box-sizing:border-box"></div>
+          <input type="text" ${input(`enchants:${part.id}`)} value="${escapeHtml(partPlan.enchants || '')}" list="aijiji-enchant-names" placeholder="指定附魔（任一個就行），例如 物理減傷、火焰傷害≥20；留空＝任何附魔" style="width:100%;box-sizing:border-box"></div>
       </div>`;
     }).join('');
     return `<details data-equip-plan-box="${id}" ${equipPlanView.open.has(id) ? 'open' : ''} style="margin:0 0 6px 20px">
@@ -6114,7 +6123,7 @@
     }
     const settings = readSettingsFromPanel();
     const names = [...new Set(state.equipments.flatMap((equipment) => Object.keys(equipment.enchantments || {})))].sort((first, second) => first.localeCompare(second, 'zh-Hant'));
-    panel.querySelector('#autoClickerEnchantNames').innerHTML = names.map((name) => `<option value="${escapeHtml(name)}">`).join('');
+    panel.querySelector('#aijiji-enchant-names').innerHTML = names.map((name) => `<option value="${escapeHtml(name)}">`).join('');
     showEquipRulePart(equipRuleView.part, settings);
     const partName = EQUIP_PARTS.find((part) => part.id === equipRuleView.part).name;
     const chosen = new Set(parseEnchantRules(settings[equipRuleKey(equipRuleView.part, 'Enchants')]).map((rule) => rule.name));
@@ -6263,7 +6272,7 @@
   }
 
   // 吃藥明細另外記一份，不會被一般紀錄洗掉；存進 localStorage，重新整理後還查得到
-  const ITEM_LOG_STORAGE_KEY = 'autoClickerV2ItemLog';
+  const ITEM_LOG_STORAGE_KEY = 'aijijiItemLog';
   const ITEM_LOG_LIMIT = 300;
   let itemLogLines = [];
   try {
@@ -6402,7 +6411,7 @@
   const manualSupply = { busy: false, equipping: false };
   // 換裝脫下了還沒穿回去的部位：equipmentId → { heroId, type, name, expected（脫之前同類型穿幾件）}。
   // 存起來：脫下到穿上中間重新整理（含自動更新）的話，重開後才知道要先穿回去再打
-  const EMPTIED_SLOTS_KEY = 'autoClickerV2EmptiedSlots';
+  const EMPTIED_SLOTS_KEY = 'aijijiEmptiedSlots';
   const emptiedEquipSlots = new Map((() => {
     try {
       return JSON.parse(localStorage.getItem(EMPTIED_SLOTS_KEY)) || [];
@@ -6722,7 +6731,7 @@
 
   // 遊戲只在「狩獵」頁開著時才連組隊推播；切到別頁就收不到隊友打完的通知，遊戲也不會重讀血量，
   // 這時自己每 30～60 秒讀一次。同帳號多個分頁共用「最近一次讀到的時間」，免得兩個分頁一起吃藥
-  const PARTY_HUNT_INFO_SEEN_KEY = 'autoClickerV2PartyHuntInfoAt';
+  const PARTY_HUNT_INFO_SEEN_KEY = 'aijijiPartyHuntInfoAt';
   // teammate：有沒有設隊友（undefined＝還不知道）；name：隊友暱稱
   const partyPoll = { teammate: undefined, name: '', inFlight: false, gap: 0 };
 
@@ -7552,7 +7561,7 @@
   }
 
   // 躲危險玩家前的掛機關卡和最後一次看到危險玩家的時間；存起來，重新整理後也走得回去
-  const PLAYER_RETURN_KEY = 'autoClickerV2PlayerReturn';
+  const PLAYER_RETURN_KEY = 'aijijiPlayerReturn';
 
   function notePlayerDanger(settings) {
     const saved = readJsonStorage(PLAYER_RETURN_KEY, null);
@@ -7593,7 +7602,7 @@
   }
 
   // 連續很多場沒出稀有道具：去別的關卡刷一段時間再回來。場數、原本的關卡、什麼時候到的都存起來，重新整理後接得上
-  const RARE_DETOUR_KEY = 'autoClickerV2RareDetour';
+  const RARE_DETOUR_KEY = 'aijijiRareDetour';
 
   function readRareDetour() {
     return readJsonStorage(RARE_DETOUR_KEY, null) || { count: 0 };
@@ -7890,7 +7899,7 @@
   // 所以驗證框消失的分頁要通知其他分頁，收到的分頁當作驗證已完成
   const tabChannel = (() => {
     try {
-      return new BroadcastChannel('autoClickerV2');
+      return new BroadcastChannel('aijijiTabs');
     } catch {
       return null;
     }
@@ -7941,9 +7950,9 @@
   const PARTY_ACCEPT_EVENT = 'partyAccepted';
   const PARTY_DECLINE_EVENT = 'partyDeclined';
   const PARTY_INVITE_EXPIRE_MILLISECONDS = 15 * 60000;
-  const PARTY_INVITE_HANDLED_KEY = 'autoClickerV2PartyInviteHandled';
+  const PARTY_INVITE_HANDLED_KEY = 'aijijiPartyInviteHandled';
   // 同帳號開好幾個分頁時共用「上次看雲端的時間」，只有一個分頁在看
-  const PARTY_INVITE_CHECKED_KEY = 'autoClickerV2PartyInviteCheckedAt';
+  const PARTY_INVITE_CHECKED_KEY = 'aijijiPartyInviteCheckedAt';
   const partyInvite = { row: -100, busy: false, gap: 0, waitingFor: '' };
 
   function setPartyInviteStatus(message) {
@@ -8776,7 +8785,7 @@
   }
 
   // 戰鬥統計：解析畫面上的戰鬥紀錄文字，累計結果另外存起來，重新整理也不會歸零
-  const COMBAT_STORAGE_KEY = 'autoClickerV2CombatStats';
+  const COMBAT_STORAGE_KEY = 'aijijiCombatStats';
   // 統計格式或判斷方式改過就換版本，舊資料對不上（例如治療沒分生命、體力），直接重新統計
   const COMBAT_STATS_VERSION = 4;
   const MEMBER_FIELDS = ['damage', 'hits', 'crits', 'healthHealing', 'staminaHealing', 'controls', 'kills', 'damageTaken', 'buffs', 'cleanses'];
@@ -9567,7 +9576,7 @@
   // 技能圖鑑：從戰報看每個角色出過哪些招、每招做了什麼（傷害、回復、加增益、讓敵人陷入什麼狀態、解除異常）。
   // 一次出手＝我方角色開頭、沒縮排的那行，加上底下縮排的子行（群體技能每一擊、附帶效果）和緊接著的目標狀態描述。
   // 效果文字把人名換成◯、數字換成 N，同一種效果才合得起來
-  const SKILL_DEX_KEY = 'autoClickerV2SkillDex';
+  const SKILL_DEX_KEY = 'aijijiSkillDex';
   const SKILL_DEX_SEEN_LIMIT = 200;
   const SKILL_DEX_EFFECT_LIMIT = 30;
   // 角色名字後面接這些是「被怎樣」：中了持續傷害（因疫病受到了 8 點傷害）、被敵人弄的狀態（被叮的地方很癢），不是自己出招
@@ -9905,7 +9914,7 @@
   // 全隊都在休息時（腳本或手動按全隊休息）沿用上次記下的，腳本的全隊休息結束後再讓它們休息回去
   // 不出戰名單要存起來：只記在記憶體的話，全隊休息或移動途中重新整理（含自動更新），
   // 重開後全隊都在休息、看不出誰是手動休息的，完成休息就把它一起叫醒上場
-  const BENCHED_HEROES_KEY = 'autoClickerV2BenchedHeroes';
+  const BENCHED_HEROES_KEY = 'aijijiBenchedHeroes';
 
   function loadBenchState() {
     if (state.benchLoaded) return;
@@ -10105,7 +10114,7 @@
   // 地圖知識：API 回應的 huntZone 是地圖編號（城鎮 0、大草原 1；分支是另一個編號，像草原秘徑 10002、老鼠洞 20002），
   // 分支入口那一層的 huntInfo 會帶 paths（這層可以進的分支）。記下編號對應的名稱、哪個分支從哪張地圖第幾層進，
   // 區域表沒有的分支自動補上；也同步到雲端，一台電腦走過，別台不用再走
-  const PLACES_KEY = 'autoClickerV2Places';
+  const PLACES_KEY = 'aijijiPlaces';
   const KNOWN_ZONES = { 0: '初始之鎮', 1: '大草原', 10002: '草原秘徑', 20002: '老鼠洞' };
   const PLACE_API_PATTERN = /\/api\//;
   const HUNT_INFO_PATTERN = /\/api\/huntInfo(?:\?|$)/;
@@ -11651,7 +11660,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   // 練等：換上要練的英雄、到練等關卡練到指定等級，再換回原本的隊伍和關卡。
   // 進度存起來（重新整理、暫停後按開始都接得下去）：phase 'toTown' 回城換人 → 'training' 練等 → 'back' 回城換回
-  const TRAIN_STATE_KEY = 'autoClickerV2Train';
+  const TRAIN_STATE_KEY = 'aijijiTrain';
   // 遊戲規定：隊伍最多 4 人、不能有兩隻同種類，而且只能在城鎮裡換人
   const TEAM_LIMIT = 4;
   const train = { heroes: null, equipments: [], busy: false };
@@ -11999,7 +12008,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   // 同一個瀏覽器（同一個帳號）的分頁共用 localStorage，拿來當鎖：執行中的分頁每次巡視都更新時間，
   // 打怪、鍛造各一把鎖，所以一個打怪分頁＋一個鍛造分頁可以同時跑，兩個分頁做同一件事就不行
-  const RUN_LOCK_PREFIX = 'autoClickerV2RunLock:';
+  const RUN_LOCK_PREFIX = 'aijijiRunLock:';
   const RUN_LOCK_STALE_MILLISECONDS = 20000;
 
   function runLockKey(forgeMode) {
@@ -12120,9 +12129,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   function onPickHover(event) {
     if (panel.contains(event.target)) return;
-    if (hoveredElement) hoveredElement.classList.remove('auto-clicker-hover');
+    if (hoveredElement) hoveredElement.classList.remove('aijiji-hover');
     hoveredElement = event.target;
-    hoveredElement.classList.add('auto-clicker-hover');
+    hoveredElement.classList.add('aijiji-hover');
   }
 
   function onPickClick(event) {
@@ -12191,7 +12200,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const areas = configuredAreas(settings);
     const names = areas.map((area) => area.name);
     if (settings.townName) names.unshift(settings.townName);
-    panel.querySelector('#auto-clicker-areas').innerHTML = names
+    panel.querySelector('#aijiji-areas').innerHTML = names
       .map((name) => `<option value="${name.replace(/"/g, '&quot;')}"></option>`)
       .join('');
     const options = [
@@ -12220,7 +12229,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   }
 
   function endPicking() {
-    if (hoveredElement) hoveredElement.classList.remove('auto-clicker-hover');
+    if (hoveredElement) hoveredElement.classList.remove('aijiji-hover');
     hoveredElement = null;
     state.pickingTarget = null;
     state.pickingMode = null;
@@ -13012,7 +13021,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const originalOpen = XMLHttpRequest.prototype.open;
     const originalSend = XMLHttpRequest.prototype.send;
     XMLHttpRequest.prototype.open = function (method, url, ...rest) {
-      this.autoClickerRequest = { method: String(method).toUpperCase(), url: String(url) };
+      this.aijijiRequest = { method: String(method).toUpperCase(), url: String(url) };
       return originalOpen.call(this, method, url, ...rest);
     };
     const originalSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
@@ -13021,7 +13030,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       return originalSetRequestHeader.call(this, name, value);
     };
     XMLHttpRequest.prototype.send = function (body) {
-      const request = this.autoClickerRequest;
+      const request = this.aijijiRequest;
       if (apiRecorder.recording && request && !STATIC_ASSET_PATTERN.test(request.url)) {
         const requestBody = bodyToText(body);
         this.addEventListener('loadend', () => {
@@ -14010,7 +14019,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 匯出時包一層版本資訊，之後格式改了也認得出是哪一版的設定
   function exportText() {
     return JSON.stringify(
-      { app: 'auto-clicker-v2', exportedAt: new Date().toISOString(), settings: readSettingsFromPanel() },
+      { app: 'aijiji', exportedAt: new Date().toISOString(), settings: readSettingsFromPanel() },
       null,
       2
     );
@@ -14807,7 +14816,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   // 自己賣掉的裝備、道具、礦石寶石：遊戲沒有成交紀錄，只能比對自己的掛單——
   // 上次還在、這次不見、又不是自己下架的就是賣掉了；數量變少是賣掉一部分
-  const MARKET_SALES_KEY = 'autoClickerV2MarketSales';
+  const MARKET_SALES_KEY = 'aijijiMarketSales';
   const SALE_KINDS = { equipments: '裝備', mines: '礦石、寶石', items: '道具' };
   const OWN_TRADES_PATTERN = /\/api\/trades\?type=(equipments|items|mines)[^#]*own=true/;
   const TRADE_CANCEL_PATTERN = /\/api\/trades\/(\d+)\/cancel/;
@@ -15542,24 +15551,40 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           return;
         }
         const store = transaction.objectStore('kv');
+        const useStored = (key, stored) => {
+          // 開好之前這個分頁剛寫的最新，其次是資料庫裡的，最後才是舊版 localStorage
+          if (!bigStorage.values.has(key)) {
+            const value = typeof stored === 'string' ? stored : localStorage.getItem(key);
+            if (value !== null) bigStorage.values.set(key, value);
+          } else if (KEEP_STORED_BIG_STORAGE_KEYS.has(key) && typeof stored === 'string') {
+            bigStorage.values.set(key, stored);
+          } else if (MERGED_BIG_STORAGE_KEYS.has(key) && typeof stored === 'string') {
+            try {
+              bigStorage.values.set(key, JSON.stringify({ ...JSON.parse(stored), ...JSON.parse(bigStorage.values.get(key)) }));
+            } catch {
+              // 資料庫裡的壞了就用這個分頁的
+            }
+          }
+          const value = bigStorage.values.get(key);
+          if (value !== undefined && value !== stored) store.put(value, key);
+        };
         BIG_STORAGE_KEYS.forEach((key) => {
           const get = store.get(key);
           get.onsuccess = () => {
-            // 開好之前這個分頁剛寫的最新，其次是資料庫裡的，最後才是舊版 localStorage
-            if (!bigStorage.values.has(key)) {
-              const value = typeof get.result === 'string' ? get.result : localStorage.getItem(key);
-              if (value !== null) bigStorage.values.set(key, value);
-            } else if (KEEP_STORED_BIG_STORAGE_KEYS.has(key) && typeof get.result === 'string') {
-              bigStorage.values.set(key, get.result);
-            } else if (MERGED_BIG_STORAGE_KEYS.has(key) && typeof get.result === 'string') {
-              try {
-                bigStorage.values.set(key, JSON.stringify({ ...JSON.parse(get.result), ...JSON.parse(bigStorage.values.get(key)) }));
-              } catch {
-                // 資料庫裡的壞了就用這個分頁的
-              }
+            // 6.02 改名前存的是 autoClickerV2 開頭（收入、樓層、耐久、挖礦、售出）：新名稱沒有就搬過來，有就把舊的刪掉
+            const oldKey = OLD_KEY_PREFIX + key.slice('aijiji'.length);
+            if (typeof get.result === 'string') {
+              useStored(key, get.result);
+              store.delete(oldKey);
+              return;
             }
-            const value = bigStorage.values.get(key);
-            if (value !== undefined && value !== get.result) store.put(value, key);
+            const old = store.get(oldKey);
+            old.onsuccess = () => {
+              useStored(key, old.result);
+              if (typeof old.result !== 'string') return;
+              store.put(bigStorage.values.get(key) ?? old.result, key);
+              store.delete(oldKey);
+            };
           };
         });
         loadGrowthStorage(store);
@@ -17062,7 +17087,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // ---------- 自測名稱 ----------
   // 測名表沒有今天的名稱（或機制改了不準）時自己測：同一個角色、同一種裝備、同一個配方，輪流用候選名稱開爐，
   // 做好的數值換成普通品質後，跟這個角色用這個配方做過最好的比（重量越輕越好），就是自己的「基準比」
-  const NAME_TEST_KEY = 'autoClickerV2NameTest';
+  const NAME_TEST_KEY = 'aijijiNameTest';
   const NAME_TEST_RETRY_LIMIT = 3;
   const nameTestRunner = { running: false, runId: 0, timerId: null, failures: 0, status: '' };
 
@@ -18265,9 +18290,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 上傳只送自己的、還沒送過的；下載照列號接著抓，只抓新的；重複的由試算表那端擋
   const CLOUD_SYNC_MILLISECONDS = 10 * 60000;
   // 大家共用的試算表；面板填了別的網址就改用那個
-  // 推到 GitHub 公開版時這行會清空，網址改由私下傳給朋友的載入器提供（window.__autoClickerCloudUrl）
+  // 推到 GitHub 公開版時這行會清空，網址改由私下傳給朋友的載入器提供（window.__aijijiCloudUrl；舊載入器是 __autoClickerCloudUrl）
   const BUILT_IN_CLOUD_URL = '';
-  const DEFAULT_CLOUD_URL = BUILT_IN_CLOUD_URL || window.__autoClickerCloudUrl || '';
+  const DEFAULT_CLOUD_URL = BUILT_IN_CLOUD_URL || window.__aijijiCloudUrl || window.__autoClickerCloudUrl || '';
   const CLOUD_STATE_KEY = 'aijijiCloud';
   const CLOUD_BATCH_ROWS = 1000;
   // 要跟 cloud-sheet.gs 的 PAGE_ROWS 一樣
@@ -18475,9 +18500,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         }
       }
       // 以前的成長紀錄沒記上傳者，從頭重抓一次補上（同一次升級不會重算）
-      if (!readJsonStorage('autoClickerV2GrowthContributor', false)) {
+      if (!readJsonStorage('aijijiGrowthContributor', false)) {
         saved.growthRow = 0;
-        writeJsonStorage('autoClickerV2GrowthContributor', true);
+        writeJsonStorage('aijijiGrowthContributor', true);
       }
       let downloaded = 0;
       for (;;) {
@@ -19011,7 +19036,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 遊戲的裝備詳細資料加上鍛造材料、鍛造時間、鍛造師當時數值與換成「普通」品質的基本值。
   // 詳細資料畫面沒有裝備 id，用「品質的名稱」標題加上攻擊、防禦數字對回最近讀到的裝備清單
   const latestEquipments = new Map();
-  const FORGE_DETAIL_MARK = 'data-auto-clicker-forge-info';
+  const FORGE_DETAIL_MARK = 'data-aijiji-forge-info';
 
   function rememberLatestEquipments(...args) {
     return perfTimed('rememberLatestEquipments', () => rememberLatestEquipmentsUntimed(...args));
@@ -19121,7 +19146,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   }
 
   // 裝備鎖定：在遊戲的裝備詳細資料按 🔒。鎖住的裝備不能販賣、不能鍊金（遊戲送出前就攔下來），勾選頁也不會勾到
-  const LOCKED_EQUIPMENT_KEY = 'autoClickerV2LockedEquipments';
+  const LOCKED_EQUIPMENT_KEY = 'aijijiLockedEquipments';
 
   function lockedEquipmentIds() {
     return new Set(readJsonStorage(LOCKED_EQUIPMENT_KEY, []).map(Number));
@@ -19136,7 +19161,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   }
 
   // 另一種鎖：留著自己手動穿的（或留給別的角色），自動換裝不會把它換上去；跟 🔒 分開，各鎖各的
-  const NO_AUTO_EQUIP_KEY = 'autoClickerV2NoAutoEquip';
+  const NO_AUTO_EQUIP_KEY = 'aijijiNoAutoEquip';
 
   function avoidedEnchantNames(settings) {
     return String(settings.equipApiAvoidEnchants || '')
@@ -19339,11 +19364,11 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   // 只看遊戲畫面的變動；自己加的那塊改內容不要再觸發一次
   // 耐久預測：打怪回應的 equipmentChanges.updated 只列有變的裝備；追蹤過的穿著裝備這場沒出現＝這場沒掉
-  const DUR_TRACK_KEY = 'autoClickerV2DurTrack';
+  const DUR_TRACK_KEY = 'aijijiDurTrack';
   const DUR_HISTORY = 30;
   const durWarned = new Set();
   // 依類型的統計：最近幾場的時間（算打怪速度）、每天每類型掉了多少耐久
-  const DUR_STATS_KEY = 'autoClickerV2DurStats';
+  const DUR_STATS_KEY = 'aijijiDurStats';
   const DUR_STATS_DAYS = 14;
   // 兩場隔超過這麼久＝中間停過（暫停、睡覺），不拿來算速度
   const DUR_PACE_GAP_MILLISECONDS = 10 * 60000;
@@ -19832,7 +19857,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   }
 
   // 掉落紀錄：狩獵、PvP、挖礦伐木分開記，每天一格
-  const LOOT_LEDGER_KEY = 'autoClickerV2LootLedger';
+  const LOOT_LEDGER_KEY = 'aijijiLootLedger';
   const LOOT_LEDGER_DAYS = 14;
   const LOOT_SOURCES = [
     ['hunt', '狩獵', 'lootSourceHunt'],
@@ -19845,7 +19870,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   const ACTION_COMPLETE_PATTERN = /\/api\/heroes\/\d+\/completeAction(?:[?#]|$)/;
   const reportLootSeen = new Set();
   // 「清空重算」另外記的一段 {since, sources:{hunt|pvp|action: bucket}}；每天的紀錄照記，切回「今天」等還看得到
-  const LOOT_SESSION_KEY = 'autoClickerV2LootSession';
+  const LOOT_SESSION_KEY = 'aijijiLootSession';
 
   function addLootBucket(buckets, source, loot, money) {
     const bucket = (buckets[source] = buckets[source] || { items: {}, money: 0, count: 0 });
@@ -19965,7 +19990,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   const REPORT_NAME_COLOR = '#7dd3fc';
   const REPORT_PICKED_STYLE = 'background:#fde047;color:#1c1917;border-radius:3px;padding:0 2px';
   const REPORT_KINDS = [['', '全部'], ['crit', '紅字'], ['hurt', '我方被打'], ['heal', '回復'], ['key', '關鍵']];
-  const REPORT_FILTER_KEY = 'autoClickerV2ReportFilter';
+  const REPORT_FILTER_KEY = 'aijijiReportFilter';
   // 篩選條件換一場、重新整理都留著，連續盯同一個角色不用每場重點
   const reportFilter = (() => {
     const fallback = { focus: '', kind: '', search: '', hideOthers: false };
@@ -20884,7 +20909,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const weights = loadNameWeights();
     const percent = (value) => `${Math.round(value * 100)}`;
     // 每個角色的名稱欄共用這份清單，打字時會跳出今天測過的名稱
-    panel.querySelector('#autoClickerTodayNames').innerHTML = names.map(({ name }) => `<option value="${escapeHtml(name)}">`).join('');
+    panel.querySelector('#aijiji-today-names').innerHTML = names.map(({ name }) => `<option value="${escapeHtml(name)}">`).join('');
     panel.querySelector('[data-role="name-suggest"]').innerHTML = names.length
       ? `<table class="combat"><tr><th>今天的${escapeHtml(recipeType)}名稱${names[0].source === 'own' ? '（自測）' : ''}</th><th>攻</th><th>防</th><th>智</th><th>幸</th><th>耐</th><th>次</th><th></th></tr>${names
           .slice(0, 8)
@@ -21222,7 +21247,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   // 效率道具（魔爪、保力達蠻牛…）：對角色用，效果掛在角色的狀態上，到 endTime 為止。
   // 狀態名稱不一定等於道具名稱，用過一次就比對前後的狀態記下來；沒記到之前看自己記的到期時間
-  const BUFF_ITEMS_KEY = 'autoClickerV2BuffItems';
+  const BUFF_ITEMS_KEY = 'aijijiBuffItems';
   const BUFF_REFRESH_MILLISECONDS = 10 * 60000;
   const BUFF_EFFECT_WORDS = { forge: ['鍛造', '裁縫', '工藝', '效率'], mining: ['挖礦', '伐木', '效率'] };
   const buffMissingNotified = new Set();
@@ -21728,7 +21753,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
             ${escapeHtml(hero.name)}（鍛 ${hero.forge ?? '?'}／裁 ${hero.tailor ?? '?'}／工 ${hero.craft ?? '?'}）${forgeCountText(plan.recipe)}</label>
           ${settings.forgeBuffEnabled ? `<div class="row" style="margin:0">${forgeBuffCheckbox(settings, hero.id)}</div>` : ''}
           <div class="row"><select data-forge-plan="type" style="${fieldStyle}">${Object.keys(MATERIAL_CAPS).map((type) => `<option ${type === plan.type ? 'selected' : ''}>${type}</option>`).join('')}</select>
-            <input data-forge-plan="name" list="autoClickerTodayNames" value="${escapeHtml(plan.name || '')}" placeholder="名稱（空白＝配方頁的）" style="${fieldStyle}"></div>
+            <input data-forge-plan="name" list="aijiji-today-names" value="${escapeHtml(plan.name || '')}" placeholder="名稱（空白＝配方頁的）" style="${fieldStyle}"></div>
           <div class="row"><input data-forge-plan="recipe" value="${escapeHtml(plan.recipe || '')}" placeholder="配方，例如 泥土×4、楊木×2" style="${fieldStyle}">
             <button data-action="forge-plan-copy" data-hero="${hero.id}" title="把「配方」頁目前的類型與配方帶進來">帶入</button></div>
         </div>`;
@@ -21905,7 +21930,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
               <option value="use" ${row.purpose === 'sell' ? '' : 'selected'}>用</option><option value="sell" ${row.purpose === 'sell' ? 'selected' : ''}>賣</option></select>
             </div>
           <div style="display:flex;gap:4px;align-items:center;margin:2px 0">名稱
-            <input data-forge-name="${row.heroId}" list="autoClickerTodayNames" value="${escapeHtml(row.ownName ? row.itemName : '')}" placeholder="${row.itemName ? `${escapeHtml(row.itemName)}（配方頁的）` : '輸入名稱'}" title="直接打字改名稱，按 Enter 或點別處就存；清空＝用配方頁的名稱" style="flex:1;min-width:0;padding:1px 4px;color:#fff;background:#2a2a30;border:1px solid ${row.nameLocked ? '#f59e0b' : '#44444c'};border-radius:5px">
+            <input data-forge-name="${row.heroId}" list="aijiji-today-names" value="${escapeHtml(row.ownName ? row.itemName : '')}" placeholder="${row.itemName ? `${escapeHtml(row.itemName)}（配方頁的）` : '輸入名稱'}" title="直接打字改名稱，按 Enter 或點別處就存；清空＝用配方頁的名稱" style="flex:1;min-width:0;padding:1px 4px;color:#fff;background:#2a2a30;border:1px solid ${row.nameLocked ? '#f59e0b' : '#44444c'};border-radius:5px">
             ${row.nameLocked ? `<span style="flex:none;color:#fbbf24" title="今天手動改的，自動換名稱不會蓋掉；明天 00:00 後照常自動換">📌今天</span><button data-action="forge-name-unlock" data-hero="${row.heroId}" style="flex:none;padding:0 6px" title="交回自動換名稱，有更好的就換">交給自動</button>` : ''}</div>
           <div>${chips || '<span style="color:#666">沒有配方</span>'}
             ${row.materials.length ? `<span style="color:#a0a0aa">共 ${row.total}${row.cap ? `/${row.cap}` : ''}</span>` : ''}
@@ -22061,7 +22086,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     actions.push(`${hero.name} 收不了（${reason}），先跳過，10 分鐘後再試（第 ${count}/${ERROR_PAUSE_LIMIT} 次）`);
   }
   // 名稱是哪一天定的（自動換上或手動改名稱）；存起來，重開腳本、重整頁面後才知道今天的名稱定了沒
-  const FORGE_NAME_DAY_KEY = 'autoClickerV2ForgeNameDay';
+  const FORGE_NAME_DAY_KEY = 'aijijiForgeNameDay';
   // 分數只高一點點不換，免得樣本數變動時兩個名稱換來換去
   const FORGE_NAME_UPGRADE_MARGIN = 0.005;
   // 遊戲回錯誤或連線失敗時重試幾次才停（例如伺服器偶爾 502、掛機剛好同時動到同一個角色）
@@ -22536,7 +22561,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 挖礦：選了地點的角色在城裡閒著就去挖，體力估計快用完（照上一次挖的耗體力速度）就收；
   // 收完體力或 HP 太低先休息再挖。遊戲規定至少挖 3 分鐘、休息 1 分鐘才能收，時間到也不會自己停
   const MINING_SITES = { 1: '砂石場', 2: '森林區', 3: '鐵礦山', 4: '阿嬤寶山' };
-  const MINING_KEY = 'autoClickerV2Mining';
+  const MINING_KEY = 'aijijiMining';
   const MINING_LOCK_KEY = `${RUN_LOCK_PREFIX}mine`;
   const MINING_WATCH_MILLISECONDS = 5 * 60000;
   const MINING_MIN_MINUTES = 3;
@@ -23312,7 +23337,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   }
 
   // 看過的異常名稱都記下來，給「不理會」勾選
-  const KNOWN_CONDITIONS_KEY = 'autoClickerV2KnownConditions';
+  const KNOWN_CONDITIONS_KEY = 'aijijiKnownConditions';
 
   function miningIgnoredConditions(settings) {
     return String(settings.miningIgnoreConditions || '').split(/[、,，]+/).map((name) => name.trim()).filter(Boolean);
@@ -24179,7 +24204,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   // 收益：每 10 分鐘一格記狩獵場數、隊伍拿到的經驗、撿到的道具；遊戲幣用帳號餘額的變化（含花掉的，是淨變化）。
   // 存在這個瀏覽器，同一個帳號的分頁共用；保留 8 天
-  const INCOME_KEY = 'autoClickerV2Income';
+  const INCOME_KEY = 'aijijiIncome';
   const INCOME_BUCKET_MILLISECONDS = 10 * 60000;
   const INCOME_KEEP_MILLISECONDS = 8 * 24 * 3600000;
   const MONEY_SAMPLE_MILLISECONDS = 5 * 60000;
@@ -24267,7 +24292,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 狩獵只認戰報裡寫明的錢（收租金、盜取）；拍賣（交易所）的錢另外記、不算進收支。別人買走你上架的東西是被動入帳，
   // 發生在兩次看到餘額之間、沒有對應的動作，所以這種不明入帳都當成拍賣售出。
   // 上一次的餘額存在 localStorage，同帳號開好幾個分頁也只算一次
-  const LAST_MONEY_KEY = 'autoClickerV2LastMoney';
+  const LAST_MONEY_KEY = 'aijijiLastMoney';
   // 太久沒看到餘額（例如關機一晚）中間發生什麼分不出來，那段差額就不歸類
   const MONEY_GAP_LIMIT_MILLISECONDS = 30 * 60000;
   const HUNT_MONEY_PATTERN = /(收到了|盜取了|掠奪到?了|獲得了|撿到了?)\s*([\d,]+)\s*(元|租金|金幣)\s*$/;
@@ -24286,7 +24311,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   }
 
   // 花了錢、回應卻沒帶餘額的動作（信仰捐獻、賭場、擴充欄位…）：先記著，下次看到餘額時這段差額算它的
-  const MONEY_ACTION_KEY = 'autoClickerV2MoneyAction';
+  const MONEY_ACTION_KEY = 'aijijiMoneyAction';
   const MONEY_ACTION_MILLISECONDS = 5 * 60000;
   // 只記會花錢的；移動、吃藥這類也是 POST，記了會把之後的被搶、拍賣算到它頭上
   const MONEY_ACTION_PATTERN = /\/api\/(?:beliefs|expand|monument|casino)|\/(?:revive|reincarnate)/;
@@ -24542,7 +24567,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   // 狩獵統計：每個地點（地圖＋關卡）的場數、每人每場經驗、每場秒數、HP／體力耗損、前進成功率、掉落。
   // 全部從 /api/hunt 的回應算，不讀畫面；存在這個瀏覽器
-  const HUNT_STATS_KEY = 'autoClickerV2HuntStats';
+  const HUNT_STATS_KEY = 'aijijiHuntStats';
   const RECENT_LOOT_LIMIT = 50;
   // 兩場之間隔太久（停下來、換地圖、補給很久）就不算進每場秒數
   const HUNT_GAP_LIMIT_MILLISECONDS = 180000;
@@ -24640,7 +24665,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   // 戰報裡寫了是誰拿到的（「盜寶哥布林盜取了 173 元」「盜寶哥布林盜取了體力藥水 小」「愛德華·蒂奇掠奪到了體力藥水 中」）：照角色另外記，
   // 看得出誰在幫你賺。沒寫是誰的（「獲得了兔皮 × 4」）只算在上面的掉落
-  const ACTOR_LOOT_KEY = 'autoClickerV2ActorLoot';
+  const ACTOR_LOOT_KEY = 'aijijiActorLoot';
   const ACTOR_LOOT_DAYS = 14;
   const ACTOR_LOOT_RECENT = 100;
   const ACTOR_LINE_PATTERN = /^(.+?)(盜取了|掠奪到?了|獲得了|拾獲了?|撿到了?|挖到了?|收到了)\s*(.+?)(?:\s*[×xX*＊]\s*([\d,]+))?\s*$/;
@@ -25104,7 +25129,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
     const date = new Date().toISOString().slice(0, 10);
-    link.download = `auto-clicker-v2-settings-${date}.json`;
+    link.download = `aijiji-settings-${date}.json`;
     link.click();
     setTimeout(() => URL.revokeObjectURL(link.href), 1000);
     setStatus('已匯出設定檔');
