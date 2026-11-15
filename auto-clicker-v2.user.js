@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.04
+// @version      6.05
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -22834,6 +22834,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     saveMining(data);
     try {
       syncGameHeroAction(await requestGameApi(`${HEROES_API}/${foreman.id}/mining/${site}`, { method: 'POST' }), 'mine');
+      // 送出要花時間：改記真正進去的時間，不然 3 分鐘還沒到就去收
+      data.foremen[foreman.id].at = Date.now();
+      saveMining(data);
     } catch (error) {
       // 伺服器明確拒絕才刪紀錄；逾時、5xx 不知道進去沒，留著讓下一輪照實際狀態處理
       if (error.status && !error.transient) {
@@ -22850,7 +22853,19 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const left = ((foremanRecord(data, foreman) || {}).at || 0) + MINING_MIN_MINUTES * 60000 - Date.now();
     if (left > 0) await wait(left + randomGap(3000, 10000));
     const pageHero = await openGameHeroPage(foreman, opened);
-    const after = await completeMiningAction(settings, pageHero, data, 'foreman');
+    let after;
+    for (let tries = 0; ; tries++) {
+      try {
+        after = await completeMiningAction(settings, pageHero, data, 'foreman');
+        break;
+      } catch (error) {
+        // 電腦時鐘比伺服器快、送出慢，都會差幾秒：照遊戲給的完成時間再等一下重收
+        if (!/行動尚未完成/.test(error.message) || tries >= 2) throw error;
+        const detail = await requestGameApi(`${HEROES_API}/${foreman.id}`);
+        const left = serverTimeToLocal(detail.actionCompleteTime) - Date.now();
+        await wait(Math.min(Math.max(Number.isFinite(left) ? left : 0, 0), 5 * 60000) + randomGap(5000, 15000));
+      }
+    }
     delete data.foremen[foreman.id];
     saveMining(data);
     return after;
@@ -23089,7 +23104,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   }
 
   function canCompleteNow(hero, now) {
-    return Boolean(hero.canComplete) || Date.parse(hero.actionCompleteTime) <= now;
+    return Boolean(hero.canComplete) || serverTimeToLocal(hero.actionCompleteTime) <= now;
   }
 
   function miningLog(message) {
