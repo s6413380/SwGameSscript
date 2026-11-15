@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.00
+// @version      6.01
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -15383,6 +15383,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           // 遊戲的裝備只寫鍛造師名字，同名的角色要靠 heroId 分開
           heroId: Number(heroId),
           ...(forge.skills ? { skills: forge.skills } : {}),
+          ...(forge.noUpload ? { noUpload: true } : {}),
         };
         matched.push(equipment);
         if (forge.purpose === 'sell') markEquipmentForSale(equipment.id, true);
@@ -18312,10 +18313,11 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 只傳自己鍛造、有材料紀錄的；別人的是從雲端下載來的，不再傳回去
   function cloudEquipmentRows() {
     const own = readJsonStorage(FORGED_EQUIPMENTS_KEY, {});
+    const forges = readJsonStorage(OWN_FORGE_MATERIALS_KEY, {});
     const rows = [];
     readForgeMaterials().forEach((materials, id) => {
       const item = own[id];
-      if (!item) return;
+      if (!item || (forges[id] && forges[id].noUpload)) return;
       rows.push([
         Number(id), item.type, item.quality, item.atk, item.def, item.int, item.lck, item.wgt, item.fullDur, item.fullSlots, item.recyclePrice,
         JSON.stringify(item.enchantments || null), JSON.stringify(materials), item.forger || '', item.craftedTime || '', item.name || '',
