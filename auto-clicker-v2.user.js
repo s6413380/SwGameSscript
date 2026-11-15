@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      5.99
+// @version      6.00
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -23424,7 +23424,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return result;
   }
 
-  const MINING_POTION_MAX_USES = 10;
+  const MINING_POTION_MAX_USES = 40;
 
   // 一次喝一瓶，喝到目標；差不到半瓶就不喝，免得補過頭浪費
   // 同時回 HP 和體力的道具：另一邊也缺才划算，另一邊滿了就是浪費。挑「兩邊加起來真的補到最多」的，
@@ -23448,12 +23448,13 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const used = [];
     let empty = false;
     for (let count = 0; count < MINING_POTION_MAX_USES && current[supply.field] < target; count++) {
-      const item = pickMiningPotion(items, supply, names, current);
+      const gap = target - current[supply.field];
+      const fitting = items.filter((candidate) => candidate[supply.heal] / 2 <= gap);
+      const item = pickMiningPotion(fitting, supply, names, current);
       if (!item) {
-        empty = true;
+        empty = !pickMiningPotion(items, supply, names, current);
         break;
       }
-      if (target - current[supply.field] < item[supply.heal] / 2) break;
       await wait(itemRequestGap());
       const result = await requestGameApi(`${ITEMS_API}/${item.id}/use`, {
         method: 'POST',
