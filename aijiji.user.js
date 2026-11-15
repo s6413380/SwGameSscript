@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.06
+// @version      6.07
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -188,6 +188,7 @@
     ['forge', '自動鍛造'],
     ['recipe', '配方'],
     ['mining', '挖礦'],
+    ['practice', '修練'],
     ['material', '材料統計'],
     ['forgerCompare', '鍛造師比較'],
     ['nameTest', '自測名稱'],
@@ -211,11 +212,11 @@
     ['players', '查玩家'],
   ];
   // 輔助模式收起來的分頁：都是自動化才用得到的
-  const ASSIST_HIDDEN_TABS = ['main', 'move', 'train', 'forge', 'nameTest', 'alloyTest', 'mining', 'pick', 'transfer', 'cardBuy', 'api'];
+  const ASSIST_HIDDEN_TABS = ['main', 'move', 'train', 'forge', 'nameTest', 'alloyTest', 'mining', 'practice', 'pick', 'transfer', 'cardBuy', 'api'];
   // 分頁太多，先選大類再選分頁；大類裡記住上次看的分頁
   const TAB_GROUPS = [
     ['hunt', '打怪', ['main', 'health', 'resource', 'move', 'equip', 'train', 'pause']],
-    ['forging', '鍛造', ['forge', 'recipe', 'material', 'forgerCompare', 'nameTest', 'alloyTest', 'mining']],
+    ['forging', '鍛造', ['forge', 'recipe', 'material', 'forgerCompare', 'nameTest', 'alloyTest', 'mining', 'practice']],
     ['stats', '統計', ['income', 'combat', 'huntStats', 'loot', 'growth', 'draw', 'scratch', 'sales']],
     ['other', '其他', ['pick', 'transfer', 'cardBuy', 'players', 'alert', 'cloud', 'log', 'api', 'backup']],
   ];
@@ -1700,14 +1701,21 @@
       <input data-field="miningIgnoreConditions" type="hidden">
       <div style="font-size:12px">不理會這些異常（勾了照常挖）：<span data-role="mining-ignore"></span></div>
       <div class="row"><input data-role="mining-ignore-name" placeholder="沒看過的異常名稱，手動加" style="flex:1;min-width:0"><button data-action="mining-ignore-add">加入</button></div>
-      <input data-field="miningPlans" type="hidden"><input data-field="practicePlans" type="hidden"><input data-field="miningBuffHeroIds" type="hidden"><input data-field="miningOrder" type="hidden"><input data-field="miningForemanId" type="hidden"><input data-field="miningForemanParkSite" type="hidden"><input data-field="miningForemanParkSites" type="hidden">
-      <div class="row">修練 ${numberInput('practiceHours', 'min="0.1" step="0.5"')} 小時收一次再修練</div>
-      <div class="hint">下面角色的下拉選「修練」或「老師傅」，按「開始挖礦」就會一起跑（只修練不挖礦也可以）。出發前補 HP／體力、異常、太低先休息都跟挖礦一樣。修練的角色時間到，要老師傅正在修練才收，不然等它；老師傅也是時間到就收、補完再去，但學生快到時間時先不收它</div>
+      <input data-field="miningPlans" type="hidden"><input data-field="miningBuffHeroIds" type="hidden"><input data-field="miningOrder" type="hidden"><input data-field="miningForemanId" type="hidden"><input data-field="miningForemanParkSite" type="hidden"><input data-field="miningForemanParkSites" type="hidden">
       <div class="subhead">角色（選地點＝要挖；沒在跑「開始挖礦」時每 5 分鐘讀一次）</div>
       <div class="hint">要挖的角色一起出發、一起收：任一個時間到就照上面的順序（↑↓ 調整）全部收完，再一個一個出發</div>
       <div data-role="mining-heroes" style="font-size:12px"></div>
       <div class="subhead">最近收穫</div>
       <div data-role="mining-log" style="font-size:12px"></div>
+    </div>
+
+    <div data-tab="practice">
+      <div class="row"><button data-action="practice-start" style="font-weight:bold">開始修練</button><button data-action="practice-stop">停止修練</button><button data-action="practice-refresh">重新讀取</button></div>
+      <input data-field="practicePlans" type="hidden">
+      <div class="row">修練 ${numberInput('practiceHours', 'min="0.1" step="0.5"')} 小時收一次再修練</div>
+      <div class="hint">跟挖礦分開跑：這裡按「開始修練」才會修練、收修練，挖礦開不開都沒關係。出發前補 HP／體力、異常、太低先休息照挖礦頁的設定。<br>修練的角色時間到，要老師傅正在修練才收（選成老師傅的、或老師傅卡正在修練都算），不然等它；老師傅也是時間到就收、補完再去，但學生快到時間時先不收它。工頭由挖礦頁管，這裡不列</div>
+      <div class="subhead">角色</div>
+      <div data-role="practice-heroes" style="font-size:12px"></div>
     </div>
 
     <div data-tab="recipe">
@@ -2317,10 +2325,12 @@
     const forging = forgeRunner.running || (state.running && state.forgeMode);
     const forge = !forging ? null : forgeRunner.captchaWaiting ? '等驗證' : forgeRunner.nameWaiting ? '等好名稱' : '';
     const mine = miningRunner.running ? '' : null;
+    const practice = practiceRunner.running ? '' : null;
     return [
       ['打怪', hunt],
       ['鍛造', forge],
       ['挖礦', mine],
+      ['修練', practice],
     ];
   }
 
@@ -2446,6 +2456,10 @@
       if (!miningPotionItems) loadMiningPotions();
       if (Date.now() - loadMining().heroesAt > 60000) readMiningHeroes(readSettingsFromPanel()).catch((error) => miningLog(`讀取角色失敗（${error.message}）`));
     }
+    if (tabId === 'practice') {
+      renderPracticeHeroes();
+      if (Date.now() - loadMining().heroesAt > 60000) readMiningHeroes(readSettingsFromPanel()).catch((error) => practiceLog(`讀取角色失敗（${error.message}）`));
+    }
     if (tabId === 'transfer') refreshTransferChoices(readSettingsFromPanel()).catch((error) => transferLog(`讀取帳號或角色失敗（${error.message}）`));
     panel.querySelectorAll('[data-tab]').forEach((section) => {
       section.style.display = section.dataset.tab === tabId ? '' : 'none';
@@ -2486,6 +2500,7 @@
       if (state.running) stop('輔助模式：已停止自動掛機');
       if (forgeRunner.running) stopForgeRunner('輔助模式：已停止自動鍛造');
       if (miningRunner.running) stopMiningRunner('輔助模式：已停止挖礦');
+      if (practiceRunner.running) stopPracticeRunner('輔助模式：已停止修練');
       if (readSettingsFromPanel().cardBuyEnabled) setPanelField('cardBuyEnabled', false);
     }
     showTab(activeTab);
@@ -3394,7 +3409,7 @@
   // 吃藥、換裝這些非同步流程做到一半時不會走到這裡，重新整理不會把它們切斷
   // 重新整理後要接著跑哪些：打怪、鍛造（API 鍛造跟打怪可以同時）
   function resumeModes() {
-    return [state.running && !state.forgeMode ? 'hunt' : '', (state.running && state.forgeMode) || forgeRunner.running ? 'forge' : '', miningRunner.running ? 'mine' : '']
+    return [state.running && !state.forgeMode ? 'hunt' : '', (state.running && state.forgeMode) || forgeRunner.running ? 'forge' : '', miningRunner.running ? 'mine' : '', practiceRunner.running ? 'practice' : '']
       .filter(Boolean)
       .join(',');
   }
@@ -3735,6 +3750,7 @@
     if (state.running) releaseRunLock(state.forgeMode);
     if (forgeRunner.running) releaseRunLock(true);
     if (miningRunner.running) releaseMiningLock();
+    if (practiceRunner.running) releasePracticeLock();
   });
 
   // 畫面上讀不到位置（API 打怪不用停在狩獵頁、或沒設定關卡欄位）就用 API 拿到的位置
@@ -5355,7 +5371,7 @@
   // 暫停是為了不跟你的操作撞在一起；你自己按面板上的按鈕（讀取角色、讀取材料…）就是要它現在送，
   // 所以按下後這一小段時間的請求不等暫停。開始類（會一直跑下去）和暫停按鈕本身不算
   const MANUAL_REQUEST_MILLISECONDS = 15000;
-  const NOT_MANUAL_ACTIONS = ['main-account-me', 'mining-start', 'start', 'forge-start', 'recipe-auto-forge', 'quality-pick', 'global-run', 'global-temp', 'global-stop'];
+  const NOT_MANUAL_ACTIONS = ['main-account-me', 'mining-start', 'practice-start', 'start', 'forge-start', 'recipe-auto-forge', 'quality-pick', 'global-run', 'global-temp', 'global-stop'];
   let manualRequestUntil = 0;
 
   function noteManualAction(event, action) {
@@ -9852,6 +9868,7 @@
     checkOwnTrades(settings);
     keepRunLock();
     keepMiningLock();
+    keepPracticeLock();
     watchMining(settings);
     checkForgeCaptcha();
     if (!state.running) reloadForUpdateIfIdle();
@@ -9886,6 +9903,8 @@
     else if (forgeRunner.stoppedReason) lines.push(`API 鍛造已停：${forgeRunner.stoppedReason}`);
     if (miningRunner.running) lines.push(`挖礦：執行中（已收 ${miningRunner.collected} 次${miningRunner.failures ? `，重試中 ${miningRunner.failures}/${FORGE_RETRY_LIMIT}` : ''}）`);
     else if (miningRunner.stoppedReason) lines.push(`挖礦已停：${miningRunner.stoppedReason}`);
+    if (practiceRunner.running) lines.push(`修練：執行中${practiceRunner.failures ? `（重試中 ${practiceRunner.failures}/${FORGE_RETRY_LIMIT}）` : ''}`);
+    else if (practiceRunner.stoppedReason) lines.push(`修練已停：${practiceRunner.stoppedReason}`);
     const combatLine = settings.combatEnabled ? combatQuickText() : '';
     if (combatLine) lines.push(combatLine);
     const dashboardLine = dashboardMonitorText(settings);
@@ -12372,6 +12391,13 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       }
     } else if (action === 'mining-potions') {
       loadMiningPotions();
+    } else if (action === 'practice-start') {
+      startPracticeRunner();
+    } else if (action === 'practice-stop') {
+      if (practiceRunner.running) stopPracticeRunner('已停止修練');
+      else practiceLog('修練沒有在執行');
+    } else if (action === 'practice-refresh') {
+      readMiningHeroes(readSettingsFromPanel()).catch((error) => practiceLog(`讀取角色失敗（${error.message}）`));
     } else if (action === 'mining-refresh') {
       readMiningHeroes(readSettingsFromPanel()).catch((error) => miningLog(`讀取角色失敗（${error.message}）`));
     } else if (action === 'forge-start') {
@@ -22574,11 +22600,12 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 遊戲角色頁「行動紀錄」讀這個；API 收的也寫進去，遊戲裡看得到
   const GAME_ACTION_RESULTS_KEY = 'miningResults';
   const miningRunner = { running: false, runId: 0, timerId: null, failures: 0, collected: 0, stoppedReason: '', heroErrors: new Map(), tooManyErrors: '' };
+  const practiceRunner = { running: false, runId: 0, timerId: null, failures: 0, ticking: false, stoppedReason: '', heroErrors: new Map(), tooManyErrors: '' };
 
-  function noteMiningHeroError(hero, error, actions) {
-    const count = (miningRunner.heroErrors.get(hero.id) || 0) + 1;
-    miningRunner.heroErrors.set(hero.id, count);
-    if (count >= ERROR_PAUSE_LIMIT) miningRunner.tooManyErrors = `${hero.name} 連續 ${count} 次出錯，最後一次：${error.message}`;
+  function noteMiningHeroError(hero, error, actions, runner = miningRunner) {
+    const count = (runner.heroErrors.get(hero.id) || 0) + 1;
+    runner.heroErrors.set(hero.id, count);
+    if (count >= ERROR_PAUSE_LIMIT) runner.tooManyErrors = `${hero.name} 連續 ${count} 次出錯，最後一次：${error.message}`;
     actions.push(`${hero.name}：${error.message}（第 ${count}/${ERROR_PAUSE_LIMIT} 次）`);
   }
   const miningWatch = { busy: false };
@@ -22591,7 +22618,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     // 腳本記的開挖、休息紀錄已經不是現在這一趟了
     delete data.active[heroId];
     saveMining(data);
-    if (activeTab === 'mining') renderMiningHeroes();
+    if (activeTab === 'mining' || activeTab === 'practice') renderMiningHeroes();
   }
 
   function miningHeldUntil(data, heroId, now) {
@@ -22680,10 +22707,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     for (const master of masters) {
       try {
         if (await prepare(master, 'master')) master.actionState = 7;
-        miningRunner.heroErrors.delete(master.id);
+        practiceRunner.heroErrors.delete(master.id);
       } catch (error) {
         if (error.captchaRequired) throw error;
-        noteMiningHeroError(master, error, actions);
+        noteMiningHeroError(master, error, actions, practiceRunner);
       }
     }
     // 沒選成老師傅、但老師傅卡正在修練（例如平時修練的工頭）也算
@@ -22711,10 +22738,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           actions.push(`${trainee.name} 修練完`);
         }
         await prepare(trainee, 'train');
-        miningRunner.heroErrors.delete(trainee.id);
+        practiceRunner.heroErrors.delete(trainee.id);
       } catch (error) {
         if (error.captchaRequired) throw error;
-        noteMiningHeroError(trainee, error, actions);
+        noteMiningHeroError(trainee, error, actions, practiceRunner);
       }
     }
     // 老師傅原本一直不收，體力扣光也不會補：一樣修練時間到就收、補藥水再去。
@@ -22736,10 +22763,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         saveMining(data);
         actions.push(`老師傅 ${master.name} 修練完`);
         master.actionState = (await prepare(after, 'master')) ? 7 : after.actionState;
-        miningRunner.heroErrors.delete(master.id);
+        practiceRunner.heroErrors.delete(master.id);
       } catch (error) {
         if (error.captchaRequired) throw error;
-        noteMiningHeroError(master, error, actions);
+        noteMiningHeroError(master, error, actions, practiceRunner);
       }
     }
     return actions;
@@ -23071,7 +23098,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     let done = [];
     try {
       // 自動挖礦正在跑那一輪就等它跑完；跑完才讀紀錄，先讀的話存回去會蓋掉那一輪剛派進去的工頭紀錄
-      for (let tries = 0; miningRunner.ticking && tries < 600; tries++) await wait(1000);
+      for (let tries = 0; (miningRunner.ticking || practiceRunner.ticking) && tries < 600; tries++) await wait(1000);
       const data = loadMining();
       const heroes = await readMiningHeroes(settings, { statuses: false });
       const foremanIds = miningForemanIds(settings);
@@ -23092,7 +23119,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       return `主動收礦（${siteName}）：${done.join('、') || '沒有收到'}`;
     } finally {
       miningRunner.manualBusy = '';
-      if (activeTab === 'mining') renderMiningHeroes();
+      if (activeTab === 'mining' || activeTab === 'practice') renderMiningHeroes();
       wakeMiningRunner();
     }
   }
@@ -23145,7 +23172,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     data.heroes = mergeMiningHeroes(data.heroes, heroes);
     data.heroesAt = Date.now();
     saveMining(data);
-    if (activeTab === 'mining') renderMiningHeroes();
+    if (activeTab === 'mining' || activeTab === 'practice') renderMiningHeroes();
     return heroes;
   }
 
@@ -23161,7 +23188,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     data.heroes = mergeMiningHeroes(data.heroes, reply.heroes.map((hero) => ({ ...hero, statuses: Array.isArray(hero.statuses) ? hero.statuses : previous.get(hero.id) })));
     data.heroesAt = Date.now();
     saveMining(data);
-    if (activeTab === 'mining') renderMiningHeroes();
+    if (activeTab === 'mining' || activeTab === 'practice') renderMiningHeroes();
     // 鍛造佇列、配方頁的角色狀態也一起換，手動收爐後不會一直顯示「已完成待收」
     forgeHeroes = reply.heroes;
     forgeHeroesAt = Date.now();
@@ -23174,7 +23201,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const data = loadMining();
     data.heroesAt = 0;
     saveMining(data);
-    if (activeTab === 'mining') readMiningHeroes(readSettingsFromPanel()).catch(() => {});
+    if (activeTab === 'mining' || activeTab === 'practice') readMiningHeroes(readSettingsFromPanel()).catch(() => {});
   }
 
   // 有些回應的角色缺欄位（例如沒帶挖礦能力）：缺的沿用上次讀到的，不會變成「?」
@@ -23661,7 +23688,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   async function miningTick() {
     if (!miningRunner.running) return;
-    if (miningRunner.manualBusy) {
+    if (miningRunner.manualBusy || practiceRunner.ticking) {
       scheduleMiningRunner(randomGap(30000, 60000));
       return;
     }
@@ -23674,8 +23701,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       .filter((id) => MINING_SITES[plans[id]])
       .map(Number)
       .filter((id) => !foremanIds.includes(id));
-    if (!heroIds.length && !Object.keys(practicePlans(settings)).length) {
-      stopMiningRunner('還沒選要挖礦或修練的角色（挖礦頁每個角色選地點或修練）');
+    if (!heroIds.length) {
+      stopMiningRunner('還沒選要挖礦的角色（挖礦頁每個角色選地點）');
       return;
     }
     try {
@@ -23747,8 +23774,6 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         }
         if (cancelled()) return;
       }
-      actions.push(...(await practiceStep(settings, byId, data, opened, waits)));
-      if (cancelled()) return;
       if (miningRunner.tooManyErrors) {
         const reason = miningRunner.tooManyErrors;
         miningLog(actions.join('、'));
@@ -23826,6 +23851,139 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }
   }
 
+  const PRACTICE_LOCK_KEY = `${RUN_LOCK_PREFIX}practice`;
+
+  function practiceLog(message) {
+    setStatus(`［修練］${message}`);
+  }
+
+  async function practiceTick() {
+    if (!practiceRunner.running) return;
+    // 跟挖礦共用角色紀錄：挖礦那一輪（或主動收礦）還在跑就等它跑完
+    if (miningRunner.ticking || miningRunner.manualBusy) {
+      schedulePracticeRunner(randomGap(20000, 40000));
+      return;
+    }
+    const settings = readSettingsFromPanel();
+    const runId = practiceRunner.runId;
+    const cancelled = () => runId !== practiceRunner.runId;
+    if (!practiceIds(settings, 'train').length && !practiceIds(settings, 'master').length) {
+      stopPracticeRunner('還沒選要修練的角色（修練頁每個角色選修練或老師傅）');
+      return;
+    }
+    try {
+      const heroes = await readMiningHeroes(settings, { statuses: false });
+      if (cancelled()) return;
+      const data = loadMining();
+      const waits = [];
+      const actions = await practiceStep(settings, new Map(heroes.map((hero) => [hero.id, hero])), data, new Set(), waits);
+      if (cancelled()) return;
+      if (practiceRunner.tooManyErrors) {
+        const reason = practiceRunner.tooManyErrors;
+        practiceLog(actions.join('、'));
+        stopPracticeRunner(`出錯停下：${reason}`);
+        dashboard.alert = `修練：${reason}`;
+        alertUser(`修練：${reason}`, { paused: true });
+        return;
+      }
+      practiceRunner.failures = 0;
+      const next = waits.length ? Math.min(...waits) : Date.now() + MINING_WATCH_MILLISECONDS;
+      const delay = actions.length ? randomGap(5000, 15000) : Math.min(Math.max(next - Date.now(), 0) + randomGap(3000, 20000), 15 * 60000);
+      practiceLog(`${actions.join('、') || '都在修練或休息'}（${Math.round(delay / 1000)} 秒後再看）`);
+      schedulePracticeRunner(delay);
+    } catch (error) {
+      if (cancelled()) return;
+      if ((error.captchaRequired || error.transient || error.status) && practiceRunner.failures < FORGE_RETRY_LIMIT) {
+        practiceRunner.failures++;
+        const delay = error.captchaRequired ? randomGap(120000, 180000) : randomGap(30000, 60000);
+        practiceLog(`${error.captchaRequired ? '要活人驗證' : `出錯（${error.message}）`}，${Math.round(delay / 1000)} 秒後重試（第 ${practiceRunner.failures}/${FORGE_RETRY_LIMIT} 次）`);
+        schedulePracticeRunner(delay);
+        return;
+      }
+      stopPracticeRunner(`出錯停下：${error.message}`);
+      dashboard.alert = `修練：${error.message}`;
+      alertUser(`修練：${error.message}`, { paused: true });
+    }
+  }
+
+  function runPracticeTick() {
+    practiceRunner.ticking = true;
+    Promise.resolve(practiceTick()).finally(() => {
+      practiceRunner.ticking = false;
+    });
+  }
+
+  function schedulePracticeRunner(delay) {
+    backgroundTimer.clearTimeout(practiceRunner.timerId);
+    const runId = practiceRunner.runId;
+    practiceRunner.timerId = backgroundTimer.setTimeout(() => {
+      if (runId === practiceRunner.runId) runPracticeTick();
+    }, lowProfileDelay(readSettingsFromPanel(), delay));
+  }
+
+  function wakePracticeRunner() {
+    if (!practiceRunner.running || practiceRunner.ticking) return;
+    schedulePracticeRunner(randomGap(2000, 6000));
+  }
+
+  function otherTabPracticing() {
+    const lock = readJsonStorage(PRACTICE_LOCK_KEY, null);
+    return lock && lock.tab !== tabKey && Date.now() - lock.at < RUN_LOCK_STALE_MILLISECONDS;
+  }
+
+  function startPracticeRunner() {
+    if (readSettingsFromPanel().assistModeEnabled) {
+      practiceLog('輔助模式開著，不會自動修練');
+      return;
+    }
+    if (practiceRunner.running) {
+      practiceLog('已經在修練了');
+      return;
+    }
+    if (otherTabPracticing()) {
+      practiceLog('同一個帳號的另一個分頁正在修練，這個分頁不啟動');
+      return;
+    }
+    // 兩邊共用角色紀錄，分在兩個分頁會各存各的互相蓋掉
+    if (otherTabMining()) {
+      practiceLog('挖礦在同一個帳號的另一個分頁跑，修練也要到那個分頁開');
+      return;
+    }
+    saveSettings(readSettingsFromPanel());
+    Object.assign(practiceRunner, { running: true, failures: 0, stoppedReason: '', tooManyErrors: '' });
+    practiceRunner.heroErrors.clear();
+    practiceRunner.runId++;
+    writeJsonStorage(PRACTICE_LOCK_KEY, { tab: tabKey, at: Date.now() });
+    practiceLog('開始修練');
+    runPracticeTick();
+  }
+
+  function stopPracticeRunner(message) {
+    if (!practiceRunner.running) return;
+    practiceRunner.running = false;
+    practiceRunner.runId++;
+    practiceRunner.stoppedReason = `${new Date().toLocaleTimeString('zh-TW', { hour12: false })} ${message || '已停止'}`;
+    backgroundTimer.clearTimeout(practiceRunner.timerId);
+    releasePracticeLock();
+    if (message) practiceLog(message);
+  }
+
+  function releasePracticeLock() {
+    const lock = readJsonStorage(PRACTICE_LOCK_KEY, null);
+    if (!lock || lock.tab !== tabKey) return;
+    try {
+      localStorage.removeItem(PRACTICE_LOCK_KEY);
+    } catch {
+      // 移不掉就等它過期
+    }
+  }
+
+  function keepPracticeLock() {
+    if (!practiceRunner.running) return;
+    if (otherTabPracticing()) stopPracticeRunner('同一個帳號的另一個分頁也在修練，這個分頁先停下');
+    else writeJsonStorage(PRACTICE_LOCK_KEY, { tab: tabKey, at: Date.now() });
+  }
+
   function scheduleMiningRunner(delay) {
     const settings = readSettingsFromPanel();
     // 跟鍛造一樣：休閒離開中照收礦時間排（晚 1～8 分鐘回來收），改設定也幾秒內就動；不然要等整段休息結束才收
@@ -23867,6 +24025,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       miningLog('同一個帳號的另一個分頁正在挖礦，這個分頁不啟動');
       return;
     }
+    if (otherTabPracticing()) {
+      miningLog('修練在同一個帳號的另一個分頁跑，挖礦也要到那個分頁開');
+      return;
+    }
     saveSettings(readSettingsFromPanel());
     Object.assign(miningRunner, { running: true, failures: 0, collected: 0, stoppedReason: '', tooManyErrors: '' });
     miningRunner.heroErrors.clear();
@@ -23904,8 +24066,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   // 沒在跑挖礦也定時讀角色，總覽頁、挖礦頁看得到誰在挖、挖多久、有沒有中毒；同一個帳號的分頁共用一份，不會一起讀
   function watchMining(settings) {
-    if (miningRunner.running || miningWatch.busy || !dashboard.profile) return;
-    if (!settings.dashboardEnabled && activeTab !== 'mining') return;
+    if (miningRunner.running || practiceRunner.running || miningWatch.busy || !dashboard.profile) return;
+    if (!settings.dashboardEnabled && activeTab !== 'mining' && activeTab !== 'practice') return;
     if (lowProfile.sleepUntil > Date.now()) return;
     const data = loadMining();
     if (Date.now() - data.heroesAt < MINING_WATCH_MILLISECONDS) return;
@@ -23924,7 +24086,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     if (!PRACTICE_ROLES[role]) return '';
     const dueAt = (Date.parse(hero.actionStart) || now) + Math.max(0.1, Number(settings.practiceHours) || 2) * 3600000;
     if (dueAt > now) return `・${new Date(dueAt).getHours()}:${String(new Date(dueAt).getMinutes()).padStart(2, '0')} 收`;
-    if (!miningRunner.running) return '・時間到，挖礦沒開不會收';
+    if (!practiceRunner.running) return '・時間到，修練沒開不會收';
     return role === 'train' && miningNotified.has(`practice:${hero.id}`) ? '・時間到，等老師傅修練中才收' : '・時間到，下一輪收';
   }
 
@@ -24039,8 +24201,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
                 ${parkSelect(hero)}
                 <button data-mining-foreman-remove="${hero.id}" style="flex:none">不當工頭</button></div>`;
             }
-            const current = String(practicePlans(settings)[hero.id] || plans[hero.id] || '');
-            const options = [['', '不挖'], ...Object.entries(MINING_SITES), ...Object.entries(PRACTICE_ROLES)]
+            const practiceRole = PRACTICE_ROLES[practicePlans(settings)[hero.id]];
+            const current = String(plans[hero.id] || '');
+            const options = [['', '不挖'], ...Object.entries(MINING_SITES)]
               .map(([value, name]) => `<option value="${value}" ${current === value ? 'selected' : ''}>${name}</option>`)
               .join('');
             return `<div class="row" style="margin:0;padding:3px 0;border-bottom:1px solid #2e2e34">
@@ -24048,12 +24211,50 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
                 <div style="color:${hero.actionState === 4 ? '#60a5fa' : '#a0a0aa'}">${escapeHtml(miningHeroText(hero, data, now, settings))}${conditions.length ? ` <span style="color:#fb923c">${escapeHtml(conditions.join('、'))}</span>` : ''}${blocked ? ` <span style="color:#f87171">${blocked}</span>` : ''}</div></div>
               ${orderButtons}
               ${settings.miningBuffEnabled ? `<label style="flex:none;white-space:nowrap;color:#facc15" title="出發前用效率道具"><input type="checkbox" data-mining-buff="${hero.id}" ${buffIds.includes(hero.id) ? 'checked' : ''} style="width:auto">道具</label>` : ''}
-              <select data-mining-hero="${hero.id}" style="flex:none;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px">${options}</select>
+              ${practiceRole ? `<span style="flex:none;color:#a78bfa" title="在修練頁改">${practiceRole}（修練頁）</span>` : `<select data-mining-hero="${hero.id}" style="flex:none;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px">${options}</select>`}
             </div>`;
           })
           .join('')
       : '<div class="hint">讀取角色中…（沒出現就按「重新讀取」）</div>';
     renderMiningLog(data);
+    renderPracticeHeroes();
+  }
+
+  // 修練頁的角色列表：工頭由挖礦頁管，不列
+  function renderPracticeHeroes() {
+    const box = panel.querySelector('[data-role="practice-heroes"]');
+    if (!box) return;
+    if (box.contains(document.activeElement) && document.activeElement.tagName === 'SELECT') {
+      miningRenderPending = true;
+      return;
+    }
+    const settings = readSettingsFromPanel();
+    const data = loadMining();
+    const plans = miningPlans(settings);
+    const practice = practicePlans(settings);
+    const foremanIds = miningForemanIds(settings);
+    const now = Date.now();
+    const rank = (hero) => (practice[hero.id] === 'master' ? 0 : practice[hero.id] ? 1 : 2);
+    const heroes = data.heroes.filter((hero) => !foremanIds.includes(hero.id));
+    box.innerHTML = heroes.length
+      ? heroes
+          .slice()
+          .sort((first, second) => rank(first) - rank(second))
+          .map((hero) => {
+            const current = String(practice[hero.id] || '');
+            const options = [['', '不修練'], ...Object.entries(PRACTICE_ROLES)]
+              .map(([value, name]) => `<option value="${value}" ${current === value ? 'selected' : ''}>${name}</option>`)
+              .join('');
+            const site = MINING_SITES[plans[hero.id]];
+            const blocked = inHuntTeam(hero) ? '狩獵隊伍' : forgeByApiHeroIds(settings).includes(hero.id) ? '鍛造佇列' : site ? `挖礦頁選了${site}（選修練會取消）` : '';
+            return `<div class="row" style="margin:0;padding:3px 0;border-bottom:1px solid #2e2e34">
+              <div style="flex:1;min-width:0"><b>${escapeHtml(hero.name)}</b> <span style="color:#a0a0aa">${escapeHtml(hero.type || '')}</span>
+                <div style="color:${hero.actionState === 7 ? '#a78bfa' : '#a0a0aa'}">${escapeHtml(miningHeroText(hero, data, now, settings))}${blocked ? ` <span style="color:#f87171">${blocked}</span>` : ''}</div></div>
+              <select data-practice-hero="${hero.id}" style="flex:none;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px">${options}</select>
+            </div>`;
+          })
+          .join('')
+      : '<div class="hint">讀取角色中…（沒出現就按「重新讀取」）</div>';
   }
 
   // 「挖到了鐵 × 5」→ ['鐵', 5]；沒寫數量算 1 個
@@ -24199,7 +24400,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   let miningRenderPending = false;
   panel.addEventListener('focusout', (event) => {
-    if (miningRenderPending && event.target.dataset && (event.target.dataset.miningHero || event.target.dataset.miningForeman !== undefined || event.target.dataset.miningForemanPark !== undefined)) setTimeout(renderMiningHeroes, 0);
+    if (miningRenderPending && event.target.dataset && (event.target.dataset.miningHero || event.target.dataset.practiceHero || event.target.dataset.miningForeman !== undefined || event.target.dataset.miningForemanPark !== undefined)) setTimeout(renderMiningHeroes, 0);
   });
 
   panel.addEventListener('change', (event) => {
@@ -24251,6 +24452,25 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     event.target.blur();
     renderMiningHeroes();
     wakeMiningRunner();
+  });
+
+  panel.addEventListener('change', (event) => {
+    const heroId = event.target.dataset && event.target.dataset.practiceHero;
+    if (!heroId) return;
+    const plans = miningPlans(readSettingsFromPanel());
+    const practice = practicePlans(readSettingsFromPanel());
+    delete practice[heroId];
+    if (PRACTICE_ROLES[event.target.value]) {
+      practice[heroId] = event.target.value;
+      delete plans[heroId];
+    }
+    setPanelField('miningPlans', JSON.stringify(plans));
+    setPanelField('practicePlans', JSON.stringify(practice));
+    saveSettings(readSettingsFromPanel());
+    event.target.blur();
+    renderMiningHeroes();
+    wakeMiningRunner();
+    wakePracticeRunner();
   });
 
   panel.addEventListener('change', (event) => {
@@ -25444,12 +25664,13 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     // 讀不到就不自動開始
   }
   if (resumeAfterReload) {
-    setStatus(`重新整理前在跑（${resumeAfterReload.replace('hunt', '打怪').replace('forge', '鍛造').replace('mine', '挖礦')}），5 秒後接著開始`);
+    setStatus(`重新整理前在跑（${resumeAfterReload.replace('hunt', '打怪').replace('forge', '鍛造').replace('mine', '挖礦').replace('practice', '修練')}），5 秒後接著開始`);
     backgroundTimer.setTimeout(() => {
       const modes = resumeAfterReload.split(',');
       if (modes.includes('hunt')) start(false);
       if (modes.includes('forge')) start(true);
       if (modes.includes('mine')) startMiningRunner();
+      if (modes.includes('practice')) startPracticeRunner();
     }, 5000);
   }
   // 每秒檢查血條、驗證框；同樣用背景計時器，分頁在背景時才不會變成一分鐘才檢查一次
