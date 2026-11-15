@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.05
+// @version      6.06
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -22686,7 +22686,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         noteMiningHeroError(master, error, actions);
       }
     }
-    const masterReady = masters.some((master) => master.actionState === 7);
+    // 沒選成老師傅、但老師傅卡正在修練（例如平時修練的工頭）也算
+    const masterReady = masters.some((master) => master.actionState === 7) || [...byId.values()].some((hero) => hero.actionState === 7 && hero.type === '老師傅');
     const now = Date.now();
     const dueAtOf = (hero) => Math.max((Date.parse(hero.actionStart) || now) + hours * 3600000, canCompleteNow(hero, now) ? 0 : Date.parse(hero.actionCompleteTime) || 0);
     for (let trainee of trainees) {
@@ -23918,6 +23919,15 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       });
   }
 
+  function practiceDueText(settings, hero, now) {
+    const role = practicePlans(settings)[hero.id];
+    if (!PRACTICE_ROLES[role]) return '';
+    const dueAt = (Date.parse(hero.actionStart) || now) + Math.max(0.1, Number(settings.practiceHours) || 2) * 3600000;
+    if (dueAt > now) return `・${new Date(dueAt).getHours()}:${String(new Date(dueAt).getMinutes()).padStart(2, '0')} 收`;
+    if (!miningRunner.running) return '・時間到，挖礦沒開不會收';
+    return role === 'train' && miningNotified.has(`practice:${hero.id}`) ? '・時間到，等老師傅修練中才收' : '・時間到，下一輪收';
+  }
+
   function miningHeroText(hero, data, now, settings) {
     if (hero.perished) return '死透了';
     if (hero.hp <= 0) return '死亡';
@@ -23931,7 +23941,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }
     const hpText = `HP ${hero.hp}/${hero.fullHp}`;
     if (hero.actionState === 2) return `休息了 ${durationText(actionMinutes(hero, now))}・${hpText}`;
-    if (hero.actionState === 7) return `修練了 ${durationText(actionMinutes(hero, now))}`;
+    if (hero.actionState === 7) return `修練了 ${durationText(actionMinutes(hero, now))}${settings ? practiceDueText(settings, hero, now) : ''}`;
     if (hero.actionState) return `${HERO_ACTION_NAMES[hero.actionState] || '移動'}中`;
     if (!inTownHero(hero)) return '在城外';
     return `閒置・${spText(hero.sp)}・${hpText}`;
