@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.03
+// @version      6.04
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -22648,9 +22648,11 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   function practiceIds(settings, role) {
     const plans = practicePlans(settings);
+    const foremanIds = miningForemanIds(settings);
     return Object.keys(plans)
       .filter((id) => plans[id] === role)
-      .map(Number);
+      .map(Number)
+      .filter((id) => !foremanIds.includes(id));
   }
 
   async function startPractice(hero, opened) {
@@ -22827,9 +22829,19 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const pageHero = await openCuredForeman(settings, foreman, opened);
     if (!canSendForeman(settings, pageHero)) return false;
     await drinkForemanPotions(settings, pageHero);
-    syncGameHeroAction(await requestGameApi(`${HEROES_API}/${foreman.id}/mining/${site}`, { method: 'POST' }), 'mine');
+    // 先記再送：送出逾時但伺服器其實收到時，工頭人在礦場、腳本卻沒紀錄，會被當成手動派的、一直不收
     data.foremen = { ...data.foremen, [foreman.id]: { at: Date.now(), site, ...(parked ? { parked: true } : {}) } };
     saveMining(data);
+    try {
+      syncGameHeroAction(await requestGameApi(`${HEROES_API}/${foreman.id}/mining/${site}`, { method: 'POST' }), 'mine');
+    } catch (error) {
+      // 伺服器明確拒絕才刪紀錄；逾時、5xx 不知道進去沒，留著讓下一輪照實際狀態處理
+      if (error.status && !error.transient) {
+        delete data.foremen[foreman.id];
+        saveMining(data);
+      }
+      throw error;
+    }
     return true;
   }
 
@@ -23019,6 +23031,11 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       saveMining(data);
       return foreman;
     }
+    if (foreman && foreman.actionState !== 4 && foremanRecord(data, foreman)) {
+      // 紀錄還在但人不在礦場（送出其實沒成功、被手動收掉）：清掉，不然平時修練、掛機都會被擋住
+      delete data.foremen[foreman.id];
+      saveMining(data);
+    }
     if (!foreman || foreman.actionState !== 4 || !foremanRecord(data, foreman)) return foreman;
     if (!canCompleteNow(foreman, Date.now())) {
       if (waits) waits.push(Date.parse(foreman.actionCompleteTime) || Date.now() + 60000);
@@ -23034,12 +23051,12 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const settings = readSettingsFromPanel();
     const siteName = site ? MINING_SITES[site] : '全部地點';
     miningRunner.manualBusy = `主動收礦（${siteName}）`;
-    const data = loadMining();
     const opened = new Set();
     let done = [];
     try {
-      // 自動挖礦正在跑那一輪就等它跑完
+      // 自動挖礦正在跑那一輪就等它跑完；跑完才讀紀錄，先讀的話存回去會蓋掉那一輪剛派進去的工頭紀錄
       for (let tries = 0; miningRunner.ticking && tries < 600; tries++) await wait(1000);
+      const data = loadMining();
       const heroes = await readMiningHeroes(settings, { statuses: false });
       const foremanIds = miningForemanIds(settings);
       const order = miningOrderedIds(settings, plannedMiningIds(settings));
