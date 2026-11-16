@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.08
+// @version      6.09
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -19326,6 +19326,35 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return text.length < 2000 && !/戰鬥過程|造成\s*\d/.test(text);
   }
 
+  // 拍圖用：把裝備詳細資料裡腳本加的整塊收起來，只留一顆小按鈕；所有裝備一起，記在這個瀏覽器
+  const FORGE_DETAIL_HIDDEN_KEY = 'aijijiForgeDetailHidden';
+
+  function forgeDetailHidden() {
+    try {
+      return localStorage.getItem(FORGE_DETAIL_HIDDEN_KEY) === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  function setForgeDetailHidden(hidden) {
+    try {
+      if (hidden) localStorage.setItem(FORGE_DETAIL_HIDDEN_KEY, '1');
+      else localStorage.removeItem(FORGE_DETAIL_HIDDEN_KEY);
+    } catch {
+      // 記不住就只有這次有效
+    }
+  }
+
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest && event.target.closest('[data-forge-detail-toggle]');
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setForgeDetailHidden(!forgeDetailHidden());
+    enhanceEquipmentDetails();
+  }, true);
+
   function enhanceEquipmentDetails(...args) {
     return perfTimed('enhanceEquipmentDetails', () => enhanceEquipmentDetailsUntimed(...args));
   }
@@ -19340,6 +19369,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const locked = lockedEquipmentIds();
     const forSale = sellMarkedIds();
     const blocked = noAutoEquipIds();
+    const hidden = forgeDetailHidden();
     equipmentDetailHeadings().forEach((heading) => {
       const title = heading.textContent.replace(/\s+/g, ' ').trim();
       let root = heading.parentElement;
@@ -19363,7 +19393,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const isLocked = locked.has(equipment.id);
       const isForSale = forSale.has(equipment.id);
       const isBlocked = blocked.has(equipment.id);
-      const signature = `${equipment.id}|${isLocked}|${isForSale}|${isBlocked}|${lines.join('|')}`;
+      const signature = `${equipment.id}|${hidden}|${isLocked}|${isForSale}|${isBlocked}|${lines.join('|')}`;
       if (box && box.dataset.signature === signature) return;
       if (!box) {
         box = document.createElement('div');
@@ -19372,6 +19402,12 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         root.appendChild(box);
       }
       box.dataset.signature = signature;
+      box.style.borderTop = hidden ? '0' : '1px solid rgba(168,162,158,.3)';
+      const toggle = `<button type="button" data-forge-detail-toggle title="${hidden ? '顯示腳本加的鍛造材料、時間與按鈕' : '收起腳本加的這一塊，方便拍圖'}" style="margin-top:6px;padding:1px 6px;border-radius:4px;border:1px solid #44403c;background:transparent;color:#78716c;font-size:11px;cursor:pointer;opacity:${hidden ? 0.45 : 1}">${hidden ? '👁' : '🙈 隱藏'}</button>`;
+      if (hidden) {
+        box.innerHTML = toggle;
+        return;
+      }
       box.innerHTML =
         lines.map((line) => `<div>${escapeHtml(line)}</div>`).join('') +
         `<button type="button" data-equip-lock="${equipment.id}" style="margin-top:6px;padding:3px 10px;border-radius:4px;border:1px solid ${isLocked ? '#f59e0b' : '#57534e'};background:${isLocked ? '#78350f' : '#292524'};color:${isLocked ? '#fde68a' : '#d6d3d1'};font-size:13px;cursor:pointer">${
@@ -19384,7 +19420,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           ? ''
           : ` <button type="button" data-equip-sell-mark="${equipment.id}" style="margin-top:6px;padding:3px 10px;border-radius:4px;border:1px solid ${isForSale ? '#22c55e' : '#57534e'};background:${isForSale ? '#14532d' : '#292524'};color:${isForSale ? '#bbf7d0' : '#d6d3d1'};font-size:13px;cursor:pointer">${
               isForSale ? '💰 要賣（點一下取消）' : '💰 標記要賣'
-            }</button>`);
+            }</button>`) +
+        ` ${toggle}`;
     });
   }
 
