@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.09
+// @version      6.10
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -13103,6 +13103,18 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   // 角色成長值紀錄：原本是獨立的「我的攻略組 角色成長值紀錄 7.2」，併進來共用同一個 fetch 攔截。
   // 這支是 @grant none，沒有 GM_setValue，改存 localStorage；舊資料從 Tampermonkey 的儲存空間貼到「紀錄」頁匯入
+  // 成長頁、角色頁的分類加總：每級平均直接相加（有記到的屬性才算）
+  const GROWTH_SUM_GROUPS = [
+    ['戰鬥屬性加總', ['力量', '韌性', '敏捷', '技巧', '智力', '幸運']],
+    ['生活屬性加總', ['狩獵', '挖礦', '伐木', '效率']],
+    ['鍛造屬性加總', ['鍛造', '裁縫', '工藝']],
+  ];
+
+  function growthGroupSum(stats, names) {
+    const found = names.filter((zhName) => stats[zhName] && Number.isFinite(stats[zhName].avg));
+    return found.length ? { avg: found.reduce((sum, zhName) => sum + stats[zhName].avg, 0), names: found } : null;
+  }
+
   function createGrowthTracker() {
     const STORAGE_PREFIX = GROWTH_STORAGE_PREFIX;
     const STAT_MAP = {
@@ -13298,7 +13310,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }
 
     function clearDisplays(attrPanel) {
-      attrPanel.querySelectorAll('.growth-value-display, #gv-hpsp-row, #growth-history-box').forEach((el) => el.remove());
+      attrPanel.querySelectorAll('.growth-value-display, #gv-hpsp-row, #growth-history-box, #gv-growth-sums').forEach((el) => el.remove());
     }
 
     // 舊版只存了一組成長值，轉成一筆 legacy 紀錄（只算進平均，不算範圍）
@@ -13508,6 +13520,30 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
       renderHistoryTable(attrPanel);
       renderCardCompare(attrPanel);
+      renderGrowthSums(attrPanel);
+    }
+
+    // 角色頁直接看得到：每級成長的戰鬥、生活、鍛造加總
+    function renderGrowthSums(attrPanel) {
+      let box = attrPanel.querySelector('#gv-growth-sums');
+      const sums = currentStats ? GROWTH_SUM_GROUPS.map(([label, names]) => [label, growthGroupSum(currentStats, names)]).filter(([, sum]) => sum) : [];
+      if (!sums.length) {
+        if (box) box.remove();
+        return;
+      }
+      const key = `${currentHeroId}:${growthVersion}:${sums.map(([, sum]) => sum.avg.toFixed(2)).join(',')}`;
+      if (box && box.dataset.key === key) return;
+      if (!box) {
+        box = document.createElement('div');
+        box.id = 'gv-growth-sums';
+        box.style.cssText = `margin-top:8px;display:flex;flex-wrap:wrap;gap:4px 16px;${FONT_SIZE ? `font-size:${FONT_SIZE};` : ''}`;
+      }
+      box.dataset.key = key;
+      box.innerHTML = sums
+        .map(([label, sum]) => `<span title="每級平均相加：${sum.names.join('＋')}"><span style="color:#a8a29e">${label.replace('屬性加總', '加總')}</span> <b style="color:#4ade80">+${sum.avg.toFixed(1)}</b><span style="color:#78716c">/級</span></span>`)
+        .join('');
+      const anchor = attrPanel.querySelector('#gv-card-compare') || attrPanel.querySelector('#growth-history-box');
+      if (box.parentNode !== attrPanel || box.nextElementSibling !== anchor) attrPanel.insertBefore(box, anchor);
     }
 
     // 在數值後面加上 (+7) 或 (+7 ↕5~9)
@@ -13681,10 +13717,19 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       return heroes;
     }
 
-    function cardCompareRows(heroId, group) {
+    function cardCompareRows(heroId, plainGroup) {
+      // 加總當成多出來的屬性一起比，級數沿用那隻的級數
+      const group = plainGroup.map((hero) => {
+        const stats = { ...hero.stats };
+        GROWTH_SUM_GROUPS.forEach(([label, names]) => {
+          const sum = growthGroupSum(hero.stats, names);
+          if (sum) stats[label] = { avg: sum.avg, levels: hero.levels };
+        });
+        return { ...hero, stats };
+      });
       const own = group.find((hero) => hero.heroId === heroId);
       if (!own) return '';
-      return STAT_NAMES.map((zhName) => {
+      return [...STAT_NAMES, ...GROWTH_SUM_GROUPS.map(([label]) => label)].map((zhName) => {
         const mine = own.stats[zhName];
         const entries = group.map((hero) => hero.stats[zhName]).filter((entry) => entry && Number.isFinite(entry.avg));
         if (!mine || entries.length < 2) return '';
@@ -25235,18 +25280,6 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   function cardLabel(card) {
     const traits = [card.tier && `Tier ${card.tier}`, card.potential && `潛力 ${card.potential}`, `${card.levelUps} 級`].filter(Boolean);
     return `${card.name} #${card.heroId}（${traits.join('・')}）`;
-  }
-
-  // 成長頁的分類加總：每級平均直接相加（有記到的屬性才算）
-  const GROWTH_SUM_GROUPS = [
-    ['戰鬥屬性加總', ['力量', '韌性', '敏捷', '技巧', '智力', '幸運']],
-    ['生活屬性加總', ['狩獵', '挖礦', '伐木', '效率']],
-    ['鍛造屬性加總', ['鍛造', '裁縫', '工藝']],
-  ];
-
-  function growthGroupSum(stats, names) {
-    const found = names.filter((zhName) => stats[zhName] && Number.isFinite(stats[zhName].avg));
-    return found.length ? { avg: found.reduce((sum, zhName) => sum + stats[zhName].avg, 0), names: found } : null;
   }
 
   function renderGrowthSummary() {
