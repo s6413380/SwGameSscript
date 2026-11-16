@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.07
+// @version      6.08
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -25200,6 +25200,18 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return `${card.name} #${card.heroId}（${traits.join('・')}）`;
   }
 
+  // 成長頁的分類加總：每級平均直接相加（有記到的屬性才算）
+  const GROWTH_SUM_GROUPS = [
+    ['戰鬥屬性加總', ['力量', '韌性', '敏捷', '技巧', '智力', '幸運']],
+    ['生活屬性加總', ['狩獵', '挖礦', '伐木', '效率']],
+    ['鍛造屬性加總', ['鍛造', '裁縫', '工藝']],
+  ];
+
+  function growthGroupSum(stats, names) {
+    const found = names.filter((zhName) => stats[zhName] && Number.isFinite(stats[zhName].avg));
+    return found.length ? { avg: found.reduce((sum, zhName) => sum + stats[zhName].avg, 0), names: found } : null;
+  }
+
   function renderGrowthSummary() {
     renderGrowthPlaces();
     const summaries = growthTracker.cardSummaries();
@@ -25231,12 +25243,16 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         return `<tr><td>${zhName}</td><td>${formatGrowth(stat.avg)}</td><td>${range}</td><td>${stat.samples}</td></tr>`;
       })
       .join('');
+    const sumRows = GROWTH_SUM_GROUPS.map(([label, names]) => {
+      const sum = growthGroupSum(summary.stats, names);
+      return sum ? `<tr title="${sum.names.join('＋')}"><td><b>${label}</b></td><td><b>${formatGrowth(sum.avg)}</b></td><td colspan="2" style="color:#a0a0aa;font-size:11px">${sum.names.join('、')}</td></tr>` : '';
+    }).join('');
     const places = summary.places
       .map((place) => `<div>${escapeHtml(place.place)}（${place.samples} 次）：${placeDiffHtml(place.diffs) || '跟平均差不多'}</div>`)
       .join('');
     box.innerHTML = `
       ${summary.type === '未知類型' ? '<div class="hint">這張卡沒有記到類型，按下面「補齊角色類型」再重新計算</div>' : ''}
-      <table class="combat"><tr><th>屬性</th><th>平均/級</th><th>範圍</th><th>樣本</th></tr>${rows}</table>
+      <table class="combat"><tr><th>屬性</th><th>平均/級</th><th>範圍</th><th>樣本</th></tr>${rows}${sumRows}</table>
       <div class="hint">範圍與樣本只算一次升一級的紀錄</div>
       <div class="subhead">依升級地點（比這張卡自己的平均多／少）</div>
       <div style="font-size:12px">${places || '<div class="hint">還沒有記到地點的升級</div>'}</div>`;
@@ -25267,7 +25283,16 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         if (!top.length) return '';
         return `<tr><td>${zhName}</td><td style="text-align:left">${top.map((card) => `${who(card)} ${formatGrowth(card.stats[zhName].avg)}<span style="color:#78716c">（${card.levelUps} 級）</span>`).join('<br>')}</td></tr>`;
       })
-      .join('');
+      .join('') +
+      GROWTH_SUM_GROUPS.map(([label, names]) => {
+        const top = group
+          .map((card) => ({ card, sum: growthGroupSum(card.stats, names) }))
+          .filter(({ sum }) => sum)
+          .sort((first, second) => second.sum.avg - first.sum.avg)
+          .slice(0, GROWTH_TOP_COUNT);
+        if (!top.length) return '';
+        return `<tr><td><b>${label}</b></td><td style="text-align:left">${top.map(({ card, sum }) => `${who(card)} ${formatGrowth(sum.avg)}<span style="color:#78716c">（${card.levelUps} 級）</span>`).join('<br>')}</td></tr>`;
+      }).join('');
     box.innerHTML = `<div class="subhead">${escapeHtml(selected.type)}：每項屬性最高的前 ${GROWTH_TOP_COUNT} 隻（共 ${group.length} 隻，記到 ${GROWTH_TOP_MIN_LEVELS} 級以上才算）</div>
       ${rows ? `<table class="combat"><tr><th>屬性</th><th style="text-align:left">誰（雲端署名）每級平均</th></tr>${rows}</table>` : '<div class="hint">這種卡記到 3 級以上的還沒有</div>'}
       <div class="hint">粗體＝上面選的這隻；沒有署名的是自己的卡，或還沒重抓雲端紀錄的</div>`;
