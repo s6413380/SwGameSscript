@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.10
+// @version      6.11
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -538,6 +538,8 @@
     durRecentBattles: 10,
     // 換過名字：舊版存的「關閉」不會蓋掉現在的預設開啟
     cloudSyncEnabled: true,
+    // 勾著時開爐做的裝備（配方）只留在自己這邊；跟統計版同一個意思
+    forgeNoUpload: false,
     huntStatsEnabled: true,
     incomeEnabled: true,
     // 「材料」頁直接鍛造：配方（名稱×數量、…）、裝備名稱（名稱每天影響數值，自己取）、第幾個鍛造坊
@@ -1771,6 +1773,8 @@
       <label class="row"><input data-field="cloudSyncEnabled" type="checkbox" style="flex:none;width:auto"> 啟用雲端同步（每 10 分鐘）</label>
       <div class="row">網址<input data-field="cloudUrl" placeholder="留空＝用內建的共用試算表"></div>
       <div class="row">署名<input data-field="cloudName" placeholder="試算表上顯示是誰傳的（空白＝用遊戲暱稱）"></div>
+      <label class="row"><input data-field="forgeNoUpload" type="checkbox" style="flex:none;width:auto"> 鍛造的不上傳（配方不公開）</label>
+      <div class="hint">勾著的時候開爐做出來的裝備和配方只留在自己這邊，不會傳上雲端；之後取消勾選也不會補傳。勾之前做的照常上傳</div>
       <div class="row"><span data-role="cloud-status" class="hint" style="flex:1"></span><button data-action="cloud-sync-now">立即同步</button></div>
     </div>
 
@@ -15350,6 +15354,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }
   }
 
+  function forgeNoUploadNow() {
+    try {
+      return Boolean(readSettingsFromPanel().forgeNoUpload);
+    } catch {
+      return false;
+    }
+  }
+
   // 鍛造師的鍛造、裁縫、工藝會影響成品（裁縫管布料皮革、工藝管石材寶石），只有開工當下的數值才準
   function rememberForgeStart(requestBody, data) {
     const body = parseJsonText(requestBody);
@@ -15366,6 +15378,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       time: Date.now(),
       ...(hero ? { heroName: hero.name, skills: { forge: hero.forge, tailor: hero.tailor, craft: hero.craft } } : {}),
       ...(forgePurposeOfHero(body.heroId) === 'sell' ? { purpose: 'sell' } : {}),
+      ...(forgeNoUploadNow() ? { noUpload: true } : {}),
     });
     const started = forges[forges.length - 1];
     pending[body.heroId] = forges.slice(-FORGE_PENDING_PER_HERO);
