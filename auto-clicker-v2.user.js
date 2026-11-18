@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.11
+// @version      6.12
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -5948,6 +5948,8 @@
   // 個別設定的角色只看有開的部位；沒開個別設定的照舊全部都看
   function isMonitoredEquipment(settings, equipment) {
     if (!equipHeroIds(settings).includes(equipment.equipped)) return false;
+    // 只顧出戰的：沒出戰的不耗耐久；還沒讀到隊伍時照舊
+    if (state.huntTeamIds.length && !state.huntTeamIds.includes(equipment.equipped)) return false;
     const plan = equipHeroPlan(settings, equipment.equipped);
     if (!plan) return true;
     const part = equipPartOf(equipment.type);
@@ -20638,9 +20640,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }).observe(document.body, { childList: true, subtree: true });
   }
 
-  // 遊戲的裝備詳細面板只在這幾頁（Items、Market、HeroDetail 才載入裝備元件）
+  // 遊戲的裝備詳細面板只在這幾頁（Items、Market、HeroDetail 才載入裝備元件）。
+  // 角色列表不算：角色一多整頁很大，每次畫面一動就掃全頁會卡
   function isEquipmentDetailPath() {
-    return /^\/(?:items|market|heroes)(?:\/|$)/.test(location.pathname);
+    return /^\/(?:items|market)(?:\/|$)|^\/heroes\/\d+/.test(location.pathname);
   }
 
   function installForgeDetailEnhancer() {
