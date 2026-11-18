@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.12
+// @version      6.13
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -21135,13 +21135,96 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const settings = readSettingsFromPanel();
     const plans = forgeByApiPlans(settings);
     heroIds.forEach((heroId) => {
-      plans[heroId] = { ...(plans[heroId] || {}), type, recipe: normalizeRecipe(recipe) };
+      plans[heroId] = rememberPreviousRecipe(plans[heroId] || {}, { type, recipe: normalizeRecipe(recipe) });
     });
     setPanelField('forgeByApiPlans', JSON.stringify(plans));
     afterForgeQueueChange();
     renderRecipeFavorites();
     const names = heroIds.map((heroId) => (forgeHeroes.find((hero) => hero.id === heroId) || {}).name || heroId);
     setStatus(`${names.join('、')} 改用 ${type} ${normalizeRecipe(recipe)}`);
+  }
+
+  // 限量配方（省稀有材料）：做 limitCount 爐後換回 backRecipe；換配方前的配方記在 prevRecipe，
+  // 設限量時沒填要換回什麼就用它
+  function rememberPreviousRecipe(old, changes) {
+    const plan = { ...old, ...changes };
+    const changed = (changes.recipe !== undefined && changes.recipe !== (old.recipe || '')) || (changes.type !== undefined && changes.type !== old.type);
+    if (!changed || !old.recipe) return plan;
+    plan.prevRecipe = old.recipe;
+    plan.prevType = old.type || '';
+    if (plan.limitCount > 0 && !plan.backRecipe) {
+      plan.backRecipe = old.recipe;
+      plan.backType = old.type || '';
+    }
+    return plan;
+  }
+
+  function setForgeLimit(heroId, field, value) {
+    const settings = readSettingsFromPanel();
+    const plans = forgeByApiPlans(settings);
+    const plan = { ...(plans[heroId] || {}) };
+    if (field === 'count') {
+      const count = Math.max(0, Math.floor(Number(value) || 0));
+      if (count) {
+        plan.limitCount = count;
+        if (!plan.backRecipe && plan.prevRecipe) {
+          plan.backRecipe = plan.prevRecipe;
+          plan.backType = plan.prevType || '';
+        }
+      } else {
+        delete plan.limitCount;
+        delete plan.backRecipe;
+        delete plan.backType;
+      }
+    } else {
+      const recipe = normalizeRecipe(value);
+      if (recipe) {
+        plan.backRecipe = recipe;
+        plan.backType = plan.type || settings.forgeRecipeType;
+      } else {
+        delete plan.backRecipe;
+        delete plan.backType;
+      }
+    }
+    plans[heroId] = plan;
+    setPanelField('forgeByApiPlans', JSON.stringify(plans));
+    afterForgeQueueChange();
+  }
+
+  // 開爐成功才扣；扣完換回原本的配方，沒有原本的就移出佇列（做幾爐就停）
+  function consumeForgeLimit(heroId) {
+    const settings = readSettingsFromPanel();
+    const plans = forgeByApiPlans(settings);
+    const plan = plans[heroId];
+    if (!plan || !(plan.limitCount > 0)) return '';
+    const hero = forgeHeroes.find((candidate) => candidate.id === heroId);
+    const name = hero ? hero.name : heroId;
+    plan.limitCount -= 1;
+    if (plan.limitCount > 0) {
+      setPanelField('forgeByApiPlans', JSON.stringify(plans));
+      afterForgeQueueChange();
+      return `（限量配方還剩 ${plan.limitCount} 爐）`;
+    }
+    const back = plan.backRecipe;
+    const backType = plan.backType || plan.type;
+    delete plan.limitCount;
+    delete plan.backRecipe;
+    delete plan.backType;
+    let text;
+    if (back) {
+      plan.prevRecipe = plan.recipe;
+      plan.prevType = plan.type || '';
+      plan.recipe = back;
+      plan.type = backType;
+      text = `${name} 限量配方做完，換回 ${backType} ${back}`;
+    } else {
+      setPanelField('forgeByApiHeroIds', forgeByApiHeroIds(settings).filter((id) => id !== heroId).join(','));
+      text = `${name} 限量配方做完，沒有要換回的配方，移出佇列`;
+    }
+    setPanelField('forgeByApiPlans', JSON.stringify(plans));
+    afterForgeQueueChange();
+    forgeLog(text);
+    return `（${text}）`;
   }
 
   // 佇列裡做這種裝備的角色
@@ -22005,6 +22088,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         itemName: plan.name || '',
         ownName: Boolean((plans[heroId] || {}).name),
         nameLocked: nameLockedToday(plans[heroId]),
+        limitCount: (plans[heroId] || {}).limitCount || 0,
+        backRecipe: (plans[heroId] || {}).backRecipe || '',
         materials: recipe.map(([name, quantity]) => ({ name, quantity, have: mineStock.length ? stock.get(name) || 0 : null })),
         total,
         cap: cap || 0,
@@ -22060,6 +22145,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
             ${row.materials.length ? `<span style="color:#a0a0aa">共 ${row.total}${row.cap ? `/${row.cap}` : ''}</span>` : ''}
             ${row.possible === null ? '' : `<span style="color:${row.possible ? '#4ade80' : '#f87171'}">・夠 ${row.possible} 爐</span>`}</div>
           ${forgeEstimateHtml(row.type, row.materials.map(({ name, quantity }) => [name, quantity]), row.itemName)}
+          <div style="display:flex;gap:4px;align-items:center;margin:2px 0" title="省稀有材料：這個配方開幾爐就換回原本的配方；0＝不限。換回的配方沒填就用換配方前那個，也沒有就做完移出佇列">限量
+            <input data-forge-limit-count="${row.heroId}" type="number" min="0" value="${row.limitCount || ''}" placeholder="不限" style="flex:none;width:52px;padding:1px 4px;color:#fff;background:#2a2a30;border:1px solid ${row.limitCount ? '#f59e0b' : '#44444c'};border-radius:5px">爐後換回
+            <input data-forge-limit-back="${row.heroId}" value="${escapeHtml(row.backRecipe)}" placeholder="${row.limitCount ? '沒填＝做完移出佇列' : '原本的配方'}" style="flex:1;min-width:0;padding:1px 4px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></div>
           ${row.problems.length ? `<div style="color:#f87171">⚠ ${row.problems.join('；')}</div>` : ''}
         </div>`;
       })
@@ -22173,8 +22261,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const heroId = row.dataset.forgePlanHero;
     const plans = forgeByApiPlans(readSettingsFromPanel());
     const old = plans[heroId] || {};
-    const plan = { ...old };
-    fields.forEach((field) => (plan[field] = row.querySelector(`[data-forge-plan="${field}"]`).value.trim()));
+    const changes = {};
+    fields.forEach((field) => (changes[field] = row.querySelector(`[data-forge-plan="${field}"]`).value.trim()));
+    const plan = rememberPreviousRecipe(old, changes);
     // 在清單裡自己改名稱跟佇列卡片一樣，今天自動換名稱不蓋掉
     if (fields.includes('name') && plan.name !== (old.name || '')) {
       if (plan.name) plan.nameManualDay = localDayKey(Date.now());
@@ -22646,7 +22735,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         forgeRunner.started++;
         // 開爐成功：補不上體力的標記清掉，下一爐再試著補
         [...state.itemUsedSlots].filter((key) => key.startsWith('forge:')).forEach((key) => state.itemUsedSlots.delete(key));
-        actions.push(`${idle.name} 在鍛造坊 ${freeShop} 開始鍛造 ${summary}${forgesLeft === null ? '' : `，材料還夠 ${forgesLeft} 爐`}`);
+        const limitText = consumeForgeLimit(idle.id);
+        actions.push(`${idle.name} 在鍛造坊 ${freeShop} 開始鍛造 ${summary}${forgesLeft === null ? '' : `，材料還夠 ${forgesLeft} 爐`}${limitText}`);
       }
       forgeRunner.failures = 0;
       forgeHeroes = heroes;
@@ -24459,6 +24549,12 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   panel.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && event.target.dataset && (event.target.dataset.forgeName || event.target.dataset.forgeTypeName)) event.target.blur();
+  });
+
+  panel.addEventListener('change', (event) => {
+    if (!event.target.dataset) return;
+    if (event.target.dataset.forgeLimitCount) setForgeLimit(Number(event.target.dataset.forgeLimitCount), 'count', event.target.value);
+    if (event.target.dataset.forgeLimitBack) setForgeLimit(Number(event.target.dataset.forgeLimitBack), 'back', event.target.value);
   });
 
   panel.addEventListener('change', (event) => {
