@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.16
+// @version      6.17
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1667,16 +1667,29 @@
       <div class="row">裝備<select data-alloy-test="type" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select>每種做<input data-alloy-test="repeat" type="number" min="1" max="10" style="flex:none;width:48px">件</div>
       <div class="row">名稱<input data-alloy-test="name" placeholder="固定一個名稱，例：合金測試" style="flex:1;min-width:0"></div>
       <input data-alloy-test="bases" type="hidden"><input data-alloy-test="additives" type="hidden">
-      <div class="row">底材<span class="hint" style="margin:0">（可以勾好幾種，各自一組）</span><span style="flex:1"></span><input data-role="alloy-test-filter" placeholder="篩選材料" style="flex:none;width:90px"></div>
-      <div data-role="alloy-test-bases" style="max-height:110px;overflow:auto;font-size:12px"></div>
-      <div class="row">添加<span class="hint" style="margin:0">（每種跟底材各做一組）</span><span style="flex:1"></span><button data-action="alloy-test-clear-additives">清空</button></div>
-      <div data-role="alloy-test-additives" style="max-height:140px;overflow:auto;font-size:12px"></div>
+      <div style="border:1px solid #2e2e34;border-radius:8px;padding:5px 6px;margin:4px 0">
+        <div style="display:flex;gap:4px;align-items:flex-start;margin:2px 0"><b style="flex:none;color:#93c5fd;width:34px">底材</b><div data-role="alloy-picked-bases" style="flex:1;min-width:0;font-size:12px"></div></div>
+        <div style="display:flex;gap:4px;align-items:flex-start;margin:2px 0"><b style="flex:none;color:#86efac;width:34px">添加</b><div data-role="alloy-picked-additives" style="flex:1;min-width:0;font-size:12px"></div><button data-action="alloy-test-clear-additives" style="flex:none;padding:0 6px">清空</button></div>
+        <div class="row" style="margin-top:4px;flex-wrap:wrap">點材料加到
+          <label style="flex:none"><input type="radio" name="aijijiAlloyPickMode" data-role="alloy-pick-mode" value="bases" style="width:auto"> <span style="color:#93c5fd">底材</span></label>
+          <label style="flex:none"><input type="radio" name="aijijiAlloyPickMode" data-role="alloy-pick-mode" value="additives" checked style="width:auto"> <span style="color:#86efac">添加</span></label>
+          <input data-role="alloy-test-filter" placeholder="篩選材料" style="flex:1;min-width:70px">
+          <label style="flex:none" title="沒庫存的也列出來（素材表上有的）"><input type="checkbox" data-role="alloy-show-all" style="width:auto"> 含沒庫存</label></div>
+        <div data-role="alloy-test-materials" style="max-height:200px;overflow:auto;font-size:12px"></div>
+        <div class="hint" style="margin:2px 0 0">每種底材各一組（純底材當對照）；每種添加跟每種底材各做一組。再點一次已選的就拿掉，數字是庫存</div>
+      </div>
       <div class="row">添加份量<input data-alloy-test="amounts" placeholder="1" style="flex:none;width:80px"><span class="hint" style="margin:0">（例：1,2,3＝每種添加各做放 1、2、3 份，底材跟著少）</span></div>
       <label class="row"><input data-alloy-test="pairs" type="checkbox" style="flex:none;width:auto"> 兩兩組合：勾的添加兩種一起各放 1 份（底材少 2 個）<span class="hint" style="margin:0">種類多時爐數很多，看下面的爐數</span></label>
       <div class="row"><button data-action="alloy-test-start" style="font-weight:bold">開始測試</button><button data-action="alloy-test-stop">停止</button><button data-action="alloy-test-refresh">讀取裝備並更新結果</button><button data-action="alloy-test-copy" title="複製成跟「加成合金」表一樣的格式（底材一欄、添加一列）">複製結果</button></div>
       <textarea data-role="alloy-test-export" rows="4" readonly style="display:none;width:100%;box-sizing:border-box;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></textarea>
       <div data-role="alloy-test-status" class="hint"></div>
       <div data-role="alloy-test-result" style="font-size:12px;max-height:420px;overflow:auto"></div>
+      <fieldset class="group" data-fold="closed">
+        <legend>測過的組合（長期保存）</legend>
+        <div class="hint" style="margin-top:0">測試品另外存一份，不會因為鍛造紀錄超過上限被清掉；換別的角色、裝備測完，回來按「載入」就看得到舊結果。換瀏覽器或清資料前先匯出</div>
+        <div data-role="alloy-test-history" style="font-size:12px;max-height:220px;overflow:auto"></div>
+        <div class="row"><button data-action="alloy-test-export-file">匯出合金資料</button><button data-action="alloy-test-import-file">匯入</button><input data-role="alloy-test-import" type="file" accept=".json,application/json" style="display:none"></div>
+      </fieldset>
     </div>
 
     <div data-tab="mining">
@@ -12548,6 +12561,12 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       refreshAlloyTest();
     } else if (action === 'alloy-test-copy') {
       copyAlloyTestResult();
+    } else if (action === 'alloy-test-load') {
+      loadAlloyHistory(Number(event.target.dataset.index));
+    } else if (action === 'alloy-test-export-file') {
+      exportAlloyFile();
+    } else if (action === 'alloy-test-import-file') {
+      panel.querySelector('[data-role="alloy-test-import"]').click();
     } else if (action === 'alloy-test-clear-additives') {
       saveAlloyTest({ ...readAlloyTestForm(), additives: '' });
       renderAlloyTest();
@@ -17995,6 +18014,114 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     writeJsonStorage(ALLOY_TEST_KEY, config);
   }
 
+  // 測試品另外存：自己的鍛造紀錄超過上限會丟最舊的，合金測試要長期比所以不跟著丟。
+  // 只存算結果用得到的欄位；開過爐的「角色｜裝備｜名稱」記在 config.conditions，對得上的才存
+  const ALLOY_ARCHIVE_KEY = 'aijijiAlloyArchive';
+  const ALLOY_ARCHIVE_FIELDS = ['heroId', 'type', 'name', 'quality', 'atk', 'def', 'int', 'lck', 'wgt', 'fullDur', 'enchantments', 'materials', 'craftedTime'];
+  const ALLOY_HISTORY_LIMIT = 40;
+
+  function archiveAlloySamples(config, records) {
+    const conditions = new Set([...(config.conditions || []), alloyConditionKey(config)]);
+    const archive = readJsonStorage(ALLOY_ARCHIVE_KEY, {});
+    let changed = false;
+    records.forEach((item, id) => {
+      if (archive[id] || !Array.isArray(item.materials) || !item.heroId) return;
+      if (!conditions.has(`${Number(item.heroId)}|${item.type}|${String(item.name || '').trim()}`)) return;
+      archive[id] = Object.fromEntries(ALLOY_ARCHIVE_FIELDS.map((field) => [field, item[field] ?? null]));
+      changed = true;
+    });
+    if (changed) writeJsonStorage(ALLOY_ARCHIVE_KEY, archive);
+    return archive;
+  }
+
+  // 開爐時記下這次的設定，之後一鍵載回來看結果
+  function rememberAlloyHistory(config, condition) {
+    const entry = { heroId: Number(config.heroId), type: config.type, name: String(config.name || '').trim(), bases: config.bases, additives: config.additives, amounts: config.amounts, pairs: Boolean(config.pairs), at: Date.now() };
+    const same = (item) => item.heroId === entry.heroId && item.type === entry.type && item.name === entry.name && item.bases === entry.bases && item.additives === entry.additives && item.amounts === entry.amounts && item.pairs === entry.pairs;
+    return {
+      conditions: [...new Set([...(config.conditions || []), condition])],
+      history: [entry, ...(config.history || []).filter((item) => !same(item))].slice(0, ALLOY_HISTORY_LIMIT),
+    };
+  }
+
+  function renderAlloyHistory(config) {
+    const box = panel.querySelector('[data-role="alloy-test-history"]');
+    if (!box) return;
+    const archive = readJsonStorage(ALLOY_ARCHIVE_KEY, {});
+    const history = config.history || [];
+    if (!history.length) {
+      box.innerHTML = `<div class="hint">還沒有紀錄：開始測試開過爐就會記下來（目前存檔 ${Object.keys(archive).length} 件）</div>`;
+      return;
+    }
+    const counts = new Map();
+    Object.values(archive).forEach((item) => {
+      const key = `${Number(item.heroId)}|${item.type}|${String(item.name || '').trim()}`;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    });
+    const heroName = (heroId) => (forgeHeroes.find((hero) => hero.id === heroId) || {}).name || `角色 ${heroId}`;
+    box.innerHTML =
+      history
+        .map((item, index) => {
+          const current = item.heroId === Number(config.heroId) && item.type === config.type && item.name === String(config.name || '').trim() && item.bases === config.bases && item.additives === config.additives;
+          return `<div style="display:flex;gap:4px;align-items:center;padding:3px 0;border-bottom:1px solid #2e2e34${current ? ';background:#16261c' : ''}">
+            <div style="flex:1;min-width:0"><b>${escapeHtml(heroName(item.heroId))}</b>・${escapeHtml(item.type)}「${escapeHtml(item.name)}」<span style="color:#a0a0aa">${new Date(item.at).toLocaleDateString('zh-TW', { month: 'numeric', day: 'numeric' })}・存 ${counts.get(`${item.heroId}|${item.type}|${item.name}`) || 0} 件</span>
+              <div style="color:#a0a0aa"><span style="color:#93c5fd">${escapeHtml(alloyMaterialNames(item.bases).join('、'))}</span> ＋ <span style="color:#86efac">${escapeHtml(alloyMaterialNames(item.additives).join('、') || '（沒有添加）')}</span>${item.amounts && item.amounts !== '1' ? `・份量 ${escapeHtml(item.amounts)}` : ''}${item.pairs ? '・兩兩組合' : ''}</div></div>
+            ${current ? '<span style="flex:none;color:#4ade80">✓ 顯示中</span>' : `<button data-action="alloy-test-load" data-index="${index}" style="flex:none;padding:0 8px">載入</button>`}
+          </div>`;
+        })
+        .join('') + `<div class="hint">存檔共 ${Object.keys(archive).length} 件</div>`;
+  }
+
+  function loadAlloyHistory(index) {
+    const config = loadAlloyTest();
+    const item = (config.history || [])[index];
+    if (!item) return;
+    if (alloyTestRunner.running) {
+      setStatus('測試中不能換組合，先按停止');
+      return;
+    }
+    const { at, ...fields } = item;
+    saveAlloyTest({ ...config, ...fields });
+    renderAlloyTest();
+    setStatus('已載入這組測試的設定和結果');
+  }
+
+  function exportAlloyFile() {
+    const config = loadAlloyTest();
+    const data = { app: 'aijiji-alloy', exportedAt: new Date().toISOString(), history: config.history || [], conditions: config.conditions || [], archive: readJsonStorage(ALLOY_ARCHIVE_KEY, {}) };
+    const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `aijiji-alloy-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    setStatus(`已匯出合金資料（${Object.keys(data.archive).length} 件）`);
+  }
+
+  // 匯入是合併：同一件不重複，歷史照時間排
+  function importAlloyText(textContent) {
+    const data = parseJsonText(textContent);
+    if (!data || data.app !== 'aijiji-alloy' || typeof data.archive !== 'object') {
+      setStatus('這不是合金資料的匯出檔');
+      return;
+    }
+    const archive = readJsonStorage(ALLOY_ARCHIVE_KEY, {});
+    let added = 0;
+    Object.entries(data.archive || {}).forEach(([id, item]) => {
+      if (archive[id] || !item || !Array.isArray(item.materials)) return;
+      archive[id] = Object.fromEntries(ALLOY_ARCHIVE_FIELDS.map((field) => [field, item[field] ?? null]));
+      added++;
+    });
+    writeJsonStorage(ALLOY_ARCHIVE_KEY, archive);
+    const config = loadAlloyTest();
+    const key = (item) => [item.heroId, item.type, item.name, item.bases, item.additives, item.amounts, item.pairs].join('|');
+    const history = [...(config.history || []), ...(Array.isArray(data.history) ? data.history : [])];
+    const unique = [...new Map(history.map((item) => [key(item), item])).values()].sort((first, second) => (second.at || 0) - (first.at || 0)).slice(0, ALLOY_HISTORY_LIMIT);
+    saveAlloyTest({ ...config, history: unique, conditions: [...new Set([...(config.conditions || []), ...(Array.isArray(data.conditions) ? data.conditions : [])])] });
+    renderAlloyTest();
+    setStatus(`已匯入合金資料：新增 ${added} 件`);
+  }
+
   function alloyMaterialNames(text) {
     return [...new Set(String(text || '').split(/[\s,，、]+/).map((name) => name.trim()).filter(Boolean))];
   }
@@ -18066,7 +18193,11 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const groups = new Map();
     // 附魔不用跟同一天的對照比，每個配方做過的全部一起算
     const enchantsByKey = new Map();
-    forgedRecords().forEach((item) => {
+    const records = forgedRecords();
+    Object.entries(archiveAlloySamples(config, records)).forEach(([id, item]) => {
+      if (!records.has(id)) records.set(id, item);
+    });
+    records.forEach((item) => {
       if (Number(item.heroId) !== Number(config.heroId) || item.type !== config.type || !Array.isArray(item.materials)) return;
       const key = recipeKeyOf(item.materials);
       if (!byKey.has(key)) return;
@@ -18164,6 +18295,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     });
     renderAlloyMaterialPicks(config);
     renderAlloyTestStatus();
+    renderAlloyHistory(config);
     const rows = alloyTestResults(config);
     const box = panel.querySelector('[data-role="alloy-test-result"]');
     if (!rows.some((entry) => entry.n)) {
@@ -18194,23 +18326,69 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   }
 
   // 材料從庫存列出來勾；勾過但現在沒庫存的也留著，不然看不到也取消不了
+  const ALLOY_PICK_COLORS = { bases: ['#1e3a8a', '#bfdbfe', '#3b82f6'], additives: ['#14532d', '#bbf7d0', '#22c55e'] };
+
+  function alloyPickMode() {
+    const checked = panel.querySelector('[data-role="alloy-pick-mode"]:checked');
+    return checked ? checked.value : 'additives';
+  }
+
+  // 已選的放上面（點 ✕ 拿掉）；下面照種類分組，點一下加到「點材料加到」選的那邊，再點一次拿掉
   function renderAlloyMaterialPicks(config) {
     const filter = panel.querySelector('[data-role="alloy-test-filter"]').value.trim();
+    const showAll = panel.querySelector('[data-role="alloy-show-all"]').checked;
     const stock = new Map(mineStock.map((mine) => [mine.name, mine.have]));
+    const picked = { bases: alloyMaterialNames(config.bases), additives: alloyMaterialNames(config.additives) };
+    const stockText = (name) => `<span style="opacity:.7;margin-left:3px">${stock.has(name) ? stock.get(name) : 0}</span>`;
     ['bases', 'additives'].forEach((field) => {
-      const picked = alloyMaterialNames(config[field]);
-      const names = [...new Set([...picked, ...mineStock.filter((mine) => mine.have > 0).map((mine) => mine.name)])]
-        .filter((name) => !filter || picked.includes(name) || name.includes(filter))
-        .sort((first, second) => first.localeCompare(second, 'zh-Hant'));
-      const box = panel.querySelector(`[data-role="alloy-test-${field}"]`);
-      box.innerHTML = names.length
-        ? names
-            .map(
-              (name) => `<label style="display:inline-block;margin:0 8px 2px 0;white-space:nowrap${picked.includes(name) ? ';color:#4ade80' : ''}"><input type="checkbox" data-alloy-pick="${field}" value="${escapeHtml(name)}" ${picked.includes(name) ? 'checked' : ''} style="width:auto;flex:none"> ${escapeHtml(name)}<span style="color:#78716c">${stock.has(name) ? stock.get(name) : 0}</span></label>`
-            )
+      const [background, color] = ALLOY_PICK_COLORS[field];
+      panel.querySelector(`[data-role="alloy-picked-${field}"]`).innerHTML = picked[field].length
+        ? picked[field]
+            .map((name) => `<button data-alloy-remove="${field}" data-name="${escapeHtml(name)}" title="拿掉" style="margin:1px 3px 1px 0;padding:0 7px;border-radius:10px;border:0;background:${background};color:${color}">${escapeHtml(name)}${stockText(name)} ✕</button>`)
             .join('')
-        : '<span class="hint">還沒讀到材料庫存，按「讀取裝備並更新結果」</span>';
+        : `<span style="color:#78716c">${field === 'bases' ? '還沒選：下面選「底材」再點材料' : '還沒選'}</span>`;
     });
+    const known = showAll ? [...mineStock.map((mine) => mine.name), ...Object.keys(MATERIAL_TABLE)] : mineStock.filter((mine) => mine.have > 0).map((mine) => mine.name);
+    const names = [...new Set([...known, ...picked.bases, ...picked.additives])].filter((name) => !filter || name.includes(filter));
+    const box = panel.querySelector('[data-role="alloy-test-materials"]');
+    if (!names.length) {
+      box.innerHTML = mineStock.length ? '<span class="hint">沒有符合的材料</span>' : '<span class="hint">還沒讀到材料庫存，按「讀取裝備並更新結果」</span>';
+      return;
+    }
+    const groups = new Map(MINE_KIND_ORDER.map((kind) => [kind, []]));
+    names.forEach((name) => {
+      const mine = mineStock.find((candidate) => candidate.name === name) || { name };
+      const kind = mineKind(mine);
+      (groups.get(kind) || groups.get('其他')).push(name);
+    });
+    box.innerHTML = [...groups]
+      .filter(([, list]) => list.length)
+      .map(([kind, list]) => {
+        const buttons = list
+          .sort((first, second) => first.localeCompare(second, 'zh-Hant'))
+          .map((name) => {
+            const field = picked.bases.includes(name) ? 'bases' : picked.additives.includes(name) ? 'additives' : '';
+            const [background, color, border] = field ? ALLOY_PICK_COLORS[field] : ['#2a2a30', (stock.get(name) || 0) > 0 ? '#e5e5e5' : '#78716c', '#44444c'];
+            return `<button data-alloy-toggle="${escapeHtml(name)}" style="margin:1px 3px 1px 0;padding:0 7px;border-radius:10px;border:1px solid ${border};background:${background};color:${color}">${field === 'bases' ? '底 ' : field === 'additives' ? '＋ ' : ''}${escapeHtml(name)}${stockText(name)}</button>`;
+          })
+          .join('');
+        return `<div style="margin:2px 0"><span style="display:inline-block;width:42px;color:#a0a0aa">${escapeHtml(kind)}</span>${buttons}</div>`;
+      })
+      .join('');
+  }
+
+  // 一種材料只能在一邊：加到底材就從添加拿掉，反過來也一樣
+  function toggleAlloyMaterial(name, mode) {
+    const config = readAlloyTestForm();
+    const lists = { bases: alloyMaterialNames(config.bases), additives: alloyMaterialNames(config.additives) };
+    const other = mode === 'bases' ? 'additives' : 'bases';
+    if (lists[mode].includes(name)) lists[mode] = lists[mode].filter((item) => item !== name);
+    else {
+      lists[mode].push(name);
+      lists[other] = lists[other].filter((item) => item !== name);
+    }
+    saveAlloyTest({ ...config, bases: lists.bases.join('、'), additives: lists.additives.join('、') });
+    renderAlloyTest();
   }
 
   function renderAlloyTestStatus() {
@@ -18397,6 +18575,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const key = alloyRecipeKey(job.recipe);
       // 只留今天的，舊的日子用不到
       fresh.started = { [day]: { ...today, [condition]: { ...counts, [key]: (counts[key] || 0) + 1 } } };
+      Object.assign(fresh, rememberAlloyHistory(fresh, condition));
       saveAlloyTest(fresh);
       alloyTestRunner.failures = 0;
       alloyTestLog(`${hero.name} 在鍛造坊 ${freeShop} 開始做 ${job.additive ? `${job.base}＋${job.additive}` : `純${job.base}`}（${summary}）`);
@@ -25735,14 +25914,19 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   panel.querySelector('[data-tab="players"]').addEventListener('change', (event) => {
     if (event.target.dataset.playerNote) setPlayerNote(Number(event.target.dataset.playerNote), event.target.value);
   });
-  panel.querySelector('[data-tab="alloyTest"]').addEventListener('change', (event) => {
-    const field = event.target.dataset.alloyPick;
-    if (!field) return;
-    const picked = [...panel.querySelectorAll(`[data-alloy-pick="${field}"]:checked`)].map((input) => input.value);
-    saveAlloyTest({ ...readAlloyTestForm(), [field]: picked.join('、') });
-    renderAlloyTest();
+  panel.querySelector('[data-tab="alloyTest"]').addEventListener('click', (event) => {
+    const toggle = event.target.closest('[data-alloy-toggle]');
+    if (toggle) toggleAlloyMaterial(toggle.dataset.alloyToggle, alloyPickMode());
+    const remove = event.target.closest('[data-alloy-remove]');
+    if (remove) toggleAlloyMaterial(remove.dataset.name, remove.dataset.alloyRemove);
   });
   panel.querySelector('[data-role="alloy-test-filter"]').addEventListener('input', () => renderAlloyMaterialPicks(loadAlloyTest()));
+  panel.querySelector('[data-role="alloy-show-all"]').addEventListener('change', () => renderAlloyMaterialPicks(loadAlloyTest()));
+  panel.querySelector('[data-role="alloy-test-import"]').addEventListener('change', (event) => {
+    const [selected] = event.target.files;
+    event.target.value = '';
+    if (selected) selected.text().then(importAlloyText);
+  });
   panel.querySelector('[data-role="material-filter"]').addEventListener('input', renderMaterialSummary);
   panel.querySelector('[data-role="growth-import-file"]').addEventListener('change', (event) => {
     const files = Array.from(event.target.files);
