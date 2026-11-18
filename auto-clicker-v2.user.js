@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.17
+// @version      6.18
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1847,7 +1847,7 @@
     <div data-tab="sales">
       <label class="row"><input data-field="marketSalesEnabled" type="checkbox" style="flex:none;width:auto"> 記下自己在拍賣場賣掉的東西</label>
       <div class="hint">遊戲沒有成交紀錄，這裡靠比對「自己的掛單」：上次還在、這次不見、又不是你自己下架的，就算賣掉。有掛單時每 10～20 分鐘看一次自己的掛單，你在遊戲開「我的掛單」也會順便比對；賣出時間是發現的時間，實際會更早一點。轉移用的掛單不算</div>
-      <div class="row"><select data-role="sales-kind" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="equipments">裝備</option><option value="mines">礦石、寶石</option><option value="items">道具</option></select><button data-action="sales-clear">清除紀錄</button></div>
+      <div class="row"><select data-role="sales-kind" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="equipments">裝備</option><option value="mines">礦石、寶石</option><option value="items">道具</option><option value="heroes">角色卡</option></select><button data-action="sales-clear">清除紀錄</button></div>
       <div data-role="sales-stats" style="font-size:12px"></div>
     </div>
 
@@ -12891,12 +12891,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const isMoney = !growthOnly && PLACE_API_PATTERN.test(url) && (method !== 'GET' || MONEY_API_PATTERN.test(url));
       const ownTradesMatch = !growthOnly && method === 'GET' ? url.match(OWN_TRADES_PATTERN) : null;
       const userDetailMatch = !growthOnly && method === 'GET' ? url.match(USER_DETAIL_PATTERN) : null;
-      const isSaleAction = !growthOnly && method === 'POST' && (GOODS_SELL_PATTERN.test(url) || TRADE_CANCEL_PATTERN.test(url) || EQUIPMENT_CANCEL_PATTERN.test(url));
+      const isSaleAction =
+        !growthOnly && method === 'POST' && (GOODS_SELL_PATTERN.test(url) || TRADE_CANCEL_PATTERN.test(url) || EQUIPMENT_CANCEL_PATTERN.test(url) || HERO_SELL_PATTERN.test(url) || HERO_CANCEL_PATTERN.test(url));
+      const cardBuyMatch = !growthOnly && method === 'POST' ? url.match(CARD_BUY_PATTERN) : null;
       // 玩家自己在遊戲畫面收礦、派去挖礦、休息
       const manualMiningMatch = !growthOnly && !fromScript && method === 'POST' ? url.match(MINING_ACTION_PATTERN) : null;
       const needsResponse = growthOnly
         ? isHunt || growthHeroId || isHeroList || isForgeData || isPlace
-        : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData || itemUseMatch || isPlace || isMoney || isCardMarket || manualMiningMatch || isScratchCard || marketGoodsMatch || reportDetailMatch || ownTradesMatch || isSaleAction || isZoneUsers || userDetailMatch;
+        : apiRecorder.recording || apiRecorder.heroCapture || isHunt || growthHeroId || isHeroList || isEquipmentList || isForgeData || itemUseMatch || isPlace || isMoney || isCardMarket || manualMiningMatch || isScratchCard || marketGoodsMatch || reportDetailMatch || ownTradesMatch || isSaleAction || cardBuyMatch || isZoneUsers || userDetailMatch;
       if (!growthOnly && method === 'GET' && HUNT_EVENTS_PATTERN.test(url)) {
         return originalFetch.apply(this, args).then((response) => {
           tapHuntEvents(response);
@@ -12988,7 +12990,11 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
                 rememberMoneyAction(url);
               }
             }
-            if (response.ok && isCardMarket && method === 'GET') noticeGameMarket(url, parseJsonText(responseText));
+            if (response.ok && isCardMarket && method === 'GET') {
+              rememberCardTrades(url, parseJsonText(responseText));
+              noticeGameMarket(url, parseJsonText(responseText));
+            }
+            if (response.ok && cardBuyMatch) recordCardBuy(cardBuyMatch);
             if (response.ok && method === 'GET' && ZONE_USERS_PATTERN.test(url)) noticeZoneUsers(parseJsonText(responseText));
             if (response.ok && userDetailMatch) noticePlayerDetail(Number(userDetailMatch[1]), parseJsonText(responseText));
             // 角色列表不管是遊戲自己讀（每 16 秒、抽到新卡、買賣角色後）還是腳本讀的，挖礦頁都跟著換，新卡馬上看得到
@@ -14923,8 +14929,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 自己賣掉的裝備、道具、礦石寶石：遊戲沒有成交紀錄，只能比對自己的掛單——
   // 上次還在、這次不見、又不是自己下架的就是賣掉了；數量變少是賣掉一部分
   const MARKET_SALES_KEY = 'aijijiMarketSales';
-  const SALE_KINDS = { equipments: '裝備', mines: '礦石、寶石', items: '道具' };
-  const OWN_TRADES_PATTERN = /\/api\/trades\?type=(equipments|items|mines)[^#]*own=true/;
+  const SALE_KINDS = { equipments: '裝備', mines: '礦石、寶石', items: '道具', heroes: '角色卡' };
+  const OWN_TRADES_PATTERN = /\/api\/trades\?type=(equipments|items|mines|heroes)[^#]*own=true/;
+  const HERO_SELL_PATTERN = /\/api\/heroes\/(\d+)\/sell(?:[?#]|$)/;
+  const HERO_CANCEL_PATTERN = /\/api\/heroes\/(\d+)\/cancelTrade/;
   const TRADE_CANCEL_PATTERN = /\/api\/trades\/(\d+)\/cancel/;
   const EQUIPMENT_CANCEL_PATTERN = /\/api\/equipments\/(\d+)\/cancelTrade/;
   const GOODS_SELL_PATTERN = /\/api\/(equipments|items)\/(\d+)\/sell(?:[?#]|$)/;
@@ -14945,6 +14953,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   function saleSnapshot(kind, trade) {
     const source = trade.equipment && typeof trade.equipment === 'object' ? { ...trade.equipment, ...trade } : trade;
     const snapshot = { kind, id: String(trade.id), name: source.name || '?', price: Number(source.price) || 0, quantity: Number(source.quantity) || 1, message: source.message || '' };
+    if (kind === 'heroes') {
+      // 角色卡的 name 是玩家取的名字，type 才是哪張卡
+      Object.assign(snapshot, { name: source.type || source.name || '?', heroName: source.name || '', tier: source.tier || '', potential: source.potential || '', lv: Number(source.lv) || 0 });
+    }
     if (kind === 'equipments') {
       snapshot.type = source.type || '';
       snapshot.quality = source.quality || '';
@@ -14962,6 +14974,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const sell = url.match(GOODS_SELL_PATTERN);
     const tradeCancel = url.match(TRADE_CANCEL_PATTERN);
     const equipmentCancel = url.match(EQUIPMENT_CANCEL_PATTERN);
+    const heroSell = url.match(HERO_SELL_PATTERN);
+    const heroCancel = url.match(HERO_CANCEL_PATTERN);
+    if (heroSell) {
+      const hero = forgeHeroes.find((item) => Number(item.id) === Number(heroSell[1]));
+      store.sells.push({ kind: 'heroes', id: Number(heroSell[1]), name: hero ? hero.type || '' : '', at: now });
+      store.soonAt.heroes = now + randomGap(4000, 8000);
+    }
+    if (heroCancel) store.cancels.push({ heroId: Number(heroCancel[1]), at: now });
     if (sell) {
       const [, kind, id] = sell;
       const equipment = kind === 'equipments' ? latestEquipments.get(Number(id)) : null;
@@ -14976,11 +14996,12 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   function takeCancel(store, listing) {
     const since = (listing.seenAt || 0) - 60000;
-    let index = store.cancels.findIndex((cancel) => cancel.at >= since && (cancel.tradeId === listing.id || (cancel.equipmentId && cancel.equipmentId === listing.sourceId)));
-    // 從裝備頁下架只知道裝備 id；對不上掛單的，就當成這件
-    if (index < 0 && listing.kind === 'equipments') {
-      const linked = new Set(Object.values(store.listings).map((item) => item.sourceId).filter(Boolean));
-      index = store.cancels.findIndex((cancel) => cancel.at >= since && cancel.equipmentId && !linked.has(cancel.equipmentId));
+    const sourceField = listing.kind === 'heroes' ? 'heroId' : 'equipmentId';
+    let index = store.cancels.findIndex((cancel) => cancel.at >= since && (cancel.tradeId === listing.id || (cancel[sourceField] && cancel[sourceField] === listing.sourceId)));
+    // 從裝備頁、角色頁下架只知道裝備或角色 id；對不上掛單的，就當成這件
+    if (index < 0 && (listing.kind === 'equipments' || listing.kind === 'heroes')) {
+      const linked = new Set(Object.values(store.listings).filter((item) => item.kind === listing.kind).map((item) => item.sourceId).filter(Boolean));
+      index = store.cancels.findIndex((cancel) => cancel.at >= since && cancel[sourceField] && !linked.has(cancel[sourceField]));
     }
     if (index < 0) return false;
     store.cancels.splice(index, 1);
@@ -15055,6 +15076,68 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       });
   }
 
+  // 買卡：遊戲成交只回錢，卡的資料從剛看過的拍賣、人口販子清單找
+  const CARD_TRADES_KEY = 'aijijiCardTrades';
+  const CARD_TRADES_KEEP = 1000;
+  const CARD_BUY_PATTERN = /\/api\/(?:trades|releasedHeroMarket)\/(\d+)\/buy(?:[?#]|$)/;
+  const seenCardTrades = new Map();
+
+  function rememberCardTrades(url, data) {
+    const released = RELEASED_MARKET_PATTERN.test(url);
+    const cards = released ? releasedCardsFrom(data) : (data && data.heroes) || [];
+    cards.forEach((card) => seenCardTrades.set(`${released ? 'released' : 'trade'}:${card.id}`, card));
+    if (seenCardTrades.size > 500) [...seenCardTrades.keys()].slice(0, seenCardTrades.size - 500).forEach((key) => seenCardTrades.delete(key));
+  }
+
+  function isCardBuyPath(path) {
+    const match = path.match(CARD_BUY_PATTERN);
+    return Boolean(match && (/releasedHeroMarket/.test(path) || seenCardTrades.has(`trade:${match[1]}`)));
+  }
+
+  function recordCardBuy(match) {
+    const released = /releasedHeroMarket/.test(match[0]);
+    const card = seenCardTrades.get(`${released ? 'released' : 'trade'}:${match[1]}`);
+    if (!card) return;
+    const store = readJsonStorage(CARD_TRADES_KEY, null) || { buys: [] };
+    store.buys.push({
+      at: Date.now(),
+      where: released ? '人口販子' : '拍賣',
+      name: card.type || card.name || '?',
+      heroName: card.name || '',
+      tier: card.tier || '',
+      potential: card.potential || '',
+      lv: Number(card.lv) || 0,
+      price: Number(card.price) || 0,
+    });
+    if (store.buys.length > CARD_TRADES_KEEP) store.buys = store.buys.slice(-CARD_TRADES_KEEP);
+    writeJsonStorage(CARD_TRADES_KEY, store);
+    if (activeTab === 'income') renderIncome();
+  }
+
+  function cardTradeText(card) {
+    const detail = [card.tier, card.potential ? `潛能${card.potential}` : '', card.lv ? `Lv${card.lv}` : ''].filter(Boolean).join('・');
+    return `${card.name}${detail ? `（${detail}）` : ''}`;
+  }
+
+  function cardTradesHtml(from) {
+    const buys = ((readJsonStorage(CARD_TRADES_KEY, null) || { buys: [] }).buys || []).filter((buy) => buy.at >= from).map((buy) => ({ ...buy, side: 'buy' }));
+    const sells = loadSales().sold.filter((sale) => sale.kind === 'heroes' && sale.soldAt >= from).map((sale) => ({ ...sale, at: sale.soldAt, side: 'sell' }));
+    if (!buys.length && !sells.length) return '<div class="hint">這段期間沒有買賣角色卡（改版後才開始記）</div>';
+    const spent = buys.reduce((sum, buy) => sum + buy.price, 0);
+    const earned = sells.reduce((sum, sale) => sum + sale.price, 0);
+    const rows = [...buys, ...sells]
+      .sort((first, second) => second.at - first.at)
+      .slice(0, 50)
+      .map((trade) => {
+        const buy = trade.side === 'buy';
+        return `<tr><td style="text-align:left">${saleTime(trade.at)}</td><td style="color:${buy ? '#f87171' : '#4ade80'}">${buy ? '買' : '賣'}</td><td style="text-align:left">${escapeHtml(cardTradeText(trade))}${buy && trade.where !== '拍賣' ? `<div style="color:#a0a0aa">${escapeHtml(trade.where)}</div>` : ''}</td><td style="color:${buy ? '#f87171' : '#4ade80'}">${buy ? '-' : '+'}${saleMoney(trade.price)}</td></tr>`;
+      })
+      .join('');
+    return `<div style="margin:4px 0">買 <b>${buys.length}</b> 張 <span style="color:#f87171">-${saleMoney(spent)}</span>、賣 <b>${sells.length}</b> 張 <span style="color:#4ade80">+${saleMoney(earned)}</span>，差 <b style="color:${earned - spent >= 0 ? '#4ade80' : '#f87171'}">${formatSigned(earned - spent)}</b></div>
+      <table class="combat" style="width:100%"><tr><th style="text-align:left">時間</th><th></th><th style="text-align:left">卡</th><th>價格</th></tr>${rows}</table>
+      <div class="hint">買卡在成交當下記；賣卡靠「賣出紀錄」比對自己的掛單（要開著），時間是發現賣掉的時間。轉移用的掛單不算</div>`;
+  }
+
   function saleMoney(value) {
     return `$${Math.round(value).toLocaleString()}`;
   }
@@ -15090,8 +15173,11 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const now = Date.now();
     const sold = store.sold.filter((sale) => sale.kind === kind).sort((first, second) => second.soldAt - first.soldAt);
     const listings = Object.values(store.listings).filter((listing) => listing.kind === kind);
-    const equipment = kind === 'equipments';
-    const label = (sale) => escapeHtml(equipment ? `${sale.quality ? `${sale.quality}・` : ''}${sale.name}${sale.type ? `（${sale.type}）` : ''}` : sale.name);
+    const equipment = kind === 'equipments' || kind === 'heroes';
+    const label = (sale) =>
+      kind === 'heroes'
+        ? escapeHtml(cardTradeText(sale))
+        : escapeHtml(equipment ? `${sale.quality ? `${sale.quality}・` : ''}${sale.name}${sale.type ? `（${sale.type}）` : ''}` : sale.name);
     const unit = (sale) => sale.price / sale.quantity;
     const total = sold.reduce((sum, sale) => sum + sale.price, 0);
     const checked = store.checkedAt[kind] ? `，上次看掛單 ${saleTime(store.checkedAt[kind])}` : '';
@@ -15100,7 +15186,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     // 價格參考：裝備照種類＋品質分組，道具和礦石照名稱看單價
     const groups = new Map();
     sold.forEach((sale) => {
-      const key = equipment ? `${sale.type || '?'}｜${sale.quality || '?'}` : sale.name;
+      const key = kind === 'heroes' ? `${sale.name}｜潛能${sale.potential || '?'}` : equipment ? `${sale.type || '?'}｜${sale.quality || '?'}` : sale.name;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(sale);
     });
@@ -15115,7 +15201,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         })
         .join('');
       html += `<div class="subhead">${equipment ? '價格參考（種類＋品質）' : '單價參考'}</div>
-        <table class="combat" style="width:100%"><tr><th style="text-align:left">${equipment ? '種類 品質' : '名稱'}</th><th>${equipment ? '件' : '個'}</th><th>最低</th><th>中位</th><th>最高</th></tr>${rows}</table>`;
+        <table class="combat" style="width:100%"><tr><th style="text-align:left">${kind === 'heroes' ? '卡 潛能' : equipment ? '種類 品質' : '名稱'}</th><th>${equipment ? '件' : '個'}</th><th>最低</th><th>中位</th><th>最高</th></tr>${rows}</table>`;
     }
 
     if (listings.length) {
@@ -25169,7 +25255,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const changes = [];
     let rest = delta;
     if (method !== 'GET' && MARKET_API_PATTERN.test(path)) {
-      changes.push(['market', '拍賣', delta]);
+      changes.push(['market', isCardBuyPath(path) ? '買卡' : '拍賣', delta]);
       rest = 0;
     } else {
       Object.entries(known).forEach(([label, amount]) => {
@@ -25349,6 +25435,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       <div class="hint">經驗＝整隊加總。收入／支出照來源分：狩獵只算戰報寫明的錢（租金、盜取），回收、鍛造、買東西照動作算；拍賣的錢不算（含不明入帳，多半是拍賣售出）。純收益＝收入－支出</div>
       <div class="subhead">錢的來源（${INCOME_PERIODS[periodIndex][0]}）</div>
       ${moneyRows ? `<table class="combat"><tr><th>來源</th><th>金額</th></tr>${moneyRows}</table>` : '<div class="hint">這段期間沒有錢的進出（改版後才開始記）</div>'}
+      <div class="subhead">買賣角色卡（${INCOME_PERIODS[periodIndex][0]}）</div>
+      ${cardTradesHtml(INCOME_PERIODS[periodIndex][1]())}
       <div class="subhead">近 24 小時經驗（每小時）</div>
       <div style="display:flex;gap:1px;height:50px;align-items:flex-end">${bars}</div>
       <div class="subhead">撿到的道具（${INCOME_PERIODS[periodIndex][0]}）</div>
