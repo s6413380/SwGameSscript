@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.13
+// @version      6.14
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -633,6 +633,8 @@
     forgeRecipeTarget: 1,
     // 配方頁直接連續鍛造幾爐（0＝鍛到材料不夠為止）
     forgeRecipeRepeat: 0,
+    // 配方頁按「加入／改用」時，這個配方敲幾次就換回角色原本的配方（0＝一直用）
+    forgeRecipeLimit: 0,
     // 掉落名稱包含這些字就提醒（逗號分隔）
     lootRareNames: '英雄券',
     lootRarePause: false,
@@ -1746,6 +1748,8 @@
       <datalist id="aijiji-today-names"></datalist>
       <div data-role="name-suggest" style="font-size:12px;max-height:180px;overflow:auto"></div>
       <div class="subhead">④ 給誰用（按「加入」就排進自動鍛造佇列）</div>
+      <div class="row" style="background:#2a1f0b;border:1px solid #f59e0b;border-radius:6px;padding:3px 6px">⏱ 這個配方敲 ${numberInput('forgeRecipeLimit', 'min="0"')} 次後，換回角色原本的配方（0＝一直用）</div>
+      <div class="hint">省稀有材料：填次數再按角色的「加入／改用」。原本的配方＝角色在佇列裡的配方，沒有就用他上次鍛造的（裝備種類也一起換回）；都沒有就敲完移出佇列。進度在「自動鍛造」頁的卡片上</div>
       <div data-role="recipe-heroes" style="font-size:12px;max-height:300px;overflow:auto"></div>
       <div class="row"><button data-action="recipe-heroes">重新讀取角色</button></div>
       <div class="row">開 ${numberInput('forgeRecipeRepeat', 'min="0"')} 爐（0＝不限）<button data-action="recipe-auto-forge" style="font-weight:bold">開始自動鍛造</button></div>
@@ -12477,6 +12481,12 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       queueHeroForForge(Number(event.target.dataset.hero));
     } else if (action === 'forge-unqueue') {
       unqueueHeroForForge(Number(event.target.dataset.hero));
+    } else if (action === 'forge-limit-set') {
+      setForgeLimit(Number(event.target.dataset.hero), 'set', event.target.dataset.count);
+    } else if (action === 'forge-limit-add') {
+      setForgeLimit(Number(event.target.dataset.hero), 'add', event.target.dataset.delta);
+    } else if (action === 'forge-limit-cancel') {
+      setForgeLimit(Number(event.target.dataset.hero), 'cancel');
     } else if (action === 'forge-type-name-best') {
       setForgePlanNamesByType(event.target.dataset.type, event.target.dataset.name, false);
     } else if (action === 'forge-name-unlock') {
@@ -19097,14 +19107,30 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       return;
     }
     const plans = forgeByApiPlans(settings);
-    plans[heroId] = { ...(plans[heroId] || {}), type: settings.forgeRecipeType, recipe: settings.forgeRecipe };
+    const old = plans[heroId] || {};
+    // 原本的配方：佇列裡設好的，沒有就用上次鍛造的
+    const last = readJsonStorage(HERO_LAST_FORGE_KEY, {})[heroId];
+    const original = old.recipe ? old : last && last.recipe ? { ...old, type: last.type || old.type, recipe: last.recipe } : old;
+    plans[heroId] = rememberPreviousRecipe(original, { type: settings.forgeRecipeType, recipe: settings.forgeRecipe });
+    const limit = Math.max(0, Math.floor(Number(settings.forgeRecipeLimit) || 0));
+    const changed = original.recipe && (original.recipe !== settings.forgeRecipe || (original.type || settings.forgeRecipeType) !== settings.forgeRecipeType);
+    if (limit) {
+      Object.assign(plans[heroId], { limitCount: limit, limitTotal: limit });
+      if (changed) Object.assign(plans[heroId], { backRecipe: original.recipe, backType: original.type || settings.forgeRecipeType });
+      else if (plans[heroId].backRecipe === undefined) plans[heroId].backRecipe = '';
+    } else if (changed) {
+      // 沒填次數就是一直用新配方，舊的限量不套到新配方上
+      ['limitCount', 'limitTotal', 'backRecipe', 'backType'].forEach((key) => delete plans[heroId][key]);
+    }
     if (recipeEditing.heroId === heroId && String(settings.forgeRecipeName || '').trim()) plans[heroId].name = settings.forgeRecipeName.trim();
     setPanelField('forgeByApiPlans', JSON.stringify(plans));
     const heroIds = forgeByApiHeroIds(settings);
     if (!heroIds.includes(heroId)) setPanelField('forgeByApiHeroIds', [...heroIds, heroId].join(','));
     afterForgeQueueChange();
     const hero = forgeHeroes.find((candidate) => candidate.id === heroId);
-    setStatus(`${hero ? hero.name : `角色 ${heroId}`} 已加入鍛造佇列：${settings.forgeRecipeType} ${settings.forgeRecipe}${forgeRunner.running ? '' : '（還沒開始自動鍛造）'}`);
+    const plan = plans[heroId];
+    const limitText = limit ? `，敲 ${limit} 次後${plan.backRecipe ? `換回 ${plan.backType || ''} ${plan.backRecipe}` : '移出佇列（沒有原本的配方）'}` : '';
+    setStatus(`${hero ? hero.name : `角色 ${heroId}`} 已加入鍛造佇列：${settings.forgeRecipeType} ${settings.forgeRecipe}${limitText}${forgeRunner.running ? '' : '（還沒開始自動鍛造）'}`);
   }
 
   function unqueueHeroForForge(heroId) {
@@ -21152,43 +21178,81 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     if (!changed || !old.recipe) return plan;
     plan.prevRecipe = old.recipe;
     plan.prevType = old.type || '';
-    if (plan.limitCount > 0 && !plan.backRecipe) {
+    if (plan.limitCount > 0 && plan.backRecipe === undefined) {
       plan.backRecipe = old.recipe;
       plan.backType = old.type || '';
     }
     return plan;
   }
 
-  function setForgeLimit(heroId, field, value) {
+  // action：set（從沒限量開始，value＝爐數）、add（value＝±1）、cancel、back（value＝配方；'' ＝做完移出佇列）
+  function setForgeLimit(heroId, action, value) {
     const settings = readSettingsFromPanel();
     const plans = forgeByApiPlans(settings);
     const plan = { ...(plans[heroId] || {}) };
-    if (field === 'count') {
-      const count = Math.max(0, Math.floor(Number(value) || 0));
-      if (count) {
-        plan.limitCount = count;
-        if (!plan.backRecipe && plan.prevRecipe) {
-          plan.backRecipe = plan.prevRecipe;
-          plan.backType = plan.prevType || '';
-        }
-      } else {
-        delete plan.limitCount;
-        delete plan.backRecipe;
-        delete plan.backType;
+    const done = Math.max(0, (plan.limitTotal || plan.limitCount || 0) - (plan.limitCount || 0));
+    if (action === 'set' || action === 'add') {
+      const count = Math.max(0, Math.floor(action === 'set' ? Number(value) || 0 : (plan.limitCount || 0) + Number(value)));
+      if (!plan.limitCount && count && plan.backRecipe === undefined && plan.prevRecipe) {
+        plan.backRecipe = plan.prevRecipe;
+        plan.backType = plan.prevType || '';
       }
-    } else {
-      const recipe = normalizeRecipe(value);
-      if (recipe) {
-        plan.backRecipe = recipe;
-        plan.backType = plan.type || settings.forgeRecipeType;
-      } else {
-        delete plan.backRecipe;
-        delete plan.backType;
-      }
+      plan.limitCount = count;
+      plan.limitTotal = action === 'set' ? count : done + count;
+      if (!count) action = 'cancel';
+    }
+    if (action === 'cancel') {
+      delete plan.limitCount;
+      delete plan.limitTotal;
+      delete plan.backRecipe;
+      delete plan.backType;
+    }
+    if (action === 'back') {
+      plan.backRecipe = normalizeRecipe(value);
+      plan.backType = plan.type || settings.forgeRecipeType;
     }
     plans[heroId] = plan;
     setPanelField('forgeByApiPlans', JSON.stringify(plans));
     afterForgeQueueChange();
+  }
+
+  // 卡片上的限量那一塊：沒設就是快捷按鈕；設了顯示進度、做完換回哪個配方
+  function forgeLimitHtml(settings, row) {
+    const chips = (recipeText) =>
+      parseRecipeLoosely(recipeText)
+        .map(([name, quantity]) => `<span style="display:inline-block;margin:1px 3px 1px 0;padding:0 6px;border-radius:9px;background:#2a2a30;color:#e5e5e5">${escapeHtml(name)}×${quantity}</span>`)
+        .join('');
+    const small = 'flex:none;padding:0 7px';
+    if (!row.limitCount) {
+      const back = row.prevRecipe
+        ? `之後換回 ${chips(row.prevRecipe)}`
+        : '<span style="color:#a0a0aa">之後移出佇列（還沒換過配方，沒有原本的）</span>';
+      return `<div style="margin:3px 0;padding:3px 5px;border:1px dashed #44444c;border-radius:6px" title="省稀有材料：現在這個配方只做幾爐，做完自動換回換配方前的那個">
+        <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap"><span style="flex:none;color:#a0a0aa">⏱ 這個配方只做</span>${[1, 3, 5, 10]
+          .map((count) => `<button data-action="forge-limit-set" data-hero="${row.heroId}" data-count="${count}" style="${small}">${count} 爐</button>`)
+          .join('')}</div>
+        <div style="margin-top:2px">${back}</div></div>`;
+    }
+    const done = Math.max(0, row.limitTotal - row.limitCount);
+    const total = Math.max(row.limitTotal, row.limitCount);
+    const percent = total ? Math.round((done / total) * 100) : 0;
+    const options = [
+      ...new Set([row.backRecipe, row.prevRecipe, ...recipeFavorites(settings).filter((item) => item.type === row.type).map((item) => item.recipe)].filter(Boolean)),
+    ]
+      .map((recipe) => `<option value="${escapeHtml(recipe)}" ${recipe === row.backRecipe ? 'selected' : ''}>${recipe === row.prevRecipe ? '原本的：' : '★ '}${escapeHtml(recipe)}</option>`)
+      .join('');
+    return `<div style="margin:3px 0;padding:4px 6px;border:1px solid #f59e0b;border-radius:6px;background:#2a1f0b">
+      <div style="display:flex;gap:4px;align-items:center"><b style="flex:none;color:#fbbf24">⏱ 限量中</b>
+        <span style="flex:1;height:8px;border-radius:4px;background:#44403c;overflow:hidden"><span style="display:block;height:100%;width:${percent}%;background:#f59e0b"></span></span>
+        <span style="flex:none;color:#fde68a">已做 ${done}／${total}，再 <b>${row.limitCount}</b> 爐</span></div>
+      <div style="display:flex;gap:4px;align-items:center;margin-top:3px;flex-wrap:wrap">
+        <button data-action="forge-limit-add" data-hero="${row.heroId}" data-delta="-1" style="${small}" title="少做一爐">−1</button>
+        <button data-action="forge-limit-add" data-hero="${row.heroId}" data-delta="1" style="${small}" title="多做一爐">＋1</button>
+        <button data-action="forge-limit-cancel" data-hero="${row.heroId}" style="${small}" title="不限量，一直用這個配方做">取消限量</button></div>
+      <div style="display:flex;gap:4px;align-items:center;margin-top:3px">做完 ➜
+        <select data-forge-limit-back="${row.heroId}" style="flex:1;min-width:0;padding:1px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px">${options}<option value="" ${row.backRecipe ? '' : 'selected'}>移出佇列（停做）</option></select></div>
+      ${row.backRecipe ? `<div style="margin-top:2px">${chips(row.backRecipe)}</div>` : ''}
+    </div>`;
   }
 
   // 開爐成功才扣；扣完換回原本的配方，沒有原本的就移出佇列（做幾爐就停）
@@ -21208,6 +21272,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const back = plan.backRecipe;
     const backType = plan.backType || plan.type;
     delete plan.limitCount;
+    delete plan.limitTotal;
     delete plan.backRecipe;
     delete plan.backType;
     let text;
@@ -22003,6 +22068,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         const sameRecipe = inQueue && plan.recipe === settings.forgeRecipe && plan.type === settings.forgeRecipeType;
         const tags = [];
         if (inQueue) tags.push(`<span style="color:#4ade80">佇列中：${escapeHtml(plan.type || settings.forgeRecipeType)} ${escapeHtml(plan.recipe || '（沒有配方）')}</span>`);
+        if (inQueue && plan.limitCount > 0) {
+          tags.push(`<span style="color:#fbbf24">⏱ 再敲 ${plan.limitCount} 次${plan.backRecipe ? `換回 ${escapeHtml(plan.backType || '')} ${escapeHtml(plan.backRecipe)}` : '後移出佇列'}</span>`);
+        }
         if (inHuntTeam(hero)) tags.push('<span style="color:#f87171">狩獵隊伍（不會被拿去鍛造）</span>');
         if (hero.actionState === 5) tags.push(`<span style="color:#60a5fa">第 ${hero.actionTarget} 欄鍛造中</span>`);
         else if (hero.actionState) tags.push('<span style="color:#a0a0aa">忙別的事</span>');
@@ -22089,7 +22157,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         ownName: Boolean((plans[heroId] || {}).name),
         nameLocked: nameLockedToday(plans[heroId]),
         limitCount: (plans[heroId] || {}).limitCount || 0,
+        limitTotal: (plans[heroId] || {}).limitTotal || 0,
         backRecipe: (plans[heroId] || {}).backRecipe || '',
+        prevRecipe: (plans[heroId] || {}).prevRecipe || '',
         materials: recipe.map(([name, quantity]) => ({ name, quantity, have: mineStock.length ? stock.get(name) || 0 : null })),
         total,
         cap: cap || 0,
@@ -22145,9 +22215,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
             ${row.materials.length ? `<span style="color:#a0a0aa">共 ${row.total}${row.cap ? `/${row.cap}` : ''}</span>` : ''}
             ${row.possible === null ? '' : `<span style="color:${row.possible ? '#4ade80' : '#f87171'}">・夠 ${row.possible} 爐</span>`}</div>
           ${forgeEstimateHtml(row.type, row.materials.map(({ name, quantity }) => [name, quantity]), row.itemName)}
-          <div style="display:flex;gap:4px;align-items:center;margin:2px 0" title="省稀有材料：這個配方開幾爐就換回原本的配方；0＝不限。換回的配方沒填就用換配方前那個，也沒有就做完移出佇列">限量
-            <input data-forge-limit-count="${row.heroId}" type="number" min="0" value="${row.limitCount || ''}" placeholder="不限" style="flex:none;width:52px;padding:1px 4px;color:#fff;background:#2a2a30;border:1px solid ${row.limitCount ? '#f59e0b' : '#44444c'};border-radius:5px">爐後換回
-            <input data-forge-limit-back="${row.heroId}" value="${escapeHtml(row.backRecipe)}" placeholder="${row.limitCount ? '沒填＝做完移出佇列' : '原本的配方'}" style="flex:1;min-width:0;padding:1px 4px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></div>
+          ${forgeLimitHtml(settings, row)}
           ${row.problems.length ? `<div style="color:#f87171">⚠ ${row.problems.join('；')}</div>` : ''}
         </div>`;
       })
@@ -24552,9 +24620,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   });
 
   panel.addEventListener('change', (event) => {
-    if (!event.target.dataset) return;
-    if (event.target.dataset.forgeLimitCount) setForgeLimit(Number(event.target.dataset.forgeLimitCount), 'count', event.target.value);
-    if (event.target.dataset.forgeLimitBack) setForgeLimit(Number(event.target.dataset.forgeLimitBack), 'back', event.target.value);
+    if (event.target.dataset && event.target.dataset.forgeLimitBack) setForgeLimit(Number(event.target.dataset.forgeLimitBack), 'back', event.target.value);
   });
 
   panel.addEventListener('change', (event) => {
