@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.15
+// @version      6.16
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -18064,10 +18064,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const byKey = new Map(recipes.map((entry) => [alloyRecipeKey(entry.recipe), entry]));
     const multipliers = qualityMultipliers();
     const groups = new Map();
+    // 附魔不用跟同一天的對照比，每個配方做過的全部一起算
+    const enchantsByKey = new Map();
     forgedRecords().forEach((item) => {
       if (Number(item.heroId) !== Number(config.heroId) || item.type !== config.type || !Array.isArray(item.materials)) return;
       const key = recipeKeyOf(item.materials);
       if (!byKey.has(key)) return;
+      if (!enchantsByKey.has(key)) enchantsByKey.set(key, []);
+      enchantsByKey.get(key).push(item.enchantments || {});
       const group = `${localDayKey(item.craftedTime)}|${String(item.name || '').trim()}`;
       if (!groups.has(group)) groups.set(group, new Map());
       const samples = groups.get(group);
@@ -18098,8 +18102,43 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         });
       });
       const bonus = Object.fromEntries(ALLOY_TEST_FIELDS.map(([field]) => [field, weights[field] ? sums[field] / weights[field] : null]));
-      return { ...entry, n, controlN, bonus };
+      return { ...entry, n, controlN, bonus, enchants: alloyEnchantSummary(enchantsByKey.get(key)), controlEnchants: alloyEnchantSummary(enchantsByKey.get(controlKey)) };
     });
+  }
+
+  // 每種附魔：幾件有、平均數值，照出現率排
+  function alloyEnchantSummary(list = []) {
+    const byName = new Map();
+    list.forEach((enchantments) =>
+      Object.entries(enchantments).forEach(([name, value]) => {
+        const entry = byName.get(name) || { name, count: 0, total: 0 };
+        entry.count += 1;
+        entry.total += Number(value) || 0;
+        byName.set(name, entry);
+      })
+    );
+    return {
+      items: list.length,
+      list: [...byName.values()].map((entry) => ({ ...entry, rate: entry.count / list.length, average: entry.total / entry.count })).sort((first, second) => second.rate - first.rate),
+    };
+  }
+
+  // 添加的配方多了什麼附魔：純底材沒出現過的標 🆕，出現率比純底材高一截的標 ↑
+  function alloyEnchantHtml(entry) {
+    const { items, list } = entry.enchants;
+    if (!items) return '';
+    if (!list.length) return '<span style="color:#78716c">沒有附魔</span>';
+    const control = new Map((entry.controlEnchants.list || []).map((enchant) => [enchant.name, enchant]));
+    return list
+      .map((enchant) => {
+        const base = control.get(enchant.name);
+        const mark = !entry.additive ? '' : !base ? '🆕' : enchant.rate - base.rate >= 0.2 ? '↑' : '';
+        const color = !entry.additive ? '#a0a0aa' : mark ? '#4ade80' : '#d6d3d1';
+        const average = Math.round(enchant.average * 10) / 10;
+        const title = base ? `純底材 ${base.count}/${entry.controlEnchants.items} 件、平均 ${Math.round(base.average * 10) / 10}` : '純底材沒出現過';
+        return `<span title="${escapeHtml(title)}" style="display:inline-block;margin:1px 4px 1px 0;padding:0 6px;border-radius:9px;background:#2a2a30;color:${color}">${mark}${escapeHtml(enchant.name)} ${enchant.count}/${items} 件・平均 ${average}</span>`;
+      })
+      .join('');
   }
 
   function readAlloyTestForm() {
@@ -18138,13 +18177,19 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const good = field === 'wgt' ? percent < 0 : percent > 0;
       return `<td style="color:${Math.abs(percent) < 1 ? '#a0a0aa' : good ? '#4ade80' : '#f87171'}">${percent > 0 ? '+' : ''}${percent}%</td>`;
     };
+    const enchantRow = (entry) => {
+      const html = alloyEnchantHtml(entry);
+      return html ? `<tr${entry.additive ? '' : ' style="background:#1c1c22"'}><td colspan="${ALLOY_TEST_FIELDS.length + 2}" style="text-align:left;font-size:11px;padding-top:0">附魔 ${html}</td></tr>` : '';
+    };
     box.innerHTML = `<table class="combat"><tr><th style="text-align:left">配方</th><th>件</th>${ALLOY_TEST_FIELDS.map(([, label]) => `<th>${label.slice(0, 1)}</th>`).join('')}</tr>${rows
-      .map((entry) =>
-        entry.additive
-          ? `<tr><td style="text-align:left">${escapeHtml(entry.base)}＋${escapeHtml(entry.additive)}</td><td>${entry.n}</td>${ALLOY_TEST_FIELDS.map(([field]) => cell(entry.bonus[field], field)).join('')}</tr>`
-          : `<tr style="background:#1c1c22"><td style="text-align:left"><b>純${escapeHtml(entry.base)}</b>（對照）</td><td>${entry.n}</td><td colspan="${ALLOY_TEST_FIELDS.length}" style="text-align:left;color:#a0a0aa">${escapeHtml(entry.recipe)}</td></tr>`
+      .map(
+        (entry) =>
+          (entry.additive
+            ? `<tr><td style="text-align:left">${escapeHtml(entry.base)}＋${escapeHtml(entry.additive)}</td><td>${entry.n}</td>${ALLOY_TEST_FIELDS.map(([field]) => cell(entry.bonus[field], field)).join('')}</tr>`
+            : `<tr style="background:#1c1c22"><td style="text-align:left"><b>純${escapeHtml(entry.base)}</b>（對照）</td><td>${entry.n}</td><td colspan="${ALLOY_TEST_FIELDS.length}" style="text-align:left;color:#a0a0aa">${escapeHtml(entry.recipe)}</td></tr>`) + enchantRow(entry)
       )
       .join('')}</table>
+      <div class="hint">附魔：這個配方做過的每一件都算（不分哪天）。🆕＝純底材沒出現過，↑＝出現率比純底材高 20% 以上；滑過去看純底材的件數和平均</div>
       <div class="hint">% ＝ 添加配方的平均（換成普通品質）÷ 同一天同名稱的純底材平均 − 1；重量正的是變重。每種只做幾件時品質、運氣的誤差還很大，±5% 內先當沒差，看得到方向後再加做</div>`;
   }
 
@@ -18208,8 +18253,13 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       .map((base) => {
         const lines = rows
           .filter((entry) => entry.base === base && entry.additive)
-          .map((entry) => [entry.additive, ...fields.map(([field]) => (entry.bonus[field] === null ? '' : `${Math.round(entry.bonus[field] * 100)}%`)), entry.n].join('\t'));
-        return [[`${base}底`, ...fields.map(([, label]) => label), '件數'].join('\t'), ...lines].join('\n');
+          .map((entry) => [
+            entry.additive,
+            ...fields.map(([field]) => (entry.bonus[field] === null ? '' : `${Math.round(entry.bonus[field] * 100)}%`)),
+            entry.n,
+            entry.enchants.list.map((enchant) => `${enchant.name} ${enchant.count}/${entry.enchants.items}`).join('、'),
+          ].join('\t'));
+        return [[`${base}底`, ...fields.map(([, label]) => label), '件數', '附魔'].join('\t'), ...lines].join('\n');
       })
       .join('\n\n');
   }
