@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.18
+// @version      6.19
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -15498,6 +15498,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       ...(forgeNoUploadNow() ? { noUpload: true } : {}),
     });
     const started = forges[forges.length - 1];
+    rememberForgeDuration(started, hero);
     pending[body.heroId] = forges.slice(-FORGE_PENDING_PER_HERO);
     writeJsonStorage(FORGE_PENDING_KEY, pending);
     // 每個角色上次鍛造了什麼：配方頁 ④ 可以一鍵載入來改
@@ -15506,6 +15507,71 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     writeJsonStorage(HERO_LAST_FORGE_KEY, last);
   }
 
+
+  // 鍛造時間：遊戲沒公開公式，開爐回應的角色帶開工與完成時間（都是伺服器時間），每爐記下來給配方頁估
+  const FORGE_DURATIONS_KEY = 'aijijiForgeDurations';
+  const FORGE_DURATIONS_LIMIT = 2000;
+  // 遊戲鍛造頁寫的：鍛造每分鐘消耗 3 體力，不夠會影響品質
+  const FORGE_STAMINA_PER_MINUTE = 3;
+
+  function rememberForgeDuration(forge, hero) {
+    if (!hero) return;
+    const start = Date.parse(hero.actionStart);
+    const end = Date.parse(hero.actionCompleteTime);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+    const log = readJsonStorage(FORGE_DURATIONS_KEY, []);
+    if (log.some((entry) => entry.heroId === forge.heroId && entry.start === hero.actionStart)) return;
+    log.push({
+      at: forge.time,
+      start: hero.actionStart,
+      heroId: forge.heroId,
+      type: forge.type,
+      quantity: forge.materials.reduce((sum, [, quantity]) => sum + quantity, 0),
+      materials: forge.materials,
+      ...(forge.skills ? { skills: forge.skills } : {}),
+      minutes: Math.round((end - start) / 6000) / 10,
+    });
+    writeJsonStorage(FORGE_DURATIONS_KEY, log.slice(-FORGE_DURATIONS_LIMIT));
+  }
+
+  // 由近到遠找：同角色同類型同數量 → 同類型同數量 → 同類型照數量拉直線 → 照每個材料幾分推
+  function estimateForgeMinutes(type, recipe, heroId) {
+    const quantity = recipe.reduce((sum, [, count]) => sum + count, 0);
+    if (!quantity) return null;
+    const log = readJsonStorage(FORGE_DURATIONS_KEY, []);
+    const sameType = log.filter((entry) => entry.type === type);
+    const sameQuantity = sameType.filter((entry) => entry.quantity === quantity);
+    const ownSame = heroId ? sameQuantity.filter((entry) => entry.heroId === heroId) : [];
+    if (ownSame.length) return { minutes: median(ownSame.map((entry) => entry.minutes)), samples: ownSame.length, basis: '這個角色同類型同數量' };
+    if (sameQuantity.length) return { minutes: median(sameQuantity.map((entry) => entry.minutes)), samples: sameQuantity.length, basis: '同類型同數量' };
+    if (new Set(sameType.map((entry) => entry.quantity)).size >= 2) {
+      const meanQuantity = sameType.reduce((sum, entry) => sum + entry.quantity, 0) / sameType.length;
+      const meanMinutes = sameType.reduce((sum, entry) => sum + entry.minutes, 0) / sameType.length;
+      const spread = sameType.reduce((sum, entry) => sum + (entry.quantity - meanQuantity) ** 2, 0);
+      const slope = sameType.reduce((sum, entry) => sum + (entry.quantity - meanQuantity) * (entry.minutes - meanMinutes), 0) / spread;
+      const minutes = meanMinutes + slope * (quantity - meanQuantity);
+      if (minutes > 0) return { minutes, samples: sameType.length, basis: '同類型照材料數量推' };
+    }
+    const pool = sameType.length ? sameType : log;
+    if (!pool.length) return null;
+    return { minutes: median(pool.map((entry) => entry.minutes / entry.quantity)) * quantity, samples: pool.length, basis: sameType.length ? '同類型照每個材料推' : '其他類型照每個材料推，可能不準' };
+  }
+
+  function forgeTimeEstimateHtml(type, recipe) {
+    if (!recipe.length) return '';
+    const estimate = estimateForgeMinutes(type, recipe);
+    if (!estimate) return '<div class="hint" style="margin:2px 0 0">⏱ 預估鍛造時間：還沒有紀錄，開過爐之後就會開始記</div>';
+    return `<div style="margin:2px 0 0;font-size:11px;color:#93c5fd">⏱ 預估鍛造 約 <b>${durationText(estimate.minutes)}</b>・耗體力約 ${Math.ceil(estimate.minutes * FORGE_STAMINA_PER_MINUTE)}<span style="color:#a0a0aa">（${estimate.basis}，${estimate.samples} 爐）</span></div>`;
+  }
+
+  // 角色列：照這個角色的紀錄估，順便看體力夠不夠撐完
+  function heroForgeTimeText(hero, type, recipe) {
+    const estimate = recipe.length ? estimateForgeMinutes(type, recipe, hero.id) : null;
+    if (!estimate) return '';
+    const need = Math.ceil(estimate.minutes * FORGE_STAMINA_PER_MINUTE);
+    const short = Number.isFinite(hero.sp) && hero.sp < need;
+    return `<div style="color:${short ? '#f87171' : '#93c5fd'}" title="${escapeHtml(`${estimate.basis}，${estimate.samples} 爐`)}">⏱ 約 ${durationText(estimate.minutes)}・耗體力約 ${need}${Number.isFinite(hero.sp) ? `（目前 ${hero.sp}${short ? '，不夠' : ''}）` : ''}</div>`;
+  }
 
   // 把角色的配方載進配方頁：佇列裡有設定的用設定，沒有就用他上次鍛造的
   function loadHeroRecipe(heroId) {
@@ -19297,6 +19363,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       ` <button data-action="recipe-clear" style="padding:0 6px;font-size:11px">清空</button>` +
       (possible === null ? '' : `，材料夠鍛 <b style="color:${possible ? '#22c55e' : '#ef4444'}">${possible}</b> 爐`) +
       recipePredictionText(settings, recipe) +
+      forgeTimeEstimateHtml(settings.forgeRecipeType, recipe) +
       recipeTableSummary(recipe);
   }
 
@@ -22386,6 +22453,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const queued = forgeByApiHeroIds(settings);
     const plans = forgeByApiPlans(settings);
     const lastForges = readJsonStorage(HERO_LAST_FORGE_KEY, {});
+    const recipe = parseRecipeLoosely(settings.forgeRecipe);
     box.innerHTML = forgeHeroes
       .slice()
       .sort((first, second) => Number(queued.includes(second.id)) - Number(queued.includes(first.id)) || (second.forge || 0) - (first.forge || 0))
@@ -22423,6 +22491,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
               ? `・用途 <select data-forge-purpose="${hero.id}" style="padding:0;color:${plan.purpose === 'sell' ? '#fbbf24' : '#fff'};background:#2a2a30;border:1px solid #44444c;border-radius:4px"><option value="use" ${plan.purpose === 'sell' ? '' : 'selected'}>用</option><option value="sell" ${plan.purpose === 'sell' ? 'selected' : ''}>賣</option></select>`
               : ''
           }</div>
+          ${heroForgeTimeText(hero, settings.forgeRecipeType, recipe)}
         </div>`;
       })
       .join('');
