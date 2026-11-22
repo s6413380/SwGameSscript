@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.19
+// @version      6.20
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -618,6 +618,7 @@
     forgeAutoNameEnabled: false,
     forgeAutoNameMinutes: 10,
     forgeAutoNamePercent: 80,
+    forgeAutoNameKeepOld: true,
     // 挑名稱的權重：auto＝照鍛造紀錄這種裝備平均各屬性有多少（不夠 3 件才用下面的順序）；manual＝照下面的順序
     forgeNameWeightMode: 'auto',
     // 配方我的最愛：[{ type, recipe }]（JSON）
@@ -1360,7 +1361,8 @@
         <legend>每天自動換名稱</legend>
         <label class="row"><input data-field="forgeAutoNameEnabled" type="checkbox" style="flex:none;width:auto"> <b>每天自動換名稱</b></label>
         <div class="row">每 ${numberInput('forgeAutoNameMinutes', 'min="1"')} 分鐘看一次測名表，分數 ≥ ${numberInput('forgeAutoNamePercent', 'min="0" max="100" step="0.5"')} % 才用</div>
-        <div class="hint">過 00:00 先不開新爐，等測名表有過門檻的名稱再換上；之後有更好的名稱也會自動換。每個角色照自己的裝備類型和「用／賣」挑，各屬性的比重看下表</div>
+        <label class="row"><input data-field="forgeAutoNameKeepOld" type="checkbox" style="flex:none;width:auto"> 還沒有新名稱就先用昨天的名稱繼續開爐</label>
+        <div class="hint">過 00:00 後測名表有過門檻的名稱就換上（沒勾上面那格時先不開新爐，等到有才開）；之後有更好的名稱也會自動換。每個角色照自己的裝備類型和「用／賣」挑，各屬性的比重看下表</div>
         <div data-role="name-weight-table" style="font-size:12px"></div>
       </fieldset>
       ${supplyGroupHtml(SUPPLY_GROUPS.find((group) => group.id === 'forge')).replace('<fieldset class="group">', '<fieldset class="group" data-fold="closed">')}
@@ -9922,7 +9924,7 @@
     if (partyLine) lines.push(partyLine);
     const rareLine = rareDetourText(settings);
     if (rareLine) lines.push(rareLine);
-    if (forgeRunner.running) lines.push(`API 鍛造：執行中（已開 ${forgeRunner.started} 爐${forgeRunner.failures ? `，重試中 ${forgeRunner.failures}/${FORGE_RETRY_LIMIT}` : ''}${forgeRunner.captchaWaiting ? '，等驗證' : ''}${forgeRunner.nameWaiting ? `，暫停開爐等好名稱：${forgeRunner.nameWaiting}` : ''}）`);
+    if (forgeRunner.running) lines.push(`API 鍛造：執行中（已開 ${forgeRunner.started} 爐${forgeRunner.failures ? `，重試中 ${forgeRunner.failures}/${FORGE_RETRY_LIMIT}` : ''}${forgeRunner.captchaWaiting ? '，等驗證' : ''}${forgeRunner.nameWaiting ? `，暫停開爐等好名稱：${forgeRunner.nameWaiting}` : ''}${forgeRunner.nameKeeping ? `，先用昨天的名稱（${forgeRunner.nameKeeping}）` : ''}）`);
     else if (forgeRunner.stoppedReason) lines.push(`API 鍛造已停：${forgeRunner.stoppedReason}`);
     if (miningRunner.running) lines.push(`挖礦：執行中（已收 ${miningRunner.collected} 次${miningRunner.failures ? `，重試中 ${miningRunner.failures}/${FORGE_RETRY_LIMIT}` : ''}）`);
     else if (miningRunner.stoppedReason) lines.push(`挖礦已停：${miningRunner.stoppedReason}`);
@@ -22638,7 +22640,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       itemName: settings.forgeRecipeName,
       autoName: settings.forgeAutoNameEnabled,
       autoNamePercent: settings.forgeAutoNamePercent,
-      note: forgeRunner.running ? forgeRunner.nameWaiting : forgeRunner.stoppedReason || '',
+      note: forgeRunner.running ? forgeRunner.nameWaiting || (forgeRunner.nameKeeping ? `先用昨天的名稱：${forgeRunner.nameKeeping}` : '') : forgeRunner.stoppedReason || '',
       rows: forgeQueueRows(settings),
       plans: Object.fromEntries(forgeByApiHeroIds(settings).map((heroId) => [heroId, forgeApiPlan(settings, heroId)])),
       recipeOptions: recipeOptionsCache.at ? recipeOptionsCache.value : {},
@@ -22818,8 +22820,8 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     if (panel.querySelector('[data-forge-plan-hero]')) showForgeApiHeroChoices().catch(() => {});
   }
 
-  // 換好今天的名稱回傳 null；還不能換就回傳原因
-  async function pickTodayForgeName(settings) {
+  // 換好今天的名稱回傳 null；還不能換就回傳原因。partial：沿用昨天名稱時，已經過門檻的類型先換上，不用等全部到齊
+  async function pickTodayForgeName(settings, partial = false) {
     try {
       await refreshNameWeights(true);
     } catch (error) {
@@ -22831,10 +22833,24 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       return { key, type, purpose, label: weights ? weights.label : '六圍', best: todayNamesForType(settings, type, purpose)[0] };
     });
     const empty = [...new Set(picks.filter((pick) => !pick.best).map((pick) => pick.type))];
-    if (empty.length) return `測名表今天還沒有${empty.join('、')}的名稱`;
     const pickText = (pick) => `${pick.type}「${pick.best.name}」${pick.label} ${(pick.best.score * 100).toFixed(1)}%`;
-    const short = picks.filter((pick) => pick.best.score * 100 < settings.forgeAutoNamePercent);
-    if (short.length) return `今天最高 ${short.map(pickText).join('、')}，還沒到 ${settings.forgeAutoNamePercent}%`;
+    const short = picks.filter((pick) => pick.best && pick.best.score * 100 < settings.forgeAutoNamePercent);
+    const reasons = [];
+    if (empty.length) reasons.push(`測名表今天還沒有${empty.join('、')}的名稱`);
+    if (short.length) reasons.push(`今天最高 ${short.map(pickText).join('、')}，還沒到 ${settings.forgeAutoNamePercent}%`);
+    if (reasons.length) {
+      const ready = picks.filter((pick) => pick.best && pick.best.score * 100 >= settings.forgeAutoNamePercent);
+      if (partial && ready.length) {
+        // 同一組名稱只換一次、記一次，免得每幾分鐘洗一次紀錄
+        const readyKey = `${localDayKey(Date.now())}|${ready.map(pickText).join('、')}`;
+        if (forgeRunner.partialNamesKey !== readyKey) {
+          forgeRunner.partialNamesKey = readyKey;
+          applyForgeNamesByType(Object.fromEntries(ready.map((pick) => [pick.key, pick.best.name])));
+          forgeLog(`先換好 ${ready.map(pickText).join('、')}`);
+        }
+      }
+      return reasons.join('；');
+    }
     const names = Object.fromEntries(picks.map((pick) => [pick.key, pick.best.name]));
     applyForgeNamesByType(names);
     writeJsonStorage(FORGE_NAME_DAY_KEY, localDayKey(Date.now()));
@@ -22946,6 +22962,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     forgeRunner.runId++;
     forgeRunner.started = 0;
     forgeRunner.failures = 0;
+    forgeRunner.namePickAt = 0;
     forgeRunner.stuckCounts.clear();
     forgeRunner.tooManyErrors = '';
     forgeRunner.nameWaiting = '';
@@ -23134,24 +23151,31 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       }
       if (settings.forgeAutoNameEnabled && readJsonStorage(FORGE_NAME_DAY_KEY, '') !== localDayKey(Date.now())) {
         const dailyTest = ensureDailyNameTest();
-        // 自測的結果中途就過門檻也直接用；沒過就等測完套第一名
-        let waiting = await pickTodayForgeName(settings);
-        if (cancelled()) return;
-        if (waiting && dailyTest) waiting = dailyTest;
-        if (waiting) {
-          forgeRunner.nameWaiting = waiting;
-          const minutes = settings.forgeAutoNameMinutes;
-          forgeLog(`${actions.length ? `${actions.join('、')}；` : ''}過了 00:00 先不開新爐：${waiting}，${minutes} 分鐘後再抓`);
-          scheduleForgeRunner(randomGap(minutes * 60000, minutes * 60000 + 30000));
-          return;
+        const keepOld = settings.forgeAutoNameKeepOld;
+        const minutes = settings.forgeAutoNameMinutes;
+        // 沿用昨天名稱時照常開爐，只是每隔幾分鐘才去抓一次測名表
+        if (!keepOld || Date.now() >= (forgeRunner.namePickAt || 0)) {
+          // 自測的結果中途就過門檻也直接用；沒過就等測完套第一名
+          let waiting = await pickTodayForgeName(settings, keepOld);
+          if (cancelled()) return;
+          if (waiting && dailyTest) waiting = dailyTest;
+          if (waiting && !keepOld) {
+            forgeRunner.nameWaiting = waiting;
+            forgeLog(`${actions.length ? `${actions.join('、')}；` : ''}過了 00:00 先不開新爐：${waiting}，${minutes} 分鐘後再抓`);
+            scheduleForgeRunner(randomGap(minutes * 60000, minutes * 60000 + 30000));
+            return;
+          }
+          forgeRunner.nameKeeping = waiting || '';
+          forgeRunner.namePickAt = Date.now() + minutes * 60000;
+          settings = readSettingsFromPanel();
         }
-        settings = readSettingsFromPanel();
       } else if (settings.forgeAutoNameEnabled) {
         await upgradeTodayForgeName(settings);
         if (cancelled()) return;
         settings = readSettingsFromPanel();
       }
       forgeRunner.nameWaiting = '';
+      if (!settings.forgeAutoNameEnabled || readJsonStorage(FORGE_NAME_DAY_KEY, '') === localDayKey(Date.now())) forgeRunner.nameKeeping = '';
       const idleHeroes = heroes.filter((hero) => heroIds.includes(hero.id) && canStartForge(hero));
       let idle = null;
       let request = null;
@@ -26189,7 +26213,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }
     if (event.target.dataset.field === 'forgeShopSlots') renderForgePlanOverview();
     // 自動換名稱的門檻改了：鍛造正在等好名稱的話馬上再看一次，不用等下一輪
-    if (['forgeAutoNamePercent', 'forgeAutoNameEnabled'].includes(event.target.dataset.field)) wakeForgeRunner();
+    if (['forgeAutoNamePercent', 'forgeAutoNameEnabled', 'forgeAutoNameKeepOld'].includes(event.target.dataset.field)) {
+      forgeRunner.namePickAt = 0;
+      wakeForgeRunner();
+    }
     if (['scratchItemValues', 'scratchMarketNames'].includes(event.target.dataset.field) && activeTab === 'scratch') renderScratchStats();
     if (/^lootSource/.test(event.target.dataset.field || '') && activeTab === 'loot') renderLootLedger();
     if (/^pageReport/.test(event.target.dataset.field || '')) renderPageReport(true);
