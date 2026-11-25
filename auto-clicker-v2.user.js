@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.20
+// @version      6.21
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1299,7 +1299,7 @@
     <div data-tab="move">
       <label class="row"><input data-field="stageEnabled" type="checkbox" style="flex:none;width:auto"> 自動移動到目標關卡（到之前不原地掛機）</label>
       <div class="subhead">不出戰（API 打怪）</div>
-      <div class="hint">勾了的隊員腳本會一直讓它休息、不上場；全隊休息完或移動完被叫醒，也會先讓它休息回去才打。取消勾選才會出戰</div>
+      <div class="hint">勾了的隊員腳本會一直讓它休息、不上場；全隊休息完或移動完被叫醒，也會先讓它休息回去才打。還沒走到目標關卡時先不讓它休息，跟著隊伍移動（前進、後退途中會一起打），到了才休息。取消勾選才會出戰</div>
       <input type="hidden" data-field="benchHeroIds">
       <div data-role="bench-heroes" class="choices"><div class="hint">還沒讀到隊伍</div></div>
       <label class="row"><input data-field="benchWakeForMove" type="checkbox" style="flex:none;width:auto"> 要移動時叫醒手動休息的角色（API 打怪）</label>
@@ -10032,6 +10032,9 @@
     const away = state.unbenchedForMove || new Set();
     const awake = huntTeam().filter((hero) => chosen.includes(hero.id) && hero.actionState === 0 && !away.has(hero.id) && !benchFullHeroIds.has(hero.id));
     if (!awake.length) return false;
+    // 還沒到目標關卡：現在讓它休息，下一步前進／換地圖又要全隊閒置、得再叫醒它，來回卡住移動；到了再休息
+    const move = planApiMove(settings);
+    if (move && !move.problem) return false;
     const names = awake.map((hero) => hero.name).join('、');
     const runId = state.runId;
     const full = [];
