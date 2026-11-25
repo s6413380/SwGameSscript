@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.21
+// @version      6.22
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -15534,37 +15534,70 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       quantity: forge.materials.reduce((sum, [, quantity]) => sum + quantity, 0),
       materials: forge.materials,
       ...(forge.skills ? { skills: forge.skills } : {}),
+      ...(Number(hero.efficiency) > 0 ? { efficiency: Number(hero.efficiency) } : {}),
       minutes: Math.round((end - start) / 6000) / 10,
     });
     writeJsonStorage(FORGE_DURATIONS_KEY, log.slice(-FORGE_DURATIONS_LIMIT));
   }
 
-  // 由近到遠找：同角色同類型同數量 → 同類型同數量 → 同類型照數量拉直線 → 照每個材料幾分推
+  // 鍛造時間跟效率、材料數量有關（跟類型無關）。舊紀錄沒存效率，用那個角色現在的效率補（升級後會偏慢一點）
+  function forgeEfficiencyOf(heroId) {
+    const hero = forgeHeroes.find((candidate) => candidate.id === heroId) || state.heroStats.get(heroId);
+    const value = Number(hero && hero.efficiency);
+    return value > 0 ? value : null;
+  }
+
+  // 最小平方法解 log(分鐘) = c + a·log(材料數) + b·log(效率)；資料不夠分開兩個因素就回 null
+  function fitForgeTimeModel(rows) {
+    const points = rows.map((row) => [1, Math.log(row.quantity), Math.log(row.efficiency), Math.log(row.minutes)]);
+    if (points.length < 4 || new Set(rows.map((row) => row.quantity)).size < 2 || new Set(rows.map((row) => row.efficiency)).size < 2) return null;
+    const matrix = [0, 1, 2].map((i) => [0, 1, 2, 3].map((j) => points.reduce((sum, point) => sum + point[i] * point[j], 0)));
+    for (let column = 0; column < 3; column++) {
+      const pivot = [column, column + 1, column + 2].filter((row) => row < 3).sort((first, second) => Math.abs(matrix[second][column]) - Math.abs(matrix[first][column]))[0];
+      [matrix[column], matrix[pivot]] = [matrix[pivot], matrix[column]];
+      if (Math.abs(matrix[column][column]) < 1e-9) return null;
+      for (let row = 0; row < 3; row++) {
+        if (row === column) continue;
+        const factor = matrix[row][column] / matrix[column][column];
+        for (let j = column; j < 4; j++) matrix[row][j] -= factor * matrix[column][j];
+      }
+    }
+    const [c, a, b] = [0, 1, 2].map((i) => matrix[i][3] / matrix[i][i]);
+    return [c, a, b].every(Number.isFinite) ? { c, a, b } : null;
+  }
+
+  // 先找一模一樣的（同角色或同效率、同材料數），再用效率＋材料數的式子推，資料不夠才只照每個材料幾分推
   function estimateForgeMinutes(type, recipe, heroId) {
     const quantity = recipe.reduce((sum, [, count]) => sum + count, 0);
     if (!quantity) return null;
-    const log = readJsonStorage(FORGE_DURATIONS_KEY, []);
-    const sameType = log.filter((entry) => entry.type === type);
-    const sameQuantity = sameType.filter((entry) => entry.quantity === quantity);
-    const ownSame = heroId ? sameQuantity.filter((entry) => entry.heroId === heroId) : [];
-    if (ownSame.length) return { minutes: median(ownSame.map((entry) => entry.minutes)), samples: ownSame.length, basis: '這個角色同類型同數量' };
-    if (sameQuantity.length) return { minutes: median(sameQuantity.map((entry) => entry.minutes)), samples: sameQuantity.length, basis: '同類型同數量' };
-    if (new Set(sameType.map((entry) => entry.quantity)).size >= 2) {
-      const meanQuantity = sameType.reduce((sum, entry) => sum + entry.quantity, 0) / sameType.length;
-      const meanMinutes = sameType.reduce((sum, entry) => sum + entry.minutes, 0) / sameType.length;
-      const spread = sameType.reduce((sum, entry) => sum + (entry.quantity - meanQuantity) ** 2, 0);
-      const slope = sameType.reduce((sum, entry) => sum + (entry.quantity - meanQuantity) * (entry.minutes - meanMinutes), 0) / spread;
-      const minutes = meanMinutes + slope * (quantity - meanQuantity);
-      if (minutes > 0) return { minutes, samples: sameType.length, basis: '同類型照材料數量推' };
+    const efficiency = heroId ? forgeEfficiencyOf(heroId) : null;
+    const rows = readJsonStorage(FORGE_DURATIONS_KEY, [])
+      .filter((entry) => entry.minutes > 0 && entry.quantity > 0)
+      .map((entry) => ({ ...entry, efficiency: Number(entry.efficiency) || forgeEfficiencyOf(entry.heroId) }));
+    if (!rows.length) return null;
+    const effText = efficiency ? `效率 ${efficiency}` : '沒指定角色，沒算效率';
+    const exact = rows.filter((row) => row.quantity === quantity && (efficiency ? row.efficiency === efficiency : heroId && row.heroId === heroId));
+    if (exact.length) return { minutes: median(exact.map((row) => row.minutes)), samples: exact.length, basis: `${effText}、${quantity} 個材料的實際紀錄` };
+    const rated = rows.filter((row) => row.efficiency > 0);
+    const model = efficiency && fitForgeTimeModel(rated);
+    if (model) {
+      const minutes = Math.exp(model.c + model.a * Math.log(quantity) + model.b * Math.log(efficiency));
+      return { minutes, samples: rated.length, basis: `${effText}，照效率和材料數量推` };
     }
-    const pool = sameType.length ? sameType : log;
-    if (!pool.length) return null;
-    return { minutes: median(pool.map((entry) => entry.minutes / entry.quantity)) * quantity, samples: pool.length, basis: sameType.length ? '同類型照每個材料推' : '其他類型照每個材料推，可能不準' };
+    // 只有一種效率的紀錄時分不出效率的影響：用效率最接近的那幾爐照每個材料幾分推
+    let pool = rows;
+    if (efficiency && rated.length) {
+      const nearest = Math.min(...rated.map((row) => Math.abs(row.efficiency - efficiency)));
+      pool = rated.filter((row) => Math.abs(row.efficiency - efficiency) === nearest);
+    }
+    const poolEfficiency = pool[0].efficiency;
+    const note = efficiency && poolEfficiency !== efficiency ? `，紀錄只有效率 ${poolEfficiency} 的，可能不準` : '';
+    return { minutes: median(pool.map((row) => row.minutes / row.quantity)) * quantity, samples: pool.length, basis: `${effText}，照每個材料幾分推${note}` };
   }
 
   function forgeTimeEstimateHtml(type, recipe) {
     if (!recipe.length) return '';
-    const estimate = estimateForgeMinutes(type, recipe);
+    const estimate = estimateForgeMinutes(type, recipe, recipeEditing.heroId || 0);
     if (!estimate) return '<div class="hint" style="margin:2px 0 0">⏱ 預估鍛造時間：還沒有紀錄，開過爐之後就會開始記</div>';
     return `<div style="margin:2px 0 0;font-size:11px;color:#93c5fd">⏱ 預估鍛造 約 <b>${durationText(estimate.minutes)}</b>・耗體力約 ${Math.ceil(estimate.minutes * FORGE_STAMINA_PER_MINUTE)}<span style="color:#a0a0aa">（${estimate.basis}，${estimate.samples} 爐）</span></div>`;
   }
