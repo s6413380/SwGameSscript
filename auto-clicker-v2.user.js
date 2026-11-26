@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.25
+// @version      6.26
 // @description  原地掛機 N 次後全隊休息，可輔助移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時輔助用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1478,7 +1478,7 @@
       <div class="row">　⏸ 暫停：<select data-field="statusPauseLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">不處理</option><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select></div>
       <div class="hint">例：提醒選「輕度以上」、暫停選「重度」＝輕度、中度只響提醒，重度才停下來</div>
       <div class="row">晚點再通報<input data-field="statusDelayRules" placeholder="疫病=5" style="flex:1;min-width:0"></div>
-      <div class="hint">異常名稱=場數，「、」分隔：連續打這麼多場都還沒解掉才提醒／暫停。例「疫病=5」＝第 5 場打完還有疫病才通報；名稱前加程度只管那個程度，例「疫病=5、重度疫病=0」＝輕中度等 5 場、重度馬上通報</div>
+      <div class="hint">異常名稱=場數，「、」分隔：連續打這麼多場都還沒解掉才提醒／暫停。例「疫病=5」＝第 5 場打完還有疫病才通報（留空＝馬上通報）；名稱前加程度只管那個程度，例「中毒=3、重度中毒=0」。疫病這類沒分程度的異常，提醒、暫停、吃藥都當成已到門檻</div>
       <div class="row"><label style="flex:none;display:flex;align-items:center;gap:4px"><input data-field="huntCureEnabled" type="checkbox" style="flex:none;width:auto"> 打怪時（含手動）先吃藥</label></div>
       <div class="row">　中毒、劇毒等：<select data-field="huntCureLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select>才吃　燒傷：<select data-field="huntCureBurnLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select>就吃</div>
       <div class="row">吃什麼<input data-field="huntCureItems" placeholder="中毒=解毒劑、輕度燒傷=蘆薈" style="flex:1;min-width:0"></div>
@@ -6598,7 +6598,8 @@
       .filter((status) => status && status.kind === 'condition' && status.name)
       .map((status) => {
         const level = String(status.classification || '');
-        const severity = CONDITION_LEVELS[level] || (/重/.test(level) ? 3 : /中/.test(level) ? 2 : 1);
+        // 疫病這類沒有分程度：一出現就算到門檻（照「中毒等」選幾度都會吃藥、到暫停／提醒門檻），不然永遠被當成輕度
+        const severity = !level ? 3 : CONDITION_LEVELS[level] || (/重/.test(level) ? 3 : /中/.test(level) ? 2 : 1);
         return { name: status.name, level, severity };
       });
   }
