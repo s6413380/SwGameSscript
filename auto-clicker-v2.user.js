@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.24
-// @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
+// @version      6.25
+// @description  原地掛機 N 次後全隊休息，可輔助移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時輔助用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
 // @updateURL    https://raw.githubusercontent.com/s6413380/SwGameSscript/main/aijiji.user.js
@@ -185,7 +185,7 @@
     ['equip', '換裝'],
     ['train', '練等'],
     ['pause', '暫停'],
-    ['forge', '自動鍛造'],
+    ['forge', '輔助鍛造'],
     ['recipe', '配方'],
     ['mining', '挖礦'],
     ['practice', '修練'],
@@ -1123,7 +1123,7 @@
     }).join('');
     return `
       <div data-character="${characterIndex}">
-        <label class="row"><input data-field="${key('Enabled')}" type="checkbox" style="flex:none;width:auto"> 啟用第 ${characterIndex + 1} 位角色自動換裝</label>
+        <label class="row"><input data-field="${key('Enabled')}" type="checkbox" style="flex:none;width:auto"> 啟用第 ${characterIndex + 1} 位角色輔助換裝</label>
         <div class="row">${pickButtonHtml(key('Durability'), '耐久數字', { mode: 'number' })}
           低於 ${numberInput(key('Threshold'), 'min="0"')} 就換</div>
         <div class="row">1. ${pickButtonHtml(key('Open'), '裝備欄', { text: true })}
@@ -1183,19 +1183,19 @@
     const forgeHeroRows = Array.from({ length: SLOT_COUNT }, (_, index) => {
       const key = forgeHeroKey(index);
       return `<div class="row">第${index + 1}位 heroId<input data-field="${key}">
-        <button data-capture-hero="${group.id}:${index}" title="按下後手動替這位角色吃一次道具，自動記下 heroId">抓取</button></div>`;
+        <button data-capture-hero="${group.id}:${index}" title="按下後手動替這位角色吃一次道具，輔助記下 heroId">抓取</button></div>`;
     }).join('');
     const heroSection = forge
-      ? `<div class="hint" style="color:#4ade80">用「自動鍛造」佇列（API 鍛造）時，自動補這輪要開爐的角色，不用填 heroId，也不用勾「用 API 補給」；下面的 heroId 只給畫面按鈕鍛造用</div>
+      ? `<div class="hint" style="color:#4ade80">用「輔助鍛造」佇列（API 鍛造）時，輔助補這輪要開爐的角色，不用填 heroId，也不用勾「用 API 補給」；下面的 heroId 只給畫面按鈕鍛造用</div>
         <div class="row"><button data-load-heroes="${group.id}" title="讀取英雄列表，勾選負責鍛造的角色">從英雄列表勾選</button></div>
         <div data-hero-choices="${group.id}" class="choices"></div>
         ${forgeHeroRows}`
       : group.id === 'resource'
-        ? `<div class="hint">自動補狩獵隊伍裡的每個人，換隊員也會跟著變；取消勾選＝不補那位</div>
+        ? `<div class="hint">輔助補狩獵隊伍裡的每個人，換隊員也會跟著變；取消勾選＝不補那位</div>
           <input type="hidden" data-field="huntExcludedHeroIds">
           <div data-role="hunt-team" class="choices"><div class="hint">還沒讀到隊伍</div></div>
           <div class="row"><button data-action="load-hunt-team">重新讀取隊伍</button></div>`
-        : `<div class="hint">自動補狩獵隊伍裡的每個人；要排除誰在「補體力」頁設定（兩邊共用）</div>`;
+        : `<div class="hint">輔助補狩獵隊伍裡的每個人；要排除誰在「補體力」頁設定（兩邊共用）</div>`;
     return `
       <div class="hint">讀 ${forge ? '/api/heroes' : '/api/huntInfo'} 判斷；每次 1 或 10 個，間隔 1～3 秒；只從可用道具裡挑庫存最多的</div>
       <div class="subhead">可用道具</div>
@@ -1213,7 +1213,7 @@
       <button data-action="stats-window" title="開統計視窗：耐久預測＋掉落">📊</button>
       <button data-action="enlarge" title="拉大／縮回原狀">⤢</button>
       <button data-action="minimize" title="縮到最小／展開">–</button>
-      <button data-action="close" title="關閉：這個分頁的腳本全部停止（重新整理頁面才會恢復）">×</button>
+      <button data-action="close" title="關閉：這個分頁的插件全部停止（重新整理頁面才會恢復）">×</button>
     </div>
     <div data-role="body">
     <div class="row" data-assist-hide>
@@ -1229,7 +1229,7 @@
       <button data-action="low-mode" data-low-mode="off">關</button>
       <button data-action="low-mode" data-low-mode="serious">認真</button>
       <button data-action="low-mode" data-low-mode="casual">休閒</button>
-      <button data-action="low-mode" data-low-mode="auto">自動</button>
+      <button data-action="low-mode" data-low-mode="auto">輔助</button>
     </div>
     <div data-role="status" style="margin-top:6px">待命中</div>
     <div data-role="monitor" class="monitor"></div>
@@ -1241,10 +1241,10 @@
       <label class="row"><input data-field="huntByApiEnabled" type="checkbox" style="flex:none;width:auto"> <b>用 API 打怪</b>（不用停在狩獵頁，可以同一個分頁 API 鍛造）</label>
       <div class="hint">開了之後原地掛機、前進後退、全隊休息都直接打 API；補給、換裝請用 API 版。目標關卡只會在同一張地圖裡前進後退</div>
       <label>冷卻結束後再等 ${numberInput('huntReactMinSeconds', 'min="0" step="0.5"')} ～ ${numberInput('huntReactMaxSeconds', 'min="0" step="0.5"')} 秒（隨機）才打</label>
-      <div class="hint">像人看到冷卻結束才按。這是打怪頻率最大的變數：1～3 秒一輪約 13 秒，0.5～1.5 秒約快 8%，但越短越不像人。三個帳號自動同步</div>
+      <div class="hint">像人看到冷卻結束才按。這是打怪頻率最大的變數：1～3 秒一輪約 13 秒，0.5～1.5 秒約快 8%，但越短越不像人。三個帳號輔助同步</div>
       <label class="row"><input data-field="lowProfileEnabled" type="checkbox" style="flex:none;width:auto"> <b>低調模式</b>（模擬人類操作的延遲）</label>
-      <div class="row">玩法 <select data-field="lowProfileStyle" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="serious">認真玩：一段一段長時間玩</option><option value="casual">休閒：每小時玩一點，離開時偶爾回來點幾下</option><option value="auto">自動：認真時段認真玩，其他時間休閒</option></select></div>
-      <div class="row">自動：每天 <input data-field="lowProfileSeriousHours" placeholder="20-24" style="width:110px;flex:none"> 點認真玩（可寫多段 12-13,20-24；每天前後飄 30 分鐘）</div>
+      <div class="row">玩法 <select data-field="lowProfileStyle" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="serious">認真玩：一段一段長時間玩</option><option value="casual">休閒：每小時玩一點，離開時偶爾回來點幾下</option><option value="auto">輔助：認真時段認真玩，其他時間休閒</option></select></div>
+      <div class="row">輔助：每天 <input data-field="lowProfileSeriousHours" placeholder="20-24" style="width:110px;flex:none"> 點認真玩（可寫多段 12-13,20-24；每天前後飄 30 分鐘）</div>
       <div class="row">認真：玩 ${numberInput('lowProfilePlayMinMinutes', 'min="5"')}～${numberInput('lowProfilePlayMaxMinutes', 'min="5"')} 分鐘，休息 ${numberInput('lowProfileBreakMinMinutes', 'min="1"')}～${numberInput('lowProfileBreakMaxMinutes', 'min="1"')} 分鐘</div>
       <div class="row">休閒：每小時玩 ${numberInput('lowProfileCasualMinutes', 'min="0" max="60"')} 分鐘（每小時前後飄 30%，分 1～2 段）</div>
       <div class="row">休閒離開時每 ${numberInput('lowProfileCheckinMinMinutes', 'min="1"')}～${numberInput('lowProfileCheckinMaxMinutes', 'min="1"')} 分鐘回來點 ${numberInput('lowProfileCheckinMinHunts', 'min="1"')}～${numberInput('lowProfileCheckinMaxHunts', 'min="1"')} 下狩獵</div>
@@ -1259,31 +1259,31 @@
       <label class="row"><input data-field="turnTakingEnabled" type="checkbox" style="flex:none;width:auto"> <b>多開輪流</b>（同一台電腦的帳號一次只有一個送出請求）</label>
       <div class="row"><b>主帳號</b> <input data-field="mainAccountName" placeholder="留空＝沒有" style="width:110px;flex:none"> <button data-action="main-account-me" style="flex:none">設成這個帳號</button></div>
       <div class="row">小號打怪頻率是主帳號的 ${numberInput('sideHuntPercent', 'min="10" max="100" step="5"')} %</div>
-      <div class="hint">填帳號名稱。主帳號照常打；其他帳號每次打怪後多等一段（每次長短不一），50% 約兩輪打一次，讓出來的時間給主帳號。只影響 API 打怪，鍛造照常。三個帳號自動同步</div>
+      <div class="hint">填帳號名稱。主帳號照常打；其他帳號每次打怪後多等一段（每次長短不一），50% 約兩輪打一次，讓出來的時間給主帳號。只影響 API 打怪，鍛造照常。三個帳號輔助同步</div>
       <label class="row"><input data-field="partyWaitEnabled" type="checkbox" style="flex:none;width:auto"> <b>組隊時等隊友補好</b>再打</label>
       <div class="row">隊友每隻角色血 ≥ ${numberInput('partyWaitHpPercent', 'min="1" max="100" step="5"')} %、體力 ≥ ${numberInput('partyWaitSpPercent', 'min="0" max="100" step="5"')} %</div>
       <div class="row">隊友這些角色倒下不用等<input data-field="partyIgnoreDeadNames" placeholder="角色名稱或 id，用、分開" style="flex:1;min-width:0"></div>
       <div class="hint">名單上的角色倒下時直接打，也不會因為它倒下暫停報警；還活著但血低，照樣等它補好、超過秒數照樣暫停</div>
       <div class="row">等超過 ${numberInput('partyWaitAlertMinutes', 'min="1"')} 分鐘就提醒</div>
       <label class="row"><input data-field="partyLowHpPauseEnabled" type="checkbox" style="flex:none;width:auto"> 隊友角色血低於 ${numberInput('partyLowHpPausePercent', 'min="1" max="100" step="5"')} %（或倒下）超過 ${numberInput('partyLowHpPauseSeconds', 'min="10" step="10"')} 秒沒補上來就<b>暫停報警</b></label>
-      <div class="hint">要勾上面的「等隊友補好」才會檢查。剛打完隊友腳本還沒喝水是正常的，所以要持續一段時間才算</div>
-      <label class="row"><input data-field="partyLeaveOnPause" type="checkbox" style="flex:none;width:auto"> 打怪中自動暫停時順便<b>離開隊伍</b></label>
+      <div class="hint">要勾上面的「等隊友補好」才會檢查。剛打完隊友插件還沒喝水是正常的，所以要持續一段時間才算</div>
+      <label class="row"><input data-field="partyLeaveOnPause" type="checkbox" style="flex:none;width:auto"> 打怪中輔助暫停時順便<b>離開隊伍</b></label>
       <div class="hint">把隊友暱稱清空（跟遊戲裡設成空白一樣）。活人驗證、同帳號另一個分頁在打的暫停不離隊；自己按停止也不會。要再組隊得重新設定隊友</div>
       <label class="row"><input data-field="partyLeaveResume" type="checkbox" style="flex:none;width:auto"> 隊友造成的暫停（隊友角色血低、倒下）離隊後<b>自己繼續掛機</b></label>
       <div class="hint">要勾上面的「離開隊伍」。自己角色死亡、體力不夠、異常、裝備壞這些照舊停下等你</div>
       <div class="row"><b>雲端組隊</b> 邀請<input data-role="party-invite-to" placeholder="對方暱稱" style="flex:1;min-width:0"><button data-action="party-invite" style="flex:none">邀請</button></div>
-      <label class="row"><input data-field="partyInviteWait" type="checkbox" style="flex:none;width:auto"> <b>等待組隊</b>：有人邀請就自動設成隊友</label>
+      <label class="row"><input data-field="partyInviteWait" type="checkbox" style="flex:none;width:auto"> <b>等待組隊</b>：有人邀請就輔助設成隊友</label>
       <div class="row">只收<input data-field="partyInviteFrom" placeholder="暱稱或 id，用、分開；空白＝誰都收" style="flex:1;min-width:0">的邀請</div>
-      <div class="hint">雙方都要在「其他 → 雲端」填同一個試算表網址。邀請＝把自己的隊友設成對方，再透過雲端通知對方的腳本；對方勾了等待組隊，20～40 秒內會自動把你設成隊友（人不在電腦前也可以），15 分鐘內沒接受就作廢</div>
+      <div class="hint">雙方都要在「其他 → 雲端」填同一個試算表網址。邀請＝把自己的隊友設成對方，再透過雲端通知對方的插件；對方勾了等待組隊，20～40 秒內會輔助把你設成隊友（人不在電腦前也可以），15 分鐘內沒接受就作廢</div>
       <div class="hint" data-role="party-invite-status"></div>
       <div class="hint">只在跟隊友同地點組隊時作用：每次打怪前看一次隊友的角色，沒補到就每 5～10 秒再看，補好才打。體力填 0＝不看體力。死掉的角色也算沒補好</div>
       <label class="row"><input data-field="syncAccountsEnabled" type="checkbox" style="flex:none;width:auto"> <b>三個帳號同步</b>（當成同一個人）</label>
       <div class="hint">要開中繼站。低調模式、多開輪流、轉移模式的設定在任一個帳號改了，其他帳號約 10 秒內跟著改；低調模式的玩／休息／睡覺時間表三個帳號一樣，一起停下來休息（手速、分心還是各帳號自己的）</div>
       <div class="hint" data-role="sync-accounts-status"></div>
-      <div class="row">全體「暫時暫停」${numberInput('globalPauseMinutes', 'min="1"')} 分鐘後自動開始</div>
+      <div class="row">全體「暫時暫停」${numberInput('globalPauseMinutes', 'min="1"')} 分鐘後輔助開始</div>
       <div class="hint">最上面「全體」三顆按鈕要開中繼站：一按，同一台電腦上所有帳號（掛機、鍛造、補給…）的請求都先停住，送出去的會做完；按「開始」從停下的地方接著跑。你自己點遊戲畫面不受影響，適合手動操作時用。中繼站重開後永久暫停還在</div>
-      <div class="hint">要開中繼站（啟動中繼站.cmd），每個帳號都要勾。腳本打的 API 一律經中繼站排隊，一次一個，換到別的帳號（或別的分頁）之前隔 0.5～1.5 秒；讀完畫面接著打怪算同一次，不用再排，像一個人在幾個視窗之間切換；總覽、附近玩家、收入這類定時讀取會等這個帳號下次動作時順便送（最多等 30 秒）。中繼站沒開就照舊直接送。遊戲網頁自己發的請求不受管</div>
-      <label class="row"><input data-field="autoNavigateEnabled" type="checkbox" style="flex:none;width:auto"> 執行中不在狩獵頁／鍛造頁就自動切過去（API 打怪、API 鍛造不需要）</label>
+      <div class="hint">要開中繼站（啟動中繼站.cmd），每個帳號都要勾。插件打的 API 一律經中繼站排隊，一次一個，換到別的帳號（或別的分頁）之前隔 0.5～1.5 秒；讀完畫面接著打怪算同一次，不用再排，像一個人在幾個視窗之間切換；總覽、附近玩家、收入這類定時讀取會等這個帳號下次動作時順便送（最多等 30 秒）。中繼站沒開就照舊直接送。遊戲網頁自己發的請求不受管</div>
+      <label class="row"><input data-field="autoNavigateEnabled" type="checkbox" style="flex:none;width:auto"> 執行中不在狩獵頁／鍛造頁就輔助切過去（API 打怪、API 鍛造不需要）</label>
       <label>A 原地掛機（重複點）</label>
       <div class="row"><input data-field="selectorA" placeholder="CSS selector"><button data-pick="selectorA">選取</button></div>
       <label>原地掛機點 ${numberInput('repeatCount', 'min="1"')} 次後全隊休息</label>
@@ -1297,9 +1297,9 @@
     </div>
 
     <div data-tab="move">
-      <label class="row"><input data-field="stageEnabled" type="checkbox" style="flex:none;width:auto"> 自動移動到目標關卡（到之前不原地掛機）</label>
+      <label class="row"><input data-field="stageEnabled" type="checkbox" style="flex:none;width:auto"> 輔助移動到目標關卡（到之前不原地掛機）</label>
       <div class="subhead">不出戰（API 打怪）</div>
-      <div class="hint">勾了的隊員腳本會一直讓它休息、不上場；全隊休息完或移動完被叫醒，也會先讓它休息回去才打。還沒走到目標關卡時先不讓它休息，跟著隊伍移動（前進、後退途中會一起打），到了才休息。取消勾選才會出戰</div>
+      <div class="hint">勾了的隊員插件會一直讓它休息、不上場；全隊休息完或移動完被叫醒，也會先讓它休息回去才打。還沒走到目標關卡時先不讓它休息，跟著隊伍移動（前進、後退途中會一起打），到了才休息。取消勾選才會出戰</div>
       <input type="hidden" data-field="benchHeroIds">
       <div data-role="bench-heroes" class="choices"><div class="hint">還沒讀到隊伍</div></div>
       <label class="row"><input data-field="benchWakeForMove" type="checkbox" style="flex:none;width:auto"> 要移動時叫醒手動休息的角色（API 打怪）</label>
@@ -1308,19 +1308,19 @@
       <div class="row">目標<select data-field="stageTargetArea" data-area-select style="width:150px;flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select>
         第 ${numberInput('stageTargetNumber', 'min="0"')} 關</div>
       <div class="hint">選項來自下面的區域表。目標是分支時關卡填 0＝進去就開始刷；大區填 0＝進到大區就好。
-        API 打怪不用設定下面的按鈕：換大區會先回城再前往，分支裡可以再有分支（母區域填分支名稱）；不在目標那條路上就直接去目標大區第 1 層，再一路走進去。走到分支入口時遊戲會告訴腳本有哪些分支，區域表沒有的會自動補上</div>
+        API 打怪不用設定下面的按鈕：換大區會先回城再前往，分支裡可以再有分支（母區域填分支名稱）；不在目標那條路上就直接去目標大區第 1 層，再一路走進去。走到分支入口時遊戲會告訴插件有哪些分支，區域表沒有的會輔助補上</div>
       <datalist id="aijiji-areas"></datalist>
       <div class="row">城鎮<input data-field="townName" placeholder="初始之鎮" style="width:90px;flex:none">${pickButtonHtml('stageTown', '回城', { text: true })}</div>
       <div class="hint">在城鎮時直接按目標大區（到第 1 關再前行）；目標填城鎮名稱＝回城</div>
       <div class="row">${pickButtonHtml('selectorD', '前行', { text: true })} ${pickButtonHtml('stageBack', '後退', { text: true })} ${pickButtonHtml('stageFinishMove', '完成移動', { text: true })}</div>
       <label>移動時間到了再等 ${numberInput('finishMoveMinSeconds', 'min="0" step="0.5"')} ～ ${numberInput('finishMoveMaxSeconds', 'min="0" step="0.5"')} 秒（隨機）才完成移動</label>
-      <div class="hint">畫面上出現可按的「完成移動」時一律先按，不管有沒有開自動移動</div>
+      <div class="hint">畫面上出現可按的「完成移動」時一律先按，不管有沒有開輔助移動</div>
       <fieldset class="group">
         <legend>沒出稀有道具就換地方刷</legend>
         <label class="row"><input data-field="rareDetourEnabled" type="checkbox" style="flex:none;width:auto"> 連續 ${numberInput('rareDetourBattles', 'min="1"')} 場沒出稀有道具，就去</label>
         <div class="row">${escapeTargetHtml('rareDetour')}</div>
         <div class="row">到了以後刷 ${numberInput('rareDetourMinutes', 'min="1"')} 分鐘，再走回原本的關卡</div>
-        <div class="hint">稀有道具＝「暫停」頁「撿到稀有道具提醒」的名稱，加上英雄券、英雄卷、寵物券、寵物卷。只算打怪的戰報，出了就從 0 重新數；去刷的那段不算場數。中途自己改了目標（或被避難帶走）就不會拉回去。要開「移動」頁的自動移動才走得過去（觸發時會自動打開）</div>
+        <div class="hint">稀有道具＝「暫停」頁「撿到稀有道具提醒」的名稱，加上英雄券、英雄卷、寵物券、寵物卷。只算打怪的戰報，出了就從 0 重新數；去刷的那段不算場數。中途自己改了目標（或被避難帶走）就不會拉回去。要開「移動」頁的輔助移動才走得過去（觸發時會輔助打開）</div>
       </fieldset>
       <fieldset class="group">
         <legend>區域表</legend>
@@ -1333,9 +1333,9 @@
       .map(
         (group) => `<div data-tab="${group.id}">${
           group.id === 'health'
-            ? `<label class="row"><input data-field="manualSupplyEnabled" type="checkbox" style="flex:none;width:auto"> <b>我手動打怪、或組隊隊友打怪時也自動吃藥</b>（含解異常）</label>
-              <label class="row"><input data-field="manualEquipEnabled" type="checkbox" style="flex:none;width:auto"> <b>同上，也自動換裝</b>（照「換裝」頁 API 換裝勾的角色和設定，要先勾「用 API 自動換裝」）</label>
-              <div class="hint">腳本沒在掛機時：你自己按打怪，或組隊時隊友按打怪（遊戲會即時推播戰報過來），每打完一場看隊伍的血量、體力，低於這頁和「補體力」頁的門檻就直接用 API 吃藥（不用勾「用 API 補給」、不會去點畫面）；耐久低的裝備照換裝設定換掉。不會額外去查，只用遊戲自己收到的資料</div>`
+            ? `<label class="row"><input data-field="manualSupplyEnabled" type="checkbox" style="flex:none;width:auto"> <b>我手動打怪、或組隊隊友打怪時也輔助吃藥</b>（含解異常）</label>
+              <label class="row"><input data-field="manualEquipEnabled" type="checkbox" style="flex:none;width:auto"> <b>同上，也輔助換裝</b>（照「換裝」頁 API 換裝勾的角色和設定，要先勾「用 API 輔助換裝」）</label>
+              <div class="hint">插件沒在掛機時：你自己按打怪，或組隊時隊友按打怪（遊戲會即時推播戰報過來），每打完一場看隊伍的血量、體力，低於這頁和「補體力」頁的門檻就直接用 API 吃藥（不用勾「用 API 補給」、不會去點畫面）；耐久低的裝備照換裝設定換掉。不會額外去查，只用遊戲自己收到的資料</div>`
             : ''
         }${supplyGroupHtml(group)}</div>`
       )
@@ -1344,7 +1344,7 @@
     <div data-tab="forge">
       <div class="row"><button data-action="forge-start" style="font-weight:bold">開始鍛造</button><button data-action="forge-stop">停止鍛造</button></div>
       <label class="row"><input data-field="forgeByApiEnabled" type="checkbox" style="flex:none;width:auto"> <b>用 API 鍛造</b>（建議勾）</label>
-      <div class="row">鍛造欄位 ${numberInput('forgeShopSlots', 'min="0"')} 個（0＝自動）</div>
+      <div class="row">鍛造欄位 ${numberInput('forgeShopSlots', 'min="0"')} 個（0＝輔助）</div>
       <div class="row">開 ${numberInput('forgeByApiCount', 'min="0"')} 爐就停（0＝不限）</div>
       <div class="row">收爐<select data-field="forgeCollectMode" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="each">好一爐收一爐</option><option value="most">低調：好幾爐好了再一口氣收</option><option value="all">全部好了再一起收</option></select></div>
       <div class="row">低調：好了 ${numberInput('forgeCollectMinCount', 'min="1"')}～${numberInput('forgeCollectMaxCount', 'min="1"')} 爐才收</div>
@@ -1358,11 +1358,11 @@
         <div data-role="forge-plan-overview" style="font-size:12px"></div>
       </fieldset>
       <fieldset class="group" data-fold="closed">
-        <legend>每天自動換名稱</legend>
-        <label class="row"><input data-field="forgeAutoNameEnabled" type="checkbox" style="flex:none;width:auto"> <b>每天自動換名稱</b></label>
+        <legend>每天輔助換名稱</legend>
+        <label class="row"><input data-field="forgeAutoNameEnabled" type="checkbox" style="flex:none;width:auto"> <b>每天輔助換名稱</b></label>
         <div class="row">每 ${numberInput('forgeAutoNameMinutes', 'min="1"')} 分鐘看一次測名表，分數 ≥ ${numberInput('forgeAutoNamePercent', 'min="0" max="100" step="0.5"')} % 才用</div>
         <label class="row"><input data-field="forgeAutoNameKeepOld" type="checkbox" style="flex:none;width:auto"> 還沒有新名稱就先用昨天的名稱繼續開爐</label>
-        <div class="hint">過 00:00 後測名表有過門檻的名稱就換上（沒勾上面那格時先不開新爐，等到有才開）；之後有更好的名稱也會自動換。每個角色照自己的裝備類型和「用／賣」挑，各屬性的比重看下表</div>
+        <div class="hint">過 00:00 後測名表有過門檻的名稱就換上（沒勾上面那格時先不開新爐，等到有才開）；之後有更好的名稱也會輔助換。每個角色照自己的裝備類型和「用／賣」挑，各屬性的比重看下表</div>
         <div data-role="name-weight-table" style="font-size:12px"></div>
       </fieldset>
       ${supplyGroupHtml(SUPPLY_GROUPS.find((group) => group.id === 'forge')).replace('<fieldset class="group">', '<fieldset class="group" data-fold="closed">')}
@@ -1372,7 +1372,7 @@
           <legend>自己排挑名稱的屬性順序</legend>
           <div class="row">挑名稱的權重 <select data-field="forgeNameWeightMode" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="auto">有寫到的類型照下面，其他照內建</option><option value="manual">同左</option></select></div>
           <textarea data-field="forgeNamePriorities" rows="4" style="width:100%;box-sizing:border-box"></textarea>
-          <div class="hint">一行一組，例：「雙手斧、雙手劍：攻>防>重」。越前面越重要（3 個就是 3:2:1）；有寫到的類型就照這裡，選「賣」的會自動拿掉「重」；沒寫到的照內建（武器 攻防重、大衣 智防幸重、其他防具 防重攻；賣＝攻防智幸耐一樣重）</div>
+          <div class="hint">一行一組，例：「雙手斧、雙手劍：攻>防>重」。越前面越重要（3 個就是 3:2:1）；有寫到的類型就照這裡，選「賣」的會輔助拿掉「重」；沒寫到的照內建（武器 攻防重、大衣 智防幸重、其他防具 防重攻；賣＝攻防智幸耐一樣重）</div>
         </fieldset>
         <fieldset class="group" data-fold="closed">
           <legend>編輯佇列（列出所有角色）</legend>
@@ -1401,7 +1401,7 @@
       <fieldset class="group">
         <legend>API 換裝</legend>
         <label class="row"><input data-field="equipApiEnabled" type="checkbox" style="flex:none;width:auto">
-          <b>用 API 自動換裝</b>（只換勾選的角色，不用選按鈕）</label>
+          <b>用 API 輔助換裝</b>（只換勾選的角色，不用選按鈕）</label>
         <div data-equip-mode="api">
           <div class="row">耐久低於 ${numberInput('equipApiMinDurability', 'min="0"')} 就換</div>
           <div class="row">不穿附魔<input data-field="equipApiAvoidEnchants" placeholder="爆炸、毒（留空＝都可以穿）" style="flex:1;min-width:0"></div>
@@ -1446,7 +1446,7 @@
         <legend>耐久預測</legend>
         <div class="row">預測還能打少於 ${numberInput('durWarnBattles', 'min="0"')} 場就提醒（0＝不提醒）</div>
         <div class="hint">記每件穿著的裝備每場掉多少耐久（最近 30 場平均），算出還能撐幾場；打過幾場才算得出來</div>
-        <div class="hint">「依類型」把出戰隊伍裡同類型的裝備合在一起算（不同角色拿同一類武器也算一起，沒出戰的角色不算）：每場合計掉多少、今天用掉多少，加上閒置的備用裝備還能打幾場、照最近打怪的速度大約多久用完。有開 API 換裝的話，備用裝備要符合那個角色的換裝限制（個別設定的持法、類型、指定裝備、數值、附魔，或共用的同名、勾選清單）才算，低於換裝門檻的部分不算（到那裡就會被換掉）；沒勾自動換裝的角色算穿到壞</div>
+        <div class="hint">「依類型」把出戰隊伍裡同類型的裝備合在一起算（不同角色拿同一類武器也算一起，沒出戰的角色不算）：每場合計掉多少、今天用掉多少，加上閒置的備用裝備還能打幾場、照最近打怪的速度大約多久用完。有開 API 換裝的話，備用裝備要符合那個角色的換裝限制（個別設定的持法、類型、指定裝備、數值、附魔，或共用的同名、勾選清單）才算，低於換裝門檻的部分不算（到那裡就會被換掉）；沒勾輔助換裝的角色算穿到壞</div>
         <div class="row">依類型的每場消耗看同陣容最近 ${numberInput('durRecentBattles', 'min="3"')} 場（換陣容後打不到 3 場時先看所有陣容的最近幾場）</div>
         <div data-role="dur-type-forecast" style="font-size:12px;margin-bottom:6px"></div>
         <div data-role="dur-forecast" style="font-size:12px"></div>
@@ -1502,16 +1502,16 @@
         <div class="row">不理會的關卡<input data-field="playerIgnoreStages" placeholder="例：大草原1-3、黑暗山洞1-3"></div>
         <div class="row"><label style="flex:none"><input data-field="playerReturnEnabled" type="checkbox" style="width:auto"> 躲開後</label> ${numberInput('playerReturnMinutes', 'min="1"')} 分鐘沒再遇到危險玩家，就走回原本掛機的關卡</div>
         <div class="hint">不理會的關卡寫法：「大草原1-3」＝大草原第 1～3 關；「1-2」＝每個區域的第 1、2 關；「老鼠洞」＝整個老鼠洞；多個用逗號或頓號分開</div>
-        <div class="hint">觸發時把「移動」頁的目標改成這裡並打開自動移動，走過去後照常掛機。血量：到了避難關卡血量還是低才暫停（死亡照樣馬上暫停）。玩家：每 15 秒看一次同地圖的玩家（城鎮不看）；移動途中路過的關卡不管，到了目標關卡才看；分支退到入口之前會回到母區域；退到第 1 關還有就只提醒</div>
+        <div class="hint">觸發時把「移動」頁的目標改成這裡並打開輔助移動，走過去後照常掛機。血量：到了避難關卡血量還是低才暫停（死亡照樣馬上暫停）。玩家：每 15 秒看一次同地圖的玩家（城鎮不看）；移動途中路過的關卡不管，到了目標關卡才看；分支退到入口之前會回到母區域；退到第 1 關還有就只提醒</div>
       </fieldset>
       <label class="row"><input data-field="verifyEnabled" type="checkbox" style="flex:none;width:auto"> 畫面出現驗證框就暫停</label>
       <div class="row">關鍵字<input data-field="verifyKeyword" placeholder="驗證框上的文字"></div>
-      <label class="row"><input data-field="verifyAutoResume" type="checkbox" style="flex:none;width:auto"> 驗證框消失後自動繼續（只在因驗證框暫停時）</label>
+      <label class="row"><input data-field="verifyAutoResume" type="checkbox" style="flex:none;width:auto"> 驗證框消失後輔助繼續（只在因驗證框暫停時）</label>
       <label>道具每步間隔 ${numberInput('itemStepSeconds', 'min="0.5" step="0.1"')} 秒（最少 0.5；補給、換裝、鍛造共用）</label>
     </div>
 
     <div data-tab="alert">
-      <div>自動暫停時要用哪些方式提醒（手動按停止不會提醒）：</div>
+      <div>輔助暫停時要用哪些方式提醒（手動按停止不會提醒）：</div>
       <label class="row"><input data-field="alertRedEnabled" type="checkbox" style="flex:none;width:auto"> 介面亮紅</label>
       <label class="row"><input data-field="alertSoundEnabled" type="checkbox" style="flex:none;width:auto"> 發出聲音</label>
       <div class="row">音量<input data-field="alertVolume" type="range" min="0" max="100"><button data-action="test-sound">試聽</button></div>
@@ -1522,7 +1522,7 @@
       <div class="row">鎖定的按鈕<input data-field="buttonLockNames" placeholder="小視窗按鈕上的字，例：回城、前行、後退"></div>
       <label>小視窗裡裝備耐久低於 ${numberInput('miniLowDurability', 'min="0" style="flex:none;width:60px"')} 標紅（0＝不標）</label>
       <div class="row"><label style="flex:none"><input data-field="miniShowDamage" type="checkbox" style="width:auto"> 小視窗顯示輸出佔比</label><label style="flex:none"><input data-field="miniShowLoot" type="checkbox" style="width:auto"> 掉落</label></div>
-      <label class="row"><input data-field="assistModeEnabled" type="checkbox" style="flex:none;width:auto"> <b>輔助模式</b>：只留手動打怪用的（補給、解異常、換裝、小視窗、統計），自動掛機、鍛造、挖礦、購卡的分頁和按鈕都收起來，而且會停掉、不能啟動</label>
+      <label class="row"><input data-field="assistModeEnabled" type="checkbox" style="flex:none;width:auto"> <b>輔助模式</b>：只留手動打怪用的（補給、解異常、換裝、小視窗、統計），掛機、鍛造、挖礦、購卡的分頁和按鈕都收起來，而且會停掉、不能啟動</label>
       <fieldset class="group">
         <legend>外觀</legend>
         <label class="row"><input data-field="cinnamonTheme" type="checkbox" style="flex:none;width:auto"> 風格2（下面的顏色、背景圖要勾這個才有用）</label>
@@ -1534,14 +1534,14 @@
         <div class="hint" data-role="theme-note"></div>
         <div class="row">背景圖<input data-field="cinnamonBgImage" placeholder="圖片網址 https://…，或按上傳" style="flex:1;min-width:0"><button data-action="theme-image-upload" style="flex:none">上傳</button><button data-action="theme-image-clear" style="flex:none">清除</button><input data-role="theme-image-file" type="file" accept="image/*" style="display:none"></div>
         <div class="row">背景圖變暗<input data-field="cinnamonBgDim" type="range" min="0" max="90" style="flex:1"><span data-role="theme-dim-text" style="flex:none;width:36px;text-align:right"></span></div>
-        <div class="hint">色碼可以直接打 #F4CFE0、F4CFE0、#fcf；太淺或太深會自動調到白字看得清楚的深淺（右邊小方塊是實際用的顏色）。上傳的圖只存在這台瀏覽器</div>
+        <div class="hint">色碼可以直接打 #F4CFE0、F4CFE0、#fcf；太淺或太深會輔助調到白字看得清楚的深淺（右邊小方塊是實際用的顏色）。上傳的圖只存在這台瀏覽器</div>
       </fieldset>
       <fieldset class="group">
         <legend>多帳號總覽</legend>
         <label class="row"><input data-field="dashboardEnabled" type="checkbox" style="flex:none;width:auto"> 回報到總覽頁（每 5 秒）</label>
         <div class="row">位址<input data-field="dashboardUrl"></div>
         <div class="hint">先執行 monitor-server.ps1，再用瀏覽器開這個位址看三個帳號；不按開始也會回報</div>
-        <label class="row"><input data-field="autoUpdateEnabled" type="checkbox" style="flex:none;width:auto"> 中繼站上有新版就自動重新整理（要用載入器安裝）</label>
+        <label class="row"><input data-field="autoUpdateEnabled" type="checkbox" style="flex:none;width:auto"> 中繼站上有新版就輔助重新整理（要用載入器安裝）</label>
       </fieldset>
     </div>
 
@@ -1577,7 +1577,7 @@
       <div class="hint">不在狩獵隊伍裡的角色升級算「修練」；只算一次升一級的紀錄</div>
       <fieldset class="group">
         <legend>分享與整合</legend>
-        <label class="row"><input data-field="growthSyncEnabled" type="checkbox" style="flex:none;width:auto"> 透過中繼站自動同步（自己的帳號之間每 5 分鐘合併一次）</label>
+        <label class="row"><input data-field="growthSyncEnabled" type="checkbox" style="flex:none;width:auto"> 透過中繼站輔助同步（自己的帳號之間每 5 分鐘合併一次）</label>
         <div class="row"><span data-role="growth-sync-status" class="hint" style="flex:1"></span><button data-action="growth-sync-now">立即同步</button></div>
         <div class="hint">匯出全部角色的升級紀錄（只有角色名稱、類型、每次升級的成長值與地點，不含帳號）。匯入別人的檔案會合併，同一筆升級不會重複算，可以一直匯入不同人的</div>
         <div class="row"><button data-action="growth-export-file">匯出成檔案</button><button data-action="growth-export-copy">複製</button></div>
@@ -1600,22 +1600,22 @@
       <div class="row"><button data-action="quality-pick">開始</button><button data-action="quality-pick-stop">停止</button></div>
       <div class="hint">只處理畫面上這一頁；已經是目標狀態的不會再點</div>
       <div class="row"><button data-action="pick-sell-marked" style="font-weight:bold">勾選 💰 要賣的</button><span data-role="sell-marked-count" class="hint" style="flex:1"></span></div>
-      <div class="hint">自動鍛造用途選「賣」的角色做出來的裝備會自動標 💰（背包表格名稱前也看得到）；在裝備詳細資料也能手動按「💰 標記要賣」。勾好再用遊戲的鍊金或販賣，鎖定的不會勾</div>
+      <div class="hint">輔助鍛造用途選「賣」的角色做出來的裝備會輔助標 💰（背包表格名稱前也看得到）；在裝備詳細資料也能手動按「💰 標記要賣」。勾好再用遊戲的鍊金或販賣，鎖定的不會勾</div>
       <div class="row"><button data-action="pick-low-dur" style="font-weight:bold">勾選耐久低於</button>${numberInput('pickLowDurMax', 'min="1" style="flex:none;width:70px"')}<span class="hint" style="flex:1">的裝備（沒鎖定、沒穿在身上）</span></div>
       <fieldset class="group">
         <legend>背包表格</legend>
         <label class="row"><input data-field="itemTableSortEnabled" type="checkbox" style="flex:none;width:auto"> 點表頭排序（再點一次反向；品質照品質高低）</label>
         <label class="row"><input data-field="sellHelperEnabled" type="checkbox" style="flex:none;width:auto"> 販賣視窗顯示市場最低價和「填最大數量＋最低價」按鈕</label>
         <label>最低價比第二低便宜超過 ${numberInput('sellGapWarnPercent', 'min="0" style="flex:none;width:60px"')} % 紅字提醒（0＝不提醒）</label>
-        <div class="hint">鎖定的裝備在背包表格會標 🔒、整列淡黃色；按了「🚫 保留」（自動換裝不會換上）的，名稱後面標 🚫</div>
+        <div class="hint">鎖定的裝備在背包表格會標 🔒、整列淡黃色；按了「🚫 保留」（輔助換裝不會換上）的，名稱後面標 🚫</div>
         <div class="row"><button data-action="equip-export">匯出勾選的裝備</button><label style="flex:none"><input data-field="equipExportBase" type="checkbox" style="width:auto"> 換算成普通品質</label></div>
-        <div class="hint">在遊戲背包的裝備表勾好裝備再按，複製成表格（貼進 Excel、Google 試算表會自動分欄）：名稱、類型、品質、攻防智幸重、耐久上限、孔、鍊金價、鍛造素材</div>
+        <div class="hint">在遊戲背包的裝備表勾好裝備再按，複製成表格（貼進 Excel、Google 試算表會輔助分欄）：名稱、類型、品質、攻防智幸重、耐久上限、孔、鍊金價、鍛造素材</div>
         <textarea data-role="equip-export" rows="4" readonly style="display:none;width:100%;box-sizing:border-box;font:11px monospace"></textarea>
       </fieldset>
     </div>
 
     <div data-tab="material">
-      <div class="hint">鍛造材料在鍛造時自動記（也讀鍛造工具腳本的紀錄）；裝備數值在物品頁看過就會記下來，之後賣掉也還算得到</div>
+      <div class="hint">鍛造材料在鍛造時輔助記（也讀鍛造工具插件的紀錄）；裝備數值在物品頁看過就會記下來，之後賣掉也還算得到</div>
       <div class="row"><select data-role="material-mode" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="tendency">材料屬性傾向（全部類型）</option><option value="regression">依材料貢獻（扣除其他材料）</option><option value="single">依單一材料</option><option value="combo">依材料組合</option><option value="enchant">附魔推測（填材料估附魔）</option><option value="table">素材表（廣測，石頭＝1）</option></select>
         <select data-role="material-type" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
       <div class="row"><select data-role="material-forger" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
@@ -1648,8 +1648,8 @@
       <textarea data-name-test="names" rows="4" placeholder="候選名稱，一行一個（或用、隔開）" style="width:100%;box-sizing:border-box;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></textarea>
       <div class="row">加測名表今天這種裝備前<input data-name-test="referenceCount" type="number" min="0" max="5" style="flex:none;width:40px">名當標準（0＝不加）</div>
       <div class="hint">標準名先測；做出來跟表上的 % 對照，把其他名稱換算成測名表的尺度，就能直接跟表上的名稱和門檻比</div>
-      <label class="row"><input data-name-test="useForAuto" type="checkbox" style="flex:none;width:auto"> 自動換名稱：測名表今天這種裝備沒有到門檻的名稱時，改用自測結果（每種裝備分開，名稱效果每種不一樣）</label>
-      <label class="row"><input data-name-test="autoDaily" type="checkbox" style="flex:none;width:auto"> 每天 00:00 後自動測名：佇列裡每種裝備各測一輪（測名表已經有到門檻名稱的種類跳過），測完每種各套用自己的第一名（要開自動鍛造的「每天自動換名稱」）</label>
+      <label class="row"><input data-name-test="useForAuto" type="checkbox" style="flex:none;width:auto"> 輔助換名稱：測名表今天這種裝備沒有到門檻的名稱時，改用自測結果（每種裝備分開，名稱效果每種不一樣）</label>
+      <label class="row"><input data-name-test="autoDaily" type="checkbox" style="flex:none;width:auto"> 每天 00:00 後輔助測名：佇列裡每種裝備各測一輪（測名表已經有到門檻名稱的種類跳過），測完每種各套用自己的第一名（要開輔助鍛造的「每天輔助換名稱」）</label>
       <div class="row">亂取系列<select data-name-test="randomStyle" style="flex:none;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="common">常用字</option><option value="xianxia">仙俠</option><option value="star">星辰</option><option value="myth">神話</option><option value="beast">猛獸</option><option value="mixed">多元素混搭</option><option value="custom">自己填字詞</option></select>
         字數<input data-name-test="randomMinLength" type="number" min="1" max="12" style="flex:none;width:40px">～<input data-name-test="randomMaxLength" type="number" min="1" max="12" style="flex:none;width:40px"></div>
       <input data-name-test="randomTemplate" placeholder="模板，例：{字}之刃、鐵壁{數}（空白＝整個亂取）" title="{字}＝照系列亂取一段，{數}＝流水號；整個名稱不超過上面的字數（最多 12 字）" style="width:100%;box-sizing:border-box">
@@ -1738,7 +1738,7 @@
     </div>
 
     <div data-tab="recipe">
-      <div class="hint">選裝備 → 從「我的最愛」或「歷史配方」挑一個（或自己勾材料）→ 取名稱 → 在最下面把角色「加入」自動鍛造</div>
+      <div class="hint">選裝備 → 從「我的最愛」或「歷史配方」挑一個（或自己勾材料）→ 取名稱 → 在最下面把角色「加入」輔助鍛造</div>
       <div class="row" style="font-size:14px"><b style="flex:none">裝備</b><select data-field="forgeRecipeType" style="flex:1;min-width:0;padding:4px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px;font-size:14px"><option>單手劍</option><option>細劍</option><option>短刀</option><option>單手錘</option><option>盾牌</option><option>雙手劍</option><option>太刀</option><option>雙手斧</option><option>長槍</option><option>頭盔</option><option>帽子</option><option>盔甲</option><option>大衣</option><option>項鍊</option></select></div>
       <div class="row">目前配方<input data-field="forgeRecipe" placeholder="從下面挑，或勾材料"></div>
       <div data-role="recipe-total" style="font-size:12px;margin:2px 0"></div>
@@ -1762,13 +1762,13 @@
       <div class="row">名稱<input data-field="forgeRecipeName" list="aijiji-today-names" placeholder="名稱每天影響數值，自己取"><button data-action="name-sheet-refresh">更新測名表</button></div>
       <datalist id="aijiji-today-names"></datalist>
       <div data-role="name-suggest" style="font-size:12px;max-height:180px;overflow:auto"></div>
-      <div class="subhead">④ 給誰用（按「加入」就排進自動鍛造佇列）</div>
+      <div class="subhead">④ 給誰用（按「加入」就排進輔助鍛造佇列）</div>
       <div class="row" style="background:#2a1f0b;border:1px solid #f59e0b;border-radius:6px;padding:3px 6px">⏱ 這個配方敲 ${numberInput('forgeRecipeLimit', 'min="0"')} 次後，換回角色原本的配方（0＝一直用）</div>
-      <div class="hint">省稀有材料：填次數再按角色的「加入／改用」。原本的配方＝角色在佇列裡的配方，沒有就用他上次鍛造的（裝備種類也一起換回）；上面「名稱」有填就敲這個名稱，敲完名稱也換回原本的；都沒有就敲完移出佇列。進度在「自動鍛造」頁的卡片上</div>
+      <div class="hint">省稀有材料：填次數再按角色的「加入／改用」。原本的配方＝角色在佇列裡的配方，沒有就用他上次鍛造的（裝備種類也一起換回）；上面「名稱」有填就敲這個名稱，敲完名稱也換回原本的；都沒有就敲完移出佇列。進度在「輔助鍛造」頁的卡片上</div>
       <div data-role="recipe-heroes" style="font-size:12px;max-height:300px;overflow:auto"></div>
       <div class="row"><button data-action="recipe-heroes">重新讀取角色</button></div>
-      <div class="row">開 ${numberInput('forgeRecipeRepeat', 'min="0"')} 爐（0＝不限）<button data-action="recipe-auto-forge" style="font-weight:bold">開始自動鍛造</button></div>
-      <div class="hint">「加入」：這個角色以後都用上面的類型與配方（名稱沒填的用上面的名稱），閒著就開爐，鍛造欄位自動找空的；佇列在「自動鍛造」頁。「鍛一次」：只用它鍛一爐，送出前再確認。狩獵隊伍的角色不會被拿去鍛造</div>
+      <div class="row">開 ${numberInput('forgeRecipeRepeat', 'min="0"')} 爐（0＝不限）<button data-action="recipe-auto-forge" style="font-weight:bold">開始輔助鍛造</button></div>
+      <div class="hint">「加入」：這個角色以後都用上面的類型與配方（名稱沒填的用上面的名稱），閒著就開爐，鍛造欄位輔助找空的；佇列在「輔助鍛造」頁。「鍛一次」：只用它鍛一爐，送出前再確認。狩獵隊伍的角色不會被拿去鍛造</div>
       <div class="row"><button data-action="material-refresh">更新裝備資料</button></div>
     </div>
 
@@ -1798,12 +1798,12 @@
     </div>
 
     <div data-tab="transfer">
-      <div class="hint">用拍賣在自己的帳號之間轉移：這邊按下去後，另一個帳號會自動掛單或買下。兩個帳號的遊戲分頁都要開著、「總覽」回報要打開、中繼站要開著。防搶：買方先待命（每 0.5 秒查拍賣），確定待命了才掛單，一出現就買；掛單留言放一組暗號，買方核對賣家、價格、暗號都對才買</div>
+      <div class="hint">用拍賣在自己的帳號之間轉移：這邊按下去後，另一個帳號會輔助掛單或買下。兩個帳號的遊戲分頁都要開著、「總覽」回報要打開、中繼站要開著。防搶：買方先待命（每 0.5 秒查拍賣），確定待命了才掛單，一出現就買；掛單留言放一組暗號，買方核對賣家、價格、暗號都對才買</div>
       <div class="row">對象帳號<select data-role="transfer-target" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select><button data-action="transfer-refresh">重新讀取</button></div>
       <div class="row">或輸入對方帳號 ID<input data-role="transfer-target-id" type="number" min="1" placeholder="對方面板上看得到" style="width:110px;flex:none"></div>
       <div class="hint" data-role="transfer-me"></div>
       <div class="row">多開輪流時轉移<select data-field="transferTurnMode" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="human">優先＋模擬真人</option><option value="fast">優先＋最快</option></select></div>
-      <div class="hint">（主流程勾了「多開輪流」才有用）兩個帳號都在中繼站上轉移時，所有帳號的掛機、鍛造請求先停著，只讓轉移的兩邊動作，做完自動接著跑。模擬真人：兩個視窗之間切換隔 0.6～1.5 秒，掛單到買下約 1～3 秒；最快：不隔，約 1 秒內</div>
+      <div class="hint">（主流程勾了「多開輪流」才有用）兩個帳號都在中繼站上轉移時，所有帳號的掛機、鍛造請求先停著，只讓轉移的兩邊動作，做完輔助接著跑。模擬真人：兩個視窗之間切換隔 0.6～1.5 秒，掛單到買下約 1～3 秒；最快：不隔，約 1 秒內</div>
       <fieldset class="group">
         <legend>轉金幣給對方</legend>
         <div class="row">金額 <input data-role="transfer-amount" type="number" min="1" style="width:100px;flex:none"> <button data-action="transfer-money" style="font-weight:bold">轉出</button></div>
@@ -1817,13 +1817,13 @@
         <div class="row"><select data-role="transfer-hero" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select></div>
         <div class="row">免問的帳號 ID<input data-field="transferTrustedIds" placeholder="自己的其他帳號，逗號分隔" style="flex:1;min-width:0"></div>
         <div class="row">價格 <input data-role="transfer-hero-price" type="number" min="1" style="width:100px;flex:none"> <button data-action="transfer-hero" style="font-weight:bold">掛單並讓對方買</button></div>
-        <div class="hint">價格是對方要付的錢（會轉到這個帳號）。按下去會先跳確認；對方沒待命就不掛單，掛上去 20 秒內沒被買走會自動撤回。對方不在中繼站上就走雲端：對方要勾「接受雲端轉帳」，兩邊的掛機、鍛造先停下來等（最多約 2.5 分鐘），完成後自動恢復。收到雲端轉角色會跳視窗問要不要接受（要付錢），80 秒沒按就拒絕；「免問的帳號 ID」填自己的其他帳號就不用每次按</div>
+        <div class="hint">價格是對方要付的錢（會轉到這個帳號）。按下去會先跳確認；對方沒待命就不掛單，掛上去 20 秒內沒被買走會輔助撤回。對方不在中繼站上就走雲端：對方要勾「接受雲端轉帳」，兩邊的掛機、鍛造先停下來等（最多約 2.5 分鐘），完成後輔助恢復。收到雲端轉角色會跳視窗問要不要接受（要付錢），80 秒沒按就拒絕；「免問的帳號 ID」填自己的其他帳號就不用每次按</div>
       </fieldset>
       <div data-role="transfer-log" class="hint"></div>
     </div>
 
     <div data-tab="draw">
-      <div class="hint">在遊戲物品頁用英雄券這類道具抽卡時自動記下抽到什麼。開了雲端同步會上傳，也能看大家（照雲端頁的署名分上傳者）的紀錄</div>
+      <div class="hint">在遊戲物品頁用英雄券這類道具抽卡時輔助記下抽到什麼。開了雲端同步會上傳，也能看大家（照雲端頁的署名分上傳者）的紀錄</div>
       <div class="row"><select data-role="draw-scope" style="flex:none;max-width:120px;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select><select data-role="draw-item" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select><button data-action="draw-clear">清除紀錄</button></div>
       <div class="row"><button data-action="draw-copy">複製紀錄（表格）</button><span class="hint" style="flex:1">照上面選的範圍和道具，每抽一列：時間、角色代號、卡片、稀有度、潛能、道具、上傳者</span></div>
       <textarea data-role="draw-export" rows="4" readonly style="display:none;width:100%;box-sizing:border-box;font:11px monospace"></textarea>
@@ -1831,7 +1831,7 @@
     </div>
 
     <div data-tab="loot">
-      <div class="hint">打怪、PvP（打劫、切磋）、挖礦伐木收到的東西分開記（腳本跑的、自己手動的都算），勾的來源才算進「合計」</div>
+      <div class="hint">打怪、PvP（打劫、切磋）、挖礦伐木收到的東西分開記（插件跑的、自己手動的都算），勾的來源才算進「合計」</div>
       <div class="row"><label style="flex:none"><input data-field="lootSourceHunt" type="checkbox" style="width:auto"> 狩獵</label><label style="flex:none"><input data-field="lootSourcePvp" type="checkbox" style="width:auto"> PvP</label><label style="flex:none"><input data-field="lootSourceAction" type="checkbox" style="width:auto"> 挖礦伐木</label>
         <select data-role="loot-period" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">今天</option><option value="3">近 3 天</option><option value="7">近 7 天</option><option value="14">近 14 天</option><option value="session">按清空後</option></select>
         <button data-action="loot-clear" style="flex:none" title="從現在開始另外算一段，每天的紀錄不受影響">清空重算</button></div>
@@ -1839,7 +1839,7 @@
     </div>
 
     <div data-tab="scratch">
-      <div class="hint">在遊戲賭場刮刮樂時自動記下花多少、中什麼。清除只清自己這邊、從零開始算；開了雲端同步會上傳，也能看大家的</div>
+      <div class="hint">在遊戲賭場刮刮樂時輔助記下花多少、中什麼。清除只清自己這邊、從零開始算；開了雲端同步會上傳，也能看大家的</div>
       <div class="row">照市價算<input data-field="scratchMarketNames" placeholder="密技" style="flex:1;min-width:0" title="名稱有這些字的道具，照拍賣場目前最低單價算（10 分鐘更新一次）；用、分開，留空＝都不用市價"></div>
       <div class="row">道具估價<input data-field="scratchItemValues" placeholder="英雄券=35000, 寵物券=5000" style="flex:1;min-width:0" title="名稱=價格，用逗號分開；獎項文字裡有這個名稱就照這個價格算進損益，改了連以前的紀錄一起重算"></div>
       <div class="row"><select data-role="scratch-scope" style="flex:none;max-width:120px;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"></select><select data-role="scratch-card" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="">全部刮刮樂</option><option value="regular">200 元</option><option value="premium">1,600 元</option></select><button data-action="scratch-clear">清除紀錄</button></div>
@@ -1862,7 +1862,7 @@
         <div class="row">每 <input data-field="cardBuyIntervalSeconds" type="number" min="10" style="width:50px;flex:none"> ～ <input data-field="cardBuyIntervalMaxSeconds" type="number" min="10" style="width:50px;flex:none"> 秒查一次</div>
         <div class="hint">像人刷商店：間隔大多靠近短的、偶爾拉長；連查 3～8 次後休息 5～20 分鐘</div>
         <div class="row">只在 <input data-field="cardActiveHours" placeholder="留空＝整天" style="width:110px;flex:none"> 點查（例：8-24、20-2）</div>
-        <div class="row">開 <input data-field="cardActiveMinutes" type="number" min="0" style="width:50px;flex:none"> 分鐘後自動切回被動（0＝不切）</div>
+        <div class="row">開 <input data-field="cardActiveMinutes" type="number" min="0" style="width:50px;flex:none"> 分鐘後輔助切回被動（0＝不切）</div>
         <div class="row"><span data-role="card-buy-next" class="hint" style="flex:1"></span><button data-action="card-buy-check-now" title="不管模式和間隔，馬上查一次">立即查</button></div>
       </fieldset>
       <fieldset class="group">
@@ -1871,18 +1871,18 @@
         <div data-role="card-rules"></div>
         <datalist id="aijiji-card-types"></datalist>
         <div class="row"><button data-action="card-rule-add">＋ 新增一張要找的卡</button></div>
-        <div class="hint">卡片名稱是卡片種類（例如房東阿姨），不是玩家取的名字；打字時會列出看過的卡。空著的條件＝不限，等級兩格填一樣＝剛好那一級。沒填價格的只提醒；勾「只提醒不買」的開了自動購買也不買</div>
+        <div class="hint">卡片名稱是卡片種類（例如房東阿姨），不是玩家取的名字；打字時會列出看過的卡。空著的條件＝不限，等級兩格填一樣＝剛好那一級。沒填價格的只提醒；勾「只提醒不買」的開了輔助購買也不買</div>
       </fieldset>
       <fieldset class="group">
         <legend>提醒</legend>
-        <div class="hint">沒開自動購買時，符合的卡都只跳提醒。同一張掛單只提醒一次（降價會再提醒）</div>
+        <div class="hint">沒開輔助購買時，符合的卡都只跳提醒。同一張掛單只提醒一次（降價會再提醒）</div>
         <label class="row"><input data-field="cardReleasedEnabled" type="checkbox" style="flex:none;width:auto"> 人口販子：你自己開人口販子頁時順便比對（只提醒，不買；不會主動去查）</label>
         <div class="row">提醒方式<select data-field="cardAlertStyle" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="toast">右下角小提示＋系統通知（不打斷）</option><option value="popup">照「提醒」頁設定（彈窗、聲音、紅框）</option></select></div>
         <div class="row"><b style="flex:1">提醒紀錄</b><button data-action="card-notified-reset" title="提醒過的掛單下一輪會再叫一次">讓提醒過的再叫</button><button data-action="card-alert-history-clear">清空</button></div>
         <div data-role="card-alert-history" class="hint" style="max-height:140px;overflow-y:auto;border:1px solid #44444c;border-radius:5px;padding:4px"></div>
       </fieldset>
       <fieldset class="group">
-        <legend>自動購買（會花錢）</legend>
+        <legend>輔助購買（會花錢）</legend>
         <label class="row"><input data-field="cardAutoBuyEnabled" type="checkbox" style="flex:none;width:auto"> <b>符合又有寫價格上限的卡直接買</b></label>
         <label class="row"><input data-field="cardNotifyOverPrice" type="checkbox" style="flex:none;width:auto"> 價格太高的也提醒（卡一出現就說一聲，低於價格才買）</label>
         <div class="row">總預算 <input data-field="cardBuyBudget" type="number" min="0" style="width:100px;flex:none"> 最多買 <input data-field="cardBuyMaxCount" type="number" min="1" style="width:50px;flex:none"> 張</div>
@@ -1905,11 +1905,11 @@
       <pre data-role="log" style="margin:0;max-height:260px;overflow:auto;font:11px monospace;white-space:pre-wrap"></pre>
       <div class="row" style="margin-top:8px"><b style="flex:1">效能檢查（找卡頓）</b>
         <button data-action="perf-refresh">更新</button><button data-action="perf-copy">複製</button><button data-action="perf-reset">歸零</button></div>
-      <div class="hint">腳本每段程式佔用畫面多久；平常玩一兩分鐘、覺得卡的時候按「更新」，再按「複製」貼給開發者</div>
+      <div class="hint">插件每段程式佔用畫面多久；平常玩一兩分鐘、覺得卡的時候按「更新」，再按「複製」貼給開發者</div>
       <pre data-role="perf-log" style="margin:0;max-height:260px;overflow:auto;font:11px monospace;white-space:pre-wrap"></pre>
       <div class="row" style="margin-top:8px"><b style="flex:1">網頁黑掉紀錄</b>
         <button data-action="crash-log-copy">複製</button><button data-action="crash-log-clear">清除</button></div>
-      <label class="row"><input data-field="crashReloadEnabled" type="checkbox" style="flex:none;width:auto"> 遊戲畫面黑掉（整個不見）就自動重新整理，原本在跑的接著跑</label>
+      <label class="row"><input data-field="crashReloadEnabled" type="checkbox" style="flex:none;width:auto"> 遊戲畫面黑掉（整個不見）就輔助重新整理，原本在跑的接著跑</label>
       <div data-role="crash-log" class="hint" style="max-height:160px;overflow:auto;white-space:pre-wrap;font:11px monospace"></div>
       <div class="row" style="margin-top:8px"><b style="flex:1">吃藥／換裝紀錄（API，新的在上面）</b>
         <button data-action="item-log-copy">複製</button><button data-action="item-log-clear">清除</button></div>
@@ -1917,14 +1917,14 @@
       <fieldset class="group">
         <legend>角色成長值</legend>
         <label class="row"><input data-field="growthEnabled" type="checkbox" style="flex:none;width:auto"> 記錄升級成長值，顯示在角色屬性頁</label>
-        <div class="hint">原本的「角色成長值紀錄」腳本請停用，不然會顯示兩次。舊紀錄：Tampermonkey 打開那支腳本 →「儲存空間」分頁（設定模式要選「進階」才看得到）→ 全選複製貼到下面</div>
+        <div class="hint">原本的「角色成長值紀錄」插件請停用，不然會顯示兩次。舊紀錄：Tampermonkey 打開那支插件 →「儲存空間」分頁（設定模式要選「進階」才看得到）→ 全選複製貼到下面</div>
         <textarea data-role="growth-import" rows="3" placeholder='{"hero_index":[...],"hero_123_history":[...]}' style="width:100%;box-sizing:border-box;font:11px monospace"></textarea>
         <div class="row"><button data-action="growth-import">匯入舊紀錄</button></div>
       </fieldset>
     </div>
 
     <div data-tab="players">
-      <div class="hint">用玩家 id 查資料（遊戲裡點玩家看到的那些：樓層、隊伍、狩獵／鍛造／擊殺次數…）。加進清單的玩家每次查都記下來，看得到跟上次查比多了多少。同地點遇到的、在遊戲裡點開看過的、戰報（打劫、被打、組隊）裡的玩家會自動記下 id，不用另外送請求</div>
+      <div class="hint">用玩家 id 查資料（遊戲裡點玩家看到的那些：樓層、隊伍、狩獵／鍛造／擊殺次數…）。加進清單的玩家每次查都記下來，看得到跟上次查比多了多少。同地點遇到的、在遊戲裡點開看過的、戰報（打劫、被打、組隊）裡的玩家會輔助記下 id，不用另外送請求</div>
       <div class="row">玩家 id<input data-role="player-id" inputmode="numeric" placeholder="例：12345" style="flex:1;min-width:0"><button data-action="player-lookup">查詢</button><button data-action="player-watch">加入清單</button></div>
       <div data-role="player-detail" style="font-size:12px"></div>
       <div class="subhead">我的清單</div>
@@ -1934,7 +1934,7 @@
     </div>
 
     <div data-tab="api">
-      <div class="hint">按「開始錄製」→ 手動替一位角色開道具欄、按使用、關掉 → 按「停止錄製」→「複製」貼出來分析。只在錄製中記錄；token、密碼這類欄位會自動遮掉</div>
+      <div class="hint">按「開始錄製」→ 手動替一位角色開道具欄、按使用、關掉 → 按「停止錄製」→「複製」貼出來分析。只在錄製中記錄；token、密碼這類欄位會輔助遮掉</div>
       <div class="row"><button data-action="api-record">開始錄製</button><button data-action="api-copy">複製</button><button data-action="api-clear">清除</button></div>
       <textarea data-role="api-log" readonly rows="12" style="width:100%;box-sizing:border-box;font:11px monospace"></textarea>
     </div>
@@ -2520,8 +2520,8 @@
     const on = assistModeOn();
     panel.toggleAttribute('data-assist', on);
     if (on) {
-      if (state.running) stop('輔助模式：已停止自動掛機');
-      if (forgeRunner.running) stopForgeRunner('輔助模式：已停止自動鍛造');
+      if (state.running) stop('輔助模式：已停止掛機');
+      if (forgeRunner.running) stopForgeRunner('輔助模式：已停止鍛造');
       if (miningRunner.running) stopMiningRunner('輔助模式：已停止挖礦');
       if (practiceRunner.running) stopPracticeRunner('輔助模式：已停止修練');
       if (readSettingsFromPanel().cardBuyEnabled) setPanelField('cardBuyEnabled', false);
@@ -3416,7 +3416,7 @@
           // 讀不到就照常重新整理
         }
         if (triedVersion === version) {
-          setStatus(`有新版 ${version}，但重新整理後還是 ${SCRIPT_VERSION}：這個分頁不是用載入器載入，請在 Tampermonkey 移除「愛吉吉」（或舊名「器靈」「自動點擊按鈕 V2」）完整版、改裝載入器`);
+          setStatus(`有新版 ${version}，但重新整理後還是 ${SCRIPT_VERSION}：這個分頁不是用載入器載入，請在 Tampermonkey 移除「愛吉吉」（或舊名「器靈」「輔助點擊按鈕 V2」）完整版、改裝載入器`);
           return;
         }
         autoUpdate.pendingVersion = version;
@@ -3469,7 +3469,7 @@
     renderCrashLog();
     const last = readJsonStorage(CRASH_LOG_KEY, [])[0];
     if (last && Date.now() - last.at < 10 * 60000) {
-      setStatus(`${formatLocalTime(last.at)} 遊戲畫面黑掉${last.reloaded ? '，已自動重新整理' : ''}（錯誤內容在「紀錄」頁）`);
+      setStatus(`${formatLocalTime(last.at)} 遊戲畫面黑掉${last.reloaded ? '，已輔助重新整理' : ''}（錯誤內容在「紀錄」頁）`);
     }
     let seenContent = false;
     let blankSince = 0;
@@ -3507,7 +3507,7 @@
     writeJsonStorage(CRASH_LOG_KEY, log.slice(0, CRASH_LOG_LIMIT));
     renderCrashLog();
     if (!reload) {
-      alertUser(recent ? '遊戲畫面又黑掉了（剛自動重新整理過，這次不再重整），請手動重新整理，並把「紀錄」頁的網頁黑掉紀錄貼給開發者' : '遊戲畫面黑掉了，請重新整理頁面');
+      alertUser(recent ? '遊戲畫面又黑掉了（剛輔助重新整理過，這次不再重整），請手動重新整理，並把「紀錄」頁的網頁黑掉紀錄貼給開發者' : '遊戲畫面黑掉了，請重新整理頁面');
       return;
     }
     try {
@@ -3516,7 +3516,7 @@
       // 記不住就只重新整理，不自動開始
     }
     backgroundTimer.clearTimeout(state.timerId);
-    setStatus('遊戲畫面黑掉了，自動重新整理');
+    setStatus('遊戲畫面黑掉了，輔助重新整理');
     backgroundTimer.setTimeout(() => location.reload(), 500);
   }
 
@@ -3524,7 +3524,7 @@
     return readJsonStorage(CRASH_LOG_KEY, [])
       .map(
         (entry) =>
-          `[${formatLocalTime(entry.at)}] v${entry.version} ${entry.url}${entry.reloaded ? '（已自動重新整理）' : ''}\n最後動作：${entry.lastAction}\n當時在跑：${entry.running || '沒有'}\n錯誤：\n${(entry.errors || []).join('\n') || '（沒有抓到錯誤訊息）'}`
+          `[${formatLocalTime(entry.at)}] v${entry.version} ${entry.url}${entry.reloaded ? '（已輔助重新整理）' : ''}\n最後動作：${entry.lastAction}\n當時在跑：${entry.running || '沒有'}\n錯誤：\n${(entry.errors || []).join('\n') || '（沒有抓到錯誤訊息）'}`
       )
       .join('\n\n');
   }
@@ -3562,13 +3562,13 @@
     if (bigSizes.length) storage += `\nIndexedDB（不佔 localStorage）：\n${bigSizes.map(([key, size]) => `  ${round(size / 1024)} KB ${key}`).join('\n')}`;
     return [
       `v${SCRIPT_VERSION} ${location.pathname} 統計 ${Math.round(seconds)} 秒（${time(perfProbe.since)} 起）`,
-      `腳本自己佔用：${round(perfProbe.ownTotal)}ms（每秒 ${round(perfProbe.ownTotal / seconds)}ms）`,
+      `插件自己佔用：${round(perfProbe.ownTotal)}ms（每秒 ${round(perfProbe.ownTotal / seconds)}ms）`,
       `整頁長任務（≥50ms，含遊戲本身）：${tasks.count} 次，共 ${round(tasks.total)}ms，最久 ${round(tasks.max)}ms`,
       '',
       '花最多時間的（含裡面呼叫的）：',
       ...rows,
       '',
-      '最近的慢動作（腳本）：',
+      '最近的慢動作（插件）：',
       ...perfProbe.slow.slice(0, 20).map((entry) => `${time(entry.at)} ${round(entry.milliseconds)}ms ${entry.label}`),
       '',
       '最近的長任務（整頁）：',
@@ -4443,8 +4443,8 @@
     } catch (error) {
       if (error.captchaRequired) stopCardBuy('伺服器要求活人驗證，查拍賣已關閉，驗證完要用再重新勾選', 'cardBuyEnabled');
       // 逾時或斷線時可能其實買到了，只是沒算進預算，所以也停下來讓人確認
-      else if (buying && error.transient) stopCardBuy(`買 ${cardText(buying)} 時${error.message}，不確定有沒有買到，自動購買已關閉，請到遊戲確認`);
-      else if (buying) stopCardBuy(`買不到 ${cardText(buying)}（${error.message}），自動購買已關閉`);
+      else if (buying && error.transient) stopCardBuy(`買 ${cardText(buying)} 時${error.message}，不確定有沒有買到，輔助購買已關閉，請到遊戲確認`);
+      else if (buying) stopCardBuy(`買不到 ${cardText(buying)}（${error.message}），輔助購買已關閉`);
       else throw error;
     }
   }
@@ -4808,7 +4808,7 @@
       disarmTransfer(`雲端轉帳失敗：${error.message}`);
       return;
     }
-    transferLog(`已透過雲端請「${target.nickname}」掛單；對方約 30～60 秒內掛上，這個帳號會自動買下（最多等 3 分鐘）`);
+    transferLog(`已透過雲端請「${target.nickname}」掛單；對方約 30～60 秒內掛上，這個帳號會輔助買下（最多等 3 分鐘）`);
   }
 
   // 雲端轉角色要等比較久：兩邊先把掛機、鍛造停下來專心等，結束後照原本的狀態再開
@@ -4889,10 +4889,10 @@
     if (!viaRelay) cloudUrlOf(settings);
     if (
       !(await askConfirm(
-        `確定把「${hero.name}」（Lv ${hero.lv} ${hero.type}）以 $${price.toLocaleString()} 掛上拍賣，由「${target.nickname}」買走？\n\n會先讓對方待命，確定對方準備好才掛單，對方一看到就買（空窗約 1 秒）；${TRANSFER_SOLD_WAIT_MILLISECONDS / 1000} 秒內沒被買走會自動撤回。\n${
+        `確定把「${hero.name}」（Lv ${hero.lv} ${hero.type}）以 $${price.toLocaleString()} 掛上拍賣，由「${target.nickname}」買走？\n\n會先讓對方待命，確定對方準備好才掛單，對方一看到就買（空窗約 1 秒）；${TRANSFER_SOLD_WAIT_MILLISECONDS / 1000} 秒內沒被買走會輔助撤回。\n${
           viaRelay
             ? '對方在中繼站上，幾秒內完成。'
-            : `對方不在中繼站上，透過雲端傳話：對方要勾「接受雲端轉帳」。兩邊的掛機、鍛造會先停下來等（最多約 ${TRANSFER_CLOUD_HERO_WAIT_MILLISECONDS / 60000} 分鐘），完成後自動恢復。`
+            : `對方不在中繼站上，透過雲端傳話：對方要勾「接受雲端轉帳」。兩邊的掛機、鍛造會先停下來等（最多約 ${TRANSFER_CLOUD_HERO_WAIT_MILLISECONDS / 60000} 分鐘），完成後輔助恢復。`
         }`
       ))
     ) {
@@ -4913,7 +4913,7 @@
     const resume = pauseScriptsForTransfer();
     try {
       await postTransferEvent(settings, transfer, 'heroRequest');
-      transferLog(`已透過雲端請「${target.nickname}」待命，兩邊腳本先停下來等（對方約 30～60 秒回應）`);
+      transferLog(`已透過雲端請「${target.nickname}」待命，兩邊插件先停下來等（對方約 30～60 秒回應）`);
       const answer = await waitCloudEvent(settings, transfer.id, ['armed', 'refused'], TRANSFER_CLOUD_HERO_WAIT_MILLISECONDS);
       if (!answer) throw new Error('對方一直沒回應（分頁有開著、有勾「接受雲端轉帳」嗎？），沒有掛單');
       if (answer.event === 'refused') throw new Error(`對方沒辦法買：${answer.note}，沒有掛單`);
@@ -5047,7 +5047,7 @@
         return `鍛造名稱改成「${name}」`;
       }
       case 'forge-setting': {
-        const labels = { forgeShopSlots: '鍛造欄位', forgeByApiCount: '開幾爐', forgeAutoNamePercent: '自動換名稱門檻 %' };
+        const labels = { forgeShopSlots: '鍛造欄位', forgeByApiCount: '開幾爐', forgeAutoNamePercent: '輔助換名稱門檻 %' };
         if (!labels[command.field]) throw new Error(`不開放遠端修改 ${command.field}`);
         setPanelField(command.field, Math.max(0, Number(command.value) || 0));
         saveSettings(readSettingsFromPanel());
@@ -5092,7 +5092,7 @@
           // 記不住就只重新整理，不自動開始
         }
         backgroundTimer.setTimeout(() => location.reload(), 500);
-        return command.autoStart ? '重新整理後自動開始' : '重新整理';
+        return command.autoStart ? '重新整理後輔助開始' : '重新整理';
       default:
         throw new Error(`不認得的指令 ${command.type}`);
     }
@@ -5184,7 +5184,7 @@
       // 連線失敗才是中繼站的問題；其他是腳本自己算回報時出錯
       dashboard.sendError = /fetch|network|NetworkError|Load failed|連不上/i.test(error.message)
         ? `連不上 ${settings.dashboardUrl}（${error.message}），monitor-server.ps1 有在跑嗎？`
-        : `回報時腳本出錯（${error.message}），請把這行貼給開發者`;
+        : `回報時插件出錯（${error.message}），請把這行貼給開發者`;
     } finally {
       dashboard.sending = false;
     }
@@ -5458,7 +5458,7 @@
     const problem = globalPause.error ? `（中繼站：${globalPause.error}）` : '';
     if (!globalPauseActive()) return problem ? `全體：${problem}` : '';
     if (globalPause.mode === 'stop') return `全體：永久暫停中，按「全體 開始」才會繼續${problem}`;
-    return `全體：暫時暫停中，${Math.ceil((globalPause.until - Date.now()) / 60000)} 分鐘後自動開始${problem}`;
+    return `全體：暫時暫停中，${Math.ceil((globalPause.until - Date.now()) / 60000)} 分鐘後輔助開始${problem}`;
   }
 
   // 監控欄「上次動作」：看得出來是不是卡住了。讀取（GET）也記，才分得出是沒動作還是整個沒在跑
@@ -7067,7 +7067,7 @@
       if (equipment.equipped !== null) return '別人穿著';
       if (equipment.state !== 0) return `狀態 ${equipment.state}（上架或其他用途中）`;
       if (avoidedEnchantOf(settings, equipment)) return `有不穿的附魔（${avoidedEnchantOf(settings, equipment)}）`;
-      if (blocked.has(equipment.id)) return '標了不自動穿';
+      if (blocked.has(equipment.id)) return '標了不輔助穿';
       if (!types.includes(equipment.type)) return `持法／勾的類型不含${equipment.type}`;
       if (plan && part) {
         const shortfall = partStatShortfall(plan.parts[part.id], equipment);
@@ -7841,7 +7841,7 @@
     }
     holdForgeForCaptcha();
     const resumeMode = state.forgeMode;
-    const afterVerify = settings.verifyAutoResume ? '，完成後會自動繼續' : '後按開始';
+    const afterVerify = settings.verifyAutoResume ? '，完成後會輔助繼續' : '後按開始';
     pauseWithAlert(`偵測到「${settings.verifyKeyword}」，請手動完成驗證${afterVerify}`, { keepParty: true });
     // pauseWithAlert 裡的 stop 會清掉，所以要在之後才記
     state.verifyResumeMode = resumeMode;
@@ -7908,13 +7908,13 @@
     if (!forgeRunner.running || forgeRunner.captchaWaiting) return;
     forgeRunner.captchaWaiting = true;
     forgeRunner.captchaCheckedAt = 0;
-    forgeLog('掛機遇到活人驗證，鍛造也先停，完成後會自動繼續');
+    forgeLog('掛機遇到活人驗證，鍛造也先停，完成後會輔助繼續');
   }
 
   function pauseForCaptcha(settings) {
     holdForgeForCaptcha();
     const resumeMode = state.forgeMode;
-    const afterVerify = settings.verifyAutoResume ? '，完成後會自動繼續' : '後按開始';
+    const afterVerify = settings.verifyAutoResume ? '，完成後會輔助繼續' : '後按開始';
     pauseWithAlert(`伺服器要求活人驗證，請完成驗證${afterVerify}`, { keepParty: true });
     // pauseWithAlert 裡的 stop 會清掉，所以要在之後才記
     state.verifyResumeMode = resumeMode;
@@ -7951,7 +7951,7 @@
     state.running = true;
     state.forgeMode = forgeMode;
     rememberTabRole(forgeMode);
-    setStatus(`${reason}，自動繼續${forgeMode ? '鍛造' : '掛機'}`);
+    setStatus(`${reason}，輔助繼續${forgeMode ? '鍛造' : '掛機'}`);
     tick(settings);
   }
 
@@ -8063,11 +8063,11 @@
     const inviteId = `party-${me.id}-${Date.now()}`;
     await postPartyEvent(settings, inviteId, me.nickname, target, me.id, '', PARTY_INVITE_EVENT);
     partyInvite.waitingFor = inviteId;
-    setPartyInviteStatus(`已把隊友設成 ${target}，也通知了對方的腳本，等對方接受（最多 15 分鐘）`);
+    setPartyInviteStatus(`已把隊友設成 ${target}，也通知了對方的插件，等對方接受（最多 15 分鐘）`);
     const answer = await waitPartyAnswer(settings, inviteId);
     if (partyInvite.waitingFor !== inviteId) return;
     partyInvite.waitingFor = '';
-    if (!answer) setPartyInviteStatus(`${target} 15 分鐘內沒有接受（對方可能沒開腳本、沒勾等待組隊，或雲端網址不同）`);
+    if (!answer) setPartyInviteStatus(`${target} 15 分鐘內沒有接受（對方可能沒開插件、沒勾等待組隊，或雲端網址不同）`);
     else if (answer.event === PARTY_ACCEPT_EVENT) {
       setPartyInviteStatus(`${target} 已接受，組隊完成`);
       showToast(`${target} 已接受組隊`);
@@ -8214,7 +8214,7 @@
 
   function shutDownTab() {
     const settings = readSettingsFromPanel();
-    if (state.running || state.verifyResumeMode !== null) stop('面板已關閉，腳本停止');
+    if (state.running || state.verifyResumeMode !== null) stop('面板已關閉，插件停止');
     stopForgeRunner('面板已關閉，鍛造停止');
     apiRecorder.recording = false;
     apiRecorder.heroCapture = null;
@@ -8559,7 +8559,7 @@
     const settings = readSettingsFromPanel();
     saveSettings(settings);
     if (settings.syncAccountsEnabled) pushSharedSettings(settings);
-    setStatus(`低調模式：${{ off: '關', serious: '認真玩', casual: '休閒', auto: '自動（認真時段認真玩，其他休閒）' }[mode]}${settings.syncAccountsEnabled ? '（三個帳號一起換）' : ''}`);
+    setStatus(`低調模式：${{ off: '關', serious: '認真玩', casual: '休閒', auto: '輔助（認真時段認真玩，其他休閒）' }[mode]}${settings.syncAccountsEnabled ? '（三個帳號一起換）' : ''}`);
   }
 
   // 換了玩法就重排作息：正在睡到休息結束的掛機、鍛造叫醒，照新的玩法重新算
@@ -10511,7 +10511,7 @@
     const busy = huntTeam().filter((hero) => HERO_ACTION_NAMES[hero.actionState]);
     if (!busy.length) return false;
     const text = busy.map((hero) => `${hero.name}${HERO_ACTION_NAMES[hero.actionState]}中`).join('、');
-    setStatus(`狩獵隊伍 ${text}，做完才能打怪（鍛造的話，到「自動鍛造」取消勾選這個角色，或把它移出隊伍）`);
+    setStatus(`狩獵隊伍 ${text}，做完才能打怪（鍛造的話，到「輔助鍛造」取消勾選這個角色，或把它移出隊伍）`);
     state.heroStatsAt = 0;
     state.timerId = planTick(() => tick(settings), randomGap(20000, 40000));
     return true;
@@ -10668,7 +10668,7 @@
     setStatus(`等${who}補好再打：${detail}（等了 ${Math.floor(minutes)} 分）`);
     if (!partyWait.alerted && minutes >= Math.max(1, Number(settings.partyWaitAlertMinutes) || 5)) {
       partyWait.alerted = true;
-      alertUser(`${who}的角色 ${Math.floor(minutes)} 分鐘還沒補好（${detail}），對方腳本可能卡住了；這邊會繼續等，補好就自己接著打`);
+      alertUser(`${who}的角色 ${Math.floor(minutes)} 分鐘還沒補好（${detail}），對方插件可能卡住了；這邊會繼續等，補好就自己接著打`);
     }
     state.timerId = planTick(() => tick(settings), randomGap(5000, 10000));
     return true;
@@ -11056,7 +11056,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     );
     setMiniPart(
       'mini-note',
-      escapeHtml(scriptHunting ? '腳本正在掛機，要手動先按停止' : miniWindow.busy || (manualSupply.equipping ? '換裝中，換好才能打' : miniWindow.note))
+      escapeHtml(scriptHunting ? '插件正在掛機，要手動先按停止' : miniWindow.busy || (manualSupply.equipping ? '換裝中，換好才能打' : miniWindow.note))
     );
   }
 
@@ -11066,9 +11066,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 低於換裝門檻卻不會自動換的原因；空字串＝會換（等下一場打完）
   function manualEquipBlocker(settings, equipment, checked) {
     if (!checked) return '這個角色沒勾 API 換裝';
-    if (!settings.equipApiEnabled) return '沒勾「用 API 自動換裝」';
-    if (!settings.manualSupplyEnabled) return '沒勾「手動打怪也自動吃藥」，換裝跟著它跑';
-    if (!settings.manualEquipEnabled) return '沒勾「手動打怪也自動換裝」';
+    if (!settings.equipApiEnabled) return '沒勾「用 API 輔助換裝」';
+    if (!settings.manualSupplyEnabled) return '沒勾「手動打怪也輔助吃藥」，換裝跟著它跑';
+    if (!settings.manualEquipEnabled) return '沒勾「手動打怪也輔助換裝」';
     if (!isMonitoredEquipment(settings, equipment)) return '這個部位個別設定沒開換';
     if (state.equipApiSkipped.has(equipment.id)) return `換不成：${equipSkipReasons.get(equipment.id) || '不明'}，過幾分鐘再打會重試`;
     if (!findReplacementEquipment(settings, equipment)) return '沒有可換的閒置裝備（看換裝頁的條件）';
@@ -11500,7 +11500,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         history.pushState(null, '', target);
         window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
       }
-      setStatus(`不在${state.forgeMode ? '鍛造' : '狩獵'}頁，自動切過去`);
+      setStatus(`不在${state.forgeMode ? '鍛造' : '狩獵'}頁，輔助切過去`);
     }
     state.timerId = planTick(() => tick(settings), 2500);
     return true;
@@ -12120,7 +12120,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   function start(forgeMode = false) {
     const settings = readSettingsFromPanel();
     if (settings.assistModeEnabled) {
-      setStatus('輔助模式開著，不會自動掛機或鍛造（到「其他 → 提醒」取消勾選）');
+      setStatus('輔助模式開著，不會掛機或鍛造（到「其他 → 提醒」取消勾選）');
       return;
     }
     if (forgeMode && settings.forgeByApiEnabled) {
@@ -12737,7 +12737,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     } else if (action === 'enlarge') {
       setEnlarged(!panel.hasAttribute('data-enlarged'));
     } else if (action === 'close') {
-      const message = '關閉後這個分頁的腳本全部停止（掛機、鍛造、監控、總覽回報、自動更新），總覽頁也不會再顯示這個分頁；只保留角色成長值紀錄。重新整理頁面才會恢復。要關閉嗎？';
+      const message = '關閉後這個分頁的插件全部停止（掛機、鍛造、監控、總覽回報、輔助更新），總覽頁也不會再顯示這個分頁；只保留角色成長值紀錄。重新整理頁面才會恢復。要關閉嗎？';
       if (window.confirm(message)) shutDownTab();
     } else if (action === 'stop') {
       stop('已停止');
@@ -12772,7 +12772,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     apiRecorder.heroCapture = target;
     const [groupId, index] = target.split(':');
     const group = SUPPLY_GROUPS.find((candidate) => candidate.id === groupId);
-    setStatus(`請手動替第 ${Number(index) + 1} 條${group.name}的角色吃一次道具，會自動記下 heroId`);
+    setStatus(`請手動替第 ${Number(index) + 1} 條${group.name}的角色吃一次道具，會輔助記下 heroId`);
   }
   // 紀錄要貼出去給人看，名稱像憑證的欄位一律遮掉
   const SECRET_KEY_PATTERN = /token|auth|password|passwd|secret|session|cookie|sign/i;
@@ -16583,7 +16583,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   function enchantPlannerHtml(type, forger) {
     const samples = enchantSamples(type, forger);
-    if (!samples.length) return '<div class="hint">還沒有鍛造材料紀錄：之後在這個瀏覽器鍛造就會自動記</div>';
+    if (!samples.length) return '<div class="hint">還沒有鍛造材料紀錄：之後在這個瀏覽器鍛造就會輔助記</div>';
     const usage = new Map();
     samples.forEach((sample) => sample.materials.forEach(([name]) => usage.set(name, (usage.get(name) || 0) + 1)));
     const inputs = [...usage.entries()]
@@ -16961,7 +16961,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           ? `<div class="hint">${unmatchedNames} 件裝備都對不到測名表（名稱當天沒人測過，或測名表還沒讀到）；取消勾選「扣掉名稱影響」可以看全部</div>`
           : readForgeMaterials().size
             ? '<div class="hint">有材料紀錄，但還沒有對應的裝備數值：到遊戲「物品」頁或按「讀取裝備並統計」</div>'
-            : '<div class="hint">還沒有鍛造材料紀錄：之後在這個瀏覽器鍛造就會自動記</div>';
+            : '<div class="hint">還沒有鍛造材料紀錄：之後在這個瀏覽器鍛造就會輔助記</div>';
       return;
     }
     const filter = panel.querySelector('[data-role="material-filter"]').value.trim();
@@ -17899,7 +17899,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       .join('');
     const current = nameTestSortKeys(config).map((key) => NAME_TEST_SORTS[key][0]).join(' → ');
     return `<div class="row" style="flex-wrap:wrap;gap:3px">排序${chips}${chosen.length ? '<button data-action="name-test-sort" data-key="reset" style="flex:none;padding:0 7px">重設</button>' : ''}</div>
-      <div class="hint">目前：${escapeHtml(current)}${chosen.length ? '' : '（預設）'}；每天自動測名套用的「第一名」也照這個排序</div>`;
+      <div class="hint">目前：${escapeHtml(current)}${chosen.length ? '' : '（預設）'}；每天輔助測名套用的「第一名」也照這個排序</div>`;
   }
 
   // 每天自動測名：自動鍛造過了 00:00 還沒定名稱時叫這個。今天還沒測就開測（可每天換一批亂取的名稱），
@@ -19412,7 +19412,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           }${price(mine) ? ` <span style="color:#fbbf24">市價 ${unitPriceText(price(mine))}</span>` : ''}${
             effectOf(mine.name) ? `<div style="margin-left:20px;color:#fb923c">${escapeHtml(effectOf(mine.name))}</div>` : ''
           }</label>
-          <button data-action="recipe-step" data-name="${escapeHtml(mine.name)}" data-step="-1" style="flex:none;padding:0 7px" title="少一個">−</button><input type="number" min="1" data-recipe-qty="${escapeHtml(mine.name)}" value="${quantity || 1}" style="flex:none;width:38px;text-align:center"><button data-action="recipe-step" data-name="${escapeHtml(mine.name)}" data-step="1" style="flex:none;padding:0 7px" title="多一個（沒勾的會自動勾）">＋</button></div>`;
+          <button data-action="recipe-step" data-name="${escapeHtml(mine.name)}" data-step="-1" style="flex:none;padding:0 7px" title="少一個">−</button><input type="number" min="1" data-recipe-qty="${escapeHtml(mine.name)}" value="${quantity || 1}" style="flex:none;width:38px;text-align:center"><button data-action="recipe-step" data-name="${escapeHtml(mine.name)}" data-step="1" style="flex:none;padding:0 7px" title="多一個（沒勾的會輔助勾）">＋</button></div>`;
       })
       .join('');
     panel.querySelector('[data-role="recipe-picker"]').innerHTML =
@@ -19586,7 +19586,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           plan.backRecipe ? `換回 ${plan.backType || ''} ${plan.backRecipe}${plan.backName !== undefined ? `「${plan.backName || '配方頁的名稱'}」` : ''}` : '移出佇列（沒有原本的配方）'
         }`
       : '';
-    setStatus(`${hero ? hero.name : `角色 ${heroId}`} 已加入鍛造佇列：${settings.forgeRecipeType} ${settings.forgeRecipe}${limitText}${forgeRunner.running ? '' : '（還沒開始自動鍛造）'}`);
+    setStatus(`${hero ? hero.name : `角色 ${heroId}`} 已加入鍛造佇列：${settings.forgeRecipeType} ${settings.forgeRecipe}${limitText}${forgeRunner.running ? '' : '（還沒開始輔助鍛造）'}`);
   }
 
   function unqueueHeroForForge(heroId) {
@@ -19661,7 +19661,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   function forgeDetailLines(equipment) {
     const lines = [];
     const materials = readForgeMaterials().get(String(equipment.id));
-    lines.push(`鍛造材料：${materials ? materials.map(([name, quantity]) => `${name}×${quantity}`).join('、') : '沒有紀錄（裝腳本以前做的，或在別的瀏覽器鍛造的）'}`);
+    lines.push(`鍛造材料：${materials ? materials.map(([name, quantity]) => `${name}×${quantity}`).join('、') : '沒有紀錄（裝插件以前做的，或在別的瀏覽器鍛造的）'}`);
     if (equipment.craftedTime) lines.push(`鍛造時間：${formatLocalTime(equipment.craftedTime)}`);
     const skills = (readJsonStorage(OWN_FORGE_MATERIALS_KEY, {})[equipment.id] || {}).skills;
     if (skills) lines.push(`鍛造師當時：鍛 ${skills.forge ?? '?'}／裁 ${skills.tailor ?? '?'}／工 ${skills.craft ?? '?'}`);
@@ -19952,7 +19952,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       }
       box.dataset.signature = signature;
       box.style.borderTop = hidden ? '0' : '1px solid rgba(168,162,158,.3)';
-      const toggle = `<button type="button" data-forge-detail-toggle title="${hidden ? '顯示腳本加的鍛造材料、時間與按鈕' : '收起腳本加的這一塊，方便拍圖'}" style="margin-top:6px;padding:1px 6px;border-radius:4px;border:1px solid #44403c;background:transparent;color:#78716c;font-size:11px;cursor:pointer;opacity:${hidden ? 0.45 : 1}">${hidden ? '👁' : '🙈 隱藏'}</button>`;
+      const toggle = `<button type="button" data-forge-detail-toggle title="${hidden ? '顯示插件加的鍛造材料、時間與按鈕' : '收起插件加的這一塊，方便拍圖'}" style="margin-top:6px;padding:1px 6px;border-radius:4px;border:1px solid #44403c;background:transparent;color:#78716c;font-size:11px;cursor:pointer;opacity:${hidden ? 0.45 : 1}">${hidden ? '👁' : '🙈 隱藏'}</button>`;
       if (hidden) {
         box.innerHTML = toggle;
         return;
@@ -21687,7 +21687,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       const back = row.prevRecipe
         ? `之後換回 ${chips(row.prevRecipe)}`
         : '<span style="color:#a0a0aa">之後移出佇列（還沒換過配方，沒有原本的）</span>';
-      return `<div style="margin:3px 0;padding:3px 5px;border:1px dashed #44444c;border-radius:6px" title="省稀有材料：現在這個配方只做幾爐，做完自動換回換配方前的那個">
+      return `<div style="margin:3px 0;padding:3px 5px;border:1px dashed #44444c;border-radius:6px" title="省稀有材料：現在這個配方只做幾爐，做完輔助換回換配方前的那個">
         <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap"><span style="flex:none;color:#a0a0aa">⏱ 這個配方只做</span>${[1, 3, 5, 10]
           .map((count) => `<button data-action="forge-limit-set" data-hero="${row.heroId}" data-count="${count}" style="${small}">${count} 爐</button>`)
           .join('')}</div>
@@ -21872,7 +21872,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       if (hero.actionState) throw new Error(`${hero.name} 正在忙`);
       if (inHuntTeam(hero)) throw new Error(`${hero.name} 在狩獵隊伍裡，拿去鍛造打怪會出錯`);
       const target = await freeForgeShop(forgeHeroes);
-      if (!target) throw new Error('鍛造欄位都在用（欄位數不對的話到「自動鍛造」頁改）');
+      if (!target) throw new Error('鍛造欄位都在用（欄位數不對的話到「輔助鍛造」頁改）');
       const plan = { type: settings.forgeRecipeType, recipe: settings.forgeRecipe, name: settings.forgeRecipeName };
       const { body, summary, forgesLeft } = await buildForgeRequest(plan, heroId, target);
       if (!window.confirm(`用 ${hero.name} 在第 ${target} 個鍛造欄位鍛造\n${summary}\n確定送出？`)) return;
@@ -22377,7 +22377,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     renderRecipeHeroes();
     if (panel.querySelector('[data-forge-plan-hero]')) renderForgeApiHeroChoices();
     const hero = forgeHeroes.find((candidate) => candidate.id === heroId);
-    const text = `${hero ? hero.name : heroId} 名稱${trimmed ? `改成「${trimmed}」（今天自動換名稱不會蓋掉）` : '清空，改用配方頁的名稱'}`;
+    const text = `${hero ? hero.name : heroId} 名稱${trimmed ? `改成「${trimmed}」（今天輔助換名稱不會蓋掉）` : '清空，改用配方頁的名稱'}`;
     forgeLog(text);
     return text;
   }
@@ -22400,7 +22400,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     saveSettings(readSettingsFromPanel());
     renderForgePlanOverview();
     renderRecipeHeroes();
-    const text = `${type}的 ${heroIds.length} 個角色名稱改成「${trimmed}」${lock ? '（今天自動換名稱不會蓋掉）' : ''}`;
+    const text = `${type}的 ${heroIds.length} 個角色名稱改成「${trimmed}」${lock ? '（今天輔助換名稱不會蓋掉）' : ''}`;
     forgeLog(text);
     setStatus(text);
   }
@@ -22410,7 +22410,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const types = [...new Set(rows.map((row) => row.type).filter(Boolean))];
     if (!types.length) return '';
     return `<div style="border:1px solid #3b2f5c;border-radius:8px;padding:4px 6px;margin:4px 0">
-      <div class="hint" style="margin:0 0 2px">同種類一次改名（名稱效果每種裝備不一樣）：打好按 Enter，這種的角色全部換掉，今天自動換名稱不會蓋掉</div>
+      <div class="hint" style="margin:0 0 2px">同種類一次改名（名稱效果每種裝備不一樣）：打好按 Enter，這種的角色全部換掉，今天輔助換名稱不會蓋掉</div>
       ${types
         .map((type) => {
           const sameType = rows.filter((row) => row.type === type);
@@ -22419,7 +22419,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           return `<div style="display:flex;gap:4px;align-items:center;margin:2px 0;flex-wrap:wrap">
             <span style="flex:none;padding:0 6px;border-radius:9px;background:#3b2f5c;color:#ddd6fe">${escapeHtml(type)}</span><span style="flex:none;color:#a0a0aa">${sameType.length} 人</span>
             <input data-forge-type-name="${escapeHtml(type)}" placeholder="${escapeHtml(names.join('、') || '輸入名稱')}" title="目前：${escapeHtml(names.join('、') || '沒有名稱')}" style="flex:1;min-width:80px;padding:1px 4px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px">
-            ${best ? `<button data-action="forge-type-name-best" data-type="${escapeHtml(type)}" data-name="${escapeHtml(best.name)}" style="flex:none;padding:0 6px" title="換成今天${escapeHtml(type)}最好的名稱（不鎖定，之後有更好的還會自動換）">${best.source === 'own' ? '自測' : '表'}最好：${escapeHtml(best.name)} ${(best.score * 100).toFixed(1)}%</button>` : '<span style="flex:none;color:#78716c">今天還沒有這種的名稱</span>'}
+            ${best ? `<button data-action="forge-type-name-best" data-type="${escapeHtml(type)}" data-name="${escapeHtml(best.name)}" style="flex:none;padding:0 6px" title="換成今天${escapeHtml(type)}最好的名稱（不鎖定，之後有更好的還會輔助換）">${best.source === 'own' ? '自測' : '表'}最好：${escapeHtml(best.name)} ${(best.score * 100).toFixed(1)}%</button>` : '<span style="flex:none;color:#78716c">今天還沒有這種的名稱</span>'}
           </div>`;
         })
         .join('')}</div>`;
@@ -22550,7 +22550,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
           <div style="display:flex;gap:4px;align-items:center">
             <b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(hero.name)}">${escapeHtml(hero.name)}</b>
             ${(plan.recipe || last) ? `<button data-action="recipe-load" data-hero="${hero.id}" style="${small}" title="把這個角色的配方（沒有就用上次鍛造的）載到上面來改">載入</button>` : ''}
-            ${sameRecipe ? '<span style="flex:none;color:#4ade80">✓ 使用中</span>' : `<button data-action="recipe-queue" data-hero="${hero.id}" style="${small};font-weight:bold" title="${inQueue ? '改用上面的配方' : '排進自動鍛造佇列，用上面的配方'}">${editing ? '存回' : inQueue ? '改用' : '加入'}</button>`}
+            ${sameRecipe ? '<span style="flex:none;color:#4ade80">✓ 使用中</span>' : `<button data-action="recipe-queue" data-hero="${hero.id}" style="${small};font-weight:bold" title="${inQueue ? '改用上面的配方' : '排進輔助鍛造佇列，用上面的配方'}">${editing ? '存回' : inQueue ? '改用' : '加入'}</button>`}
             ${inQueue ? `<button data-action="forge-unqueue" data-hero="${hero.id}" style="${small}">移出</button>` : ''}
             ${forgeBuffCheckbox(settings, hero.id)}
             <button data-action="recipe-forge-once" data-hero="${hero.id}" style="${small}" ${unavailable ? 'disabled' : ''}>鍛一次</button>
@@ -22650,7 +22650,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const shopTotal = Number(settings.forgeShopSlots) || forgeShops.count;
     const forgingCount = forgeHeroes.filter((hero) => hero.actionState === 5).length;
     const shopLine = forgeHeroesAt
-      ? `<div>鍛造欄位：使用中 <b>${forgingCount}</b>／${shopTotal || '?'}${Number(settings.forgeShopSlots) ? '' : '（自動讀遊戲）'}</div>`
+      ? `<div>鍛造欄位：使用中 <b>${forgingCount}</b>／${shopTotal || '?'}${Number(settings.forgeShopSlots) ? '' : '（輔助讀遊戲）'}</div>`
       : '';
     const rows = forgeQueueRows(settings);
     if (!rows.length) {
@@ -22680,7 +22680,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
             </div>
           <div style="display:flex;gap:4px;align-items:center;margin:2px 0">名稱
             <input data-forge-name="${row.heroId}" list="aijiji-today-names" value="${escapeHtml(row.ownName ? row.itemName : '')}" placeholder="${row.itemName ? `${escapeHtml(row.itemName)}（配方頁的）` : '輸入名稱'}" title="直接打字改名稱，按 Enter 或點別處就存；清空＝用配方頁的名稱" style="flex:1;min-width:0;padding:1px 4px;color:#fff;background:#2a2a30;border:1px solid ${row.nameLocked ? '#f59e0b' : '#44444c'};border-radius:5px">
-            ${row.nameLocked ? `<span style="flex:none;color:#fbbf24" title="今天手動改的，自動換名稱不會蓋掉；明天 00:00 後照常自動換">📌今天</span><button data-action="forge-name-unlock" data-hero="${row.heroId}" style="flex:none;padding:0 6px" title="交回自動換名稱，有更好的就換">交給自動</button>` : ''}</div>
+            ${row.nameLocked ? `<span style="flex:none;color:#fbbf24" title="今天手動改的，輔助換名稱不會蓋掉；明天 00:00 後照常輔助換">📌今天</span><button data-action="forge-name-unlock" data-hero="${row.heroId}" style="flex:none;padding:0 6px" title="交回輔助換名稱，有更好的就換">交給輔助</button>` : ''}</div>
           <div>${chips || '<span style="color:#666">沒有配方</span>'}
             ${row.materials.length ? `<span style="color:#a0a0aa">共 ${row.total}${row.cap ? `/${row.cap}` : ''}</span>` : ''}
             ${row.possible === null ? '' : `<span style="color:${row.possible ? '#4ade80' : '#f87171'}">・夠 ${row.possible} 爐</span>`}</div>
@@ -23013,7 +23013,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   function startForgeRunner() {
     const settings = readSettingsFromPanel();
     if (settings.assistModeEnabled) {
-      forgeLog('輔助模式開著，不會自動鍛造');
+      forgeLog('輔助模式開著，不會鍛造');
       return;
     }
     if (forgeRunner.running) {
@@ -23315,9 +23315,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         forgeRunner.captchaWaiting = true;
         forgeRunner.captchaCheckedAt = 0;
         dashboard.alert = '鍛造：伺服器要求活人驗證';
-        forgeLog('伺服器要求活人驗證，完成後會自動繼續');
+        forgeLog('伺服器要求活人驗證，完成後會輔助繼續');
         if (state.running && !state.forgeMode) pauseForCaptcha(readSettingsFromPanel());
-        else alertUser('鍛造：伺服器要求活人驗證，完成後會自動繼續', { paused: true });
+        else alertUser('鍛造：伺服器要求活人驗證，完成後會輔助繼續', { paused: true });
         return;
       }
       if ((error.transient || error.status) && forgeRunner.failures < FORGE_RETRY_LIMIT) {
@@ -24681,7 +24681,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   function startPracticeRunner() {
     if (readSettingsFromPanel().assistModeEnabled) {
-      practiceLog('輔助模式開著，不會自動修練');
+      practiceLog('輔助模式開著，不會修練');
       return;
     }
     if (practiceRunner.running) {
@@ -24762,7 +24762,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   function startMiningRunner() {
     if (readSettingsFromPanel().assistModeEnabled) {
-      miningLog('輔助模式開著，不會自動挖礦');
+      miningLog('輔助模式開著，不會輔助挖礦');
       return;
     }
     if (miningRunner.running) {
@@ -24938,7 +24938,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
                 ? ''
                 : `<span style="flex:none;white-space:nowrap">第 ${position + 1} 收 <button data-action="mining-order-up" data-hero="${hero.id}" ${position === 0 ? 'disabled' : ''}>↑</button><button data-action="mining-order-down" data-hero="${hero.id}" ${position === order.length - 1 ? 'disabled' : ''}>↓</button></span>`;
             const held = miningHeldUntil(data, hero.id, now);
-            const heldText = held ? `手動操作過，${new Date(held).toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit' })} 前不自動動它` : '';
+            const heldText = held ? `手動操作過，${new Date(held).toLocaleTimeString('zh-TW', { hour12: false, hour: '2-digit', minute: '2-digit' })} 前不輔助動它` : '';
             const blocked = inHuntTeam(hero) ? '狩獵隊伍（不會被拿去挖）' : queued.includes(hero.id) ? '鍛造佇列（不會被拿去挖）' : heldText;
             const ignored = miningIgnoredConditions(settings);
             const conditions = heroConditions(hero).map((condition) => `${condition.name}${condition.level}${ignored.includes(condition.name) ? '（不理會）' : ''}`);
