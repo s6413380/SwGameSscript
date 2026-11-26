@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.23
+// @version      6.24
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1478,7 +1478,7 @@
       <div class="row">　⏸ 暫停：<select data-field="statusPauseLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="0">不處理</option><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select></div>
       <div class="hint">例：提醒選「輕度以上」、暫停選「重度」＝輕度、中度只響提醒，重度才停下來</div>
       <div class="row">晚點再通報<input data-field="statusDelayRules" placeholder="疫病=5" style="flex:1;min-width:0"></div>
-      <div class="hint">異常名稱=場數，「、」分隔：連續打這麼多場都還沒解掉才提醒／暫停。例「疫病=5」＝第 5 場打完還有疫病才通報</div>
+      <div class="hint">異常名稱=場數，「、」分隔：連續打這麼多場都還沒解掉才提醒／暫停。例「疫病=5」＝第 5 場打完還有疫病才通報；名稱前加程度只管那個程度，例「疫病=5、重度疫病=0」＝輕中度等 5 場、重度馬上通報</div>
       <div class="row"><label style="flex:none;display:flex;align-items:center;gap:4px"><input data-field="huntCureEnabled" type="checkbox" style="flex:none;width:auto"> 打怪時（含手動）先吃藥</label></div>
       <div class="row">　中毒、劇毒等：<select data-field="huntCureLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select>才吃　燒傷：<select data-field="huntCureBurnLevel" style="flex:none;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="1">輕度以上</option><option value="2">中度以上</option><option value="3">重度</option></select>就吃</div>
       <div class="row">吃什麼<input data-field="huntCureItems" placeholder="中毒=解毒劑、輕度燒傷=蘆薈" style="flex:1;min-width:0"></div>
@@ -6603,13 +6603,16 @@
       });
   }
 
-  function statusDelayBattles(settings, name) {
-    const rules = String(settings.statusDelayRules || '').split(/[、,，;；\s]+/);
-    for (const rule of rules) {
-      const match = /^(.+?)[=＝:：](\d+)$/.exec(rule.trim());
-      if (match && match[1] === name) return Number(match[2]);
-    }
-    return 0;
+  // 名稱前加程度（「重度疫病=0」）只管那個程度，比沒寫程度的「疫病=5」優先：輕中度等幾場、重度馬上通報
+  function statusDelayBattles(settings, condition) {
+    const rules = String(settings.statusDelayRules || '')
+      .split(/[、,，;；\s]+/)
+      .map((rule) => /^(.+?)[=＝:：](\d+)$/.exec(rule.trim()))
+      .filter(Boolean);
+    const leveled = rules.find(([, key]) => key === `${condition.level}${condition.name}`);
+    if (leveled) return Number(leveled[2]);
+    const plain = rules.find(([, key]) => key === condition.name);
+    return plain ? Number(plain[2]) : 0;
   }
 
   // 每人每種異常連續幾場戰鬥都還在（程度變了也算同一種）；同一場報告只算一次，因為吃藥後也會再檢查
@@ -6650,7 +6653,7 @@
         const key = `${hero.id}:${condition.name}:${condition.severity}`;
         active.add(key);
         if (notifiedConditions.has(key) || huntCurePending(settings, hero, condition)) return;
-        const delay = statusDelayBattles(settings, condition.name);
+        const delay = statusDelayBattles(settings, condition);
         const battles = conditionBattles.get(`${hero.id}:${condition.name}`) || 0;
         if (delay && battles < delay) return;
         const text = `${hero.name} ${condition.level}${condition.name}${delay ? `（連續 ${battles} 場沒解）` : ''}`;
