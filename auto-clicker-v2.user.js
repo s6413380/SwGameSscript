@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.22
+// @version      6.23
 // @description  原地掛機 N 次後全隊休息，可自動移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時自動用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -5911,8 +5911,17 @@
     }
   }
 
-  // 有開個別設定才回傳；部位設定缺的補預設（換、類型不限、裝備照共用清單）
+  // 耐久預測算備用時每件閒置裝備都要問好幾次，裝備一多就是上萬次 JSON.parse；設定文字沒變就沿用（呼叫的地方只讀不改）
+  const equipHeroPlanCache = { raw: null, plans: new Map() };
   function equipHeroPlan(settings, heroId) {
+    const raw = settings.equipHeroPlans || '';
+    if (equipHeroPlanCache.raw !== raw) Object.assign(equipHeroPlanCache, { raw, plans: new Map() });
+    if (!equipHeroPlanCache.plans.has(heroId)) equipHeroPlanCache.plans.set(heroId, buildEquipHeroPlan(settings, heroId));
+    return equipHeroPlanCache.plans.get(heroId);
+  }
+
+  // 有開個別設定才回傳；部位設定缺的補預設（換、類型不限、裝備照共用清單）
+  function buildEquipHeroPlan(settings, heroId) {
     const plan = equipHeroPlans(settings)[heroId];
     if (!plan || !plan.on) return null;
     const parts = {};
@@ -5946,8 +5955,15 @@
     return plan && plan.minDur > 0 ? plan.minDur : settings.equipApiMinDurability;
   }
 
+  const equipDurabilityRulesCache = { raw: null, rules: [] };
   function equipDurabilityRules(settings) {
-    return String(settings.equipDurabilityRules || '')
+    const raw = String(settings.equipDurabilityRules || '');
+    if (equipDurabilityRulesCache.raw !== raw) Object.assign(equipDurabilityRulesCache, { raw, rules: parseEquipDurabilityRules(raw) });
+    return equipDurabilityRulesCache.rules;
+  }
+
+  function parseEquipDurabilityRules(raw) {
+    return raw
       .split(/[、,，\n]+/)
       .map((entry) => entry.split(/[=＝]/).map((part) => part.trim()))
       .filter(([key, value]) => key && value !== undefined && value !== '' && Number.isFinite(Number(value)))
@@ -10860,7 +10876,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }
     if (!force && Date.now() - statsWindow.renderedAt < STATS_WINDOW_REFRESH_MILLISECONDS) return;
     statsWindow.renderedAt = Date.now();
-    renderDurabilityForecast();
+    // 耐久要逐件判斷閒置裝備能不能當備用，裝備一多很重：裝備清單、耐久紀錄、隊伍都沒變就不重算（改設定最慢 30 秒跟上）
+    const storageRaw = (key) => (bigStorage.values.has(key) ? bigStorage.values.get(key) : localStorage.getItem(key));
+    const durSources = [state.equipments, storageRaw(DUR_TRACK_KEY), storageRaw(DUR_STATS_KEY), state.huntTeamIds.join(',')];
+    const durStale = !statsWindow.durSources || durSources.some((source, index) => source !== statsWindow.durSources[index]) || Date.now() - statsWindow.durAt > 30000;
+    if (force || durStale) {
+      renderDurabilityForecast();
+      Object.assign(statsWindow, { durSources, durAt: Date.now() });
+    }
     renderLootLedger();
     setStatsPart('stats-dur-type', panel.querySelector('[data-role="dur-type-forecast"]').innerHTML);
     setStatsPart('stats-dur', panel.querySelector('[data-role="dur-forecast"]').innerHTML);
@@ -19705,8 +19728,15 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 另一種鎖：留著自己手動穿的（或留給別的角色），自動換裝不會把它換上去；跟 🔒 分開，各鎖各的
   const NO_AUTO_EQUIP_KEY = 'aijijiNoAutoEquip';
 
+  const avoidedEnchantCache = { raw: null, names: [] };
   function avoidedEnchantNames(settings) {
-    return String(settings.equipApiAvoidEnchants || '')
+    const raw = String(settings.equipApiAvoidEnchants || '');
+    if (avoidedEnchantCache.raw !== raw) Object.assign(avoidedEnchantCache, { raw, names: parseAvoidedEnchants(raw) });
+    return avoidedEnchantCache.names;
+  }
+
+  function parseAvoidedEnchants(raw) {
+    return raw
       .split(/[\s,，、]+/)
       .map((name) => name.trim())
       .filter(Boolean);
