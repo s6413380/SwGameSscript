@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.26
+// @version      6.27
 // @description  原地掛機 N 次後全隊休息，可輔助移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時輔助用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -674,6 +674,8 @@
     scratchMarketNames: '密技',
     // 記下自己在拍賣場賣掉的裝備、道具、礦石寶石（有掛單時 10～20 分鐘看一次自己的掛單）
     marketSalesEnabled: true,
+    // 掛單留言含這些字的不算進售出統計（拿來轉裝備給朋友的，不是真的賣），「、」分隔
+    marketSalesIgnoreText: '',
     // 腳本沒在掛機、你自己在遊戲裡打怪時，每打一下看血量、體力，低於「補血」「補體力」頁的門檻就用 API 吃藥
     manualSupplyEnabled: true,
     // 腳本沒在掛機時（自己按打怪、或組隊時隊友按），也照 API 換裝的設定換耐久低的裝備
@@ -1849,6 +1851,8 @@
     <div data-tab="sales">
       <label class="row"><input data-field="marketSalesEnabled" type="checkbox" style="flex:none;width:auto"> 記下自己在拍賣場賣掉的東西</label>
       <div class="hint">遊戲沒有成交紀錄，這裡靠比對「自己的掛單」：上次還在、這次不見、又不是你自己下架的，就算賣掉。有掛單時每 10～20 分鐘看一次自己的掛單，你在遊戲開「我的掛單」也會順便比對；賣出時間是發現的時間，實際會更早一點。轉移用的掛單不算</div>
+      <div class="row">留言含這些字不算<input data-field="marketSalesIgnoreText" placeholder="例：轉、給朋友（「、」分隔）" style="flex:1;min-width:0"></div>
+      <div class="hint">轉裝備給朋友時在掛單留言寫這些字，就不算進統計（以前的紀錄也照這個重算；紀錄沒刪，清空就會回來）</div>
       <div class="row"><select data-role="sales-kind" style="flex:1;min-width:0;padding:2px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="equipments">裝備</option><option value="mines">礦石、寶石</option><option value="items">道具</option><option value="heroes">角色卡</option></select><button data-action="sales-clear">清除紀錄</button></div>
       <div data-role="sales-stats" style="font-size:12px"></div>
     </div>
@@ -12361,6 +12365,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         writeJsonStorage(SCRATCH_LOG_KEY, []);
         renderScratchStats();
       }
+    } else if (action === 'sales-more') {
+      salesShowAll = !salesShowAll;
+      renderSalesStats();
     } else if (action === 'sales-clear') {
       if (window.confirm('要清除這個帳號的售出紀錄嗎？掛單中的會留著繼續追')) {
         saveSales({ ...loadSales(), sold: [] });
@@ -15197,14 +15204,28 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
   }
 
+  // 「最近賣掉」預設只列 50 筆，按了才全部列（最多留 2000 筆）
+  let salesShowAll = false;
+
+  function salesIgnoreWords(settings) {
+    return String(settings.marketSalesIgnoreText || '')
+      .split(/[、,，;；\s]+/)
+      .map((word) => word.trim())
+      .filter(Boolean);
+  }
+
   function renderSalesStats() {
     const box = panel.querySelector('[data-role="sales-stats"]');
     if (!box) return;
     const kind = panel.querySelector('[data-role="sales-kind"]').value || 'equipments';
     const store = loadSales();
     const now = Date.now();
-    const sold = store.sold.filter((sale) => sale.kind === kind).sort((first, second) => second.soldAt - first.soldAt);
-    const listings = Object.values(store.listings).filter((listing) => listing.kind === kind);
+    const ignored = salesIgnoreWords(readSettingsFromPanel());
+    const isIgnored = (sale) => ignored.some((word) => String(sale.message || '').includes(word));
+    const allSold = store.sold.filter((sale) => sale.kind === kind).sort((first, second) => second.soldAt - first.soldAt);
+    const sold = allSold.filter((sale) => !isIgnored(sale));
+    const skipped = allSold.length - sold.length;
+    const listings = Object.values(store.listings).filter((listing) => listing.kind === kind && !isIgnored(listing));
     const equipment = kind === 'equipments' || kind === 'heroes';
     const label = (sale) =>
       kind === 'heroes'
@@ -15213,7 +15234,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const unit = (sale) => sale.price / sale.quantity;
     const total = sold.reduce((sum, sale) => sum + sale.price, 0);
     const checked = store.checkedAt[kind] ? `，上次看掛單 ${saleTime(store.checkedAt[kind])}` : '';
-    let html = `<div style="margin:4px 0">賣掉 <b>${sold.length}</b> 筆${equipment ? '' : `（${sold.reduce((sum, sale) => sum + sale.quantity, 0).toLocaleString()} 個）`}，共 <b style="color:#fcd34d">${saleMoney(total)}</b>；掛單中 ${listings.length} 筆${checked}</div>`;
+    let html = `<div style="margin:4px 0">賣掉 <b>${sold.length}</b> 筆${equipment ? '' : `（${sold.reduce((sum, sale) => sum + sale.quantity, 0).toLocaleString()} 個）`}，共 <b style="color:#fcd34d">${saleMoney(total)}</b>；掛單中 ${listings.length} 筆${checked}${skipped ? `；另有 ${skipped} 筆留言含「${escapeHtml(ignored.join('、'))}」不算` : ''}</div>`;
 
     // 價格參考：裝備照種類＋品質分組，道具和礦石照名稱看單價
     const groups = new Map();
@@ -15245,11 +15266,12 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     }
 
     if (sold.length) {
-      const rows = sold
-        .slice(0, 50)
+      const shown = salesShowAll ? sold : sold.slice(0, 50);
+      const rows = shown
         .map((sale) => `<tr><td style="text-align:left">${saleTime(sale.soldAt)}</td><td style="text-align:left">${label(sale)}${equipment ? `<div style="color:#a0a0aa">${saleStatsText(sale)}</div>` : `<div style="color:#a0a0aa">${sale.quantity.toLocaleString()} 個，單價 ${unitPriceText(unit(sale))}</div>`}</td><td>${saleMoney(sale.price)}</td><td>≤${saleAge(sale.soldAt - sale.listedAt)}</td></tr>`)
         .join('');
-      html += `<div class="subhead">最近賣掉（最多 50 筆）</div><table class="combat" style="width:100%"><tr><th style="text-align:left">發現</th><th style="text-align:left">名稱</th><th>價格</th><th>掛多久</th></tr>${rows}</table>`;
+      const more = sold.length > 50 ? `<button data-action="sales-more" style="margin-left:6px;padding:0 6px">${salesShowAll ? '只看最近 50 筆' : `看全部 ${sold.length} 筆`}</button>` : '';
+      html += `<div class="subhead">${salesShowAll ? `全部賣掉紀錄（${sold.length} 筆）` : '最近賣掉（最多 50 筆）'}${more}</div><table class="combat" style="width:100%"><tr><th style="text-align:left">發現</th><th style="text-align:left">名稱</th><th>價格</th><th>掛多久</th></tr>${rows}</table>`;
     } else {
       html += '<div class="hint">還沒有賣掉的紀錄：在遊戲拍賣場掛單後，賣掉了這裡就會記下來</div>';
     }
@@ -26392,6 +26414,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   panel.querySelector('[data-role="recipe-show-all"]').addEventListener('change', renderRecipePicker);
   panel.querySelector('[data-role="scratch-card"]').addEventListener('change', renderScratchStats);
   panel.querySelector('[data-role="sales-kind"]').addEventListener('change', renderSalesStats);
+  panel.querySelector('[data-field="marketSalesIgnoreText"]').addEventListener('input', renderSalesStats);
   panel.querySelector('[data-role="scratch-scope"]').addEventListener('change', renderScratchStats);
   panel.querySelector('[data-role="draw-scope"]').addEventListener('change', renderDrawStats);
   panel.querySelector('[data-role="material-summary"]').addEventListener('input', (event) => {
