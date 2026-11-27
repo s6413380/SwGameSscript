@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.27
+// @version      6.28
 // @description  原地掛機 N 次後全隊休息，可輔助移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時輔助用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1162,7 +1162,7 @@
         <div class="row">共用 X<input data-field="${groupKey(id, 'CloseSelector')}" placeholder="留空＝Esc＋點空白處關閉"><button data-pick="${groupKey(id, 'CloseSelector')}">選取</button></div>
       </div>
       ${group.healField ? `<div data-supply-mode="api:${id}">${apiSupplyHtml(group)}
-        <label class="row"><input data-field="${groupKey(id, 'Splurge')}" type="checkbox" style="flex:none;width:auto"> 揮霍：每次都吃 10 個（剩不到 10 個才一個一個吃，補過頭也不管）</label></div>` : ''}
+        <label class="row"><input data-field="${groupKey(id, 'Splurge')}" type="checkbox" style="flex:none;width:auto"> 揮霍：每次都吃 10 個，差 50 瓶以上吃 100 個（剩不到 10 個才一個一個吃，補過頭也不管）</label></div>` : ''}
     </fieldset>`;
   }
 
@@ -3862,6 +3862,16 @@
     input.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
+  // 一次吃幾個：遊戲補血補體力的藥水現在有 ×10、×100；×100 照遊戲畫面的規則，缺的量 ≥ 50 瓶才出現按鈕。
+  // 有 maxUseQuantity 的道具遊戲只給一次一個（或上限），不送超過上限的數量
+  function healQuantity(item, needed, splurge) {
+    const cap = Math.min(item.available, item.maxUseQuantity ?? item.available);
+    const plain = item.maxUseQuantity === undefined && !item.effectTexts && !item.proIncrease;
+    if (plain && cap >= 100 && (needed >= 100 || (splurge && needed >= 50))) return 100;
+    if (item.maxUseQuantity === undefined && cap >= 10 && (needed >= 10 || splurge)) return 10;
+    return 1;
+  }
+
   // 遠端補一次：照自動補給的道具清單挑，只吃 1 個，避免按錯時一次吃掉一堆
   async function healOnceByApi(heroId, groupId) {
     const group = SUPPLY_GROUPS.find((candidate) => candidate.id === groupId && !candidate.forgeOnly);
@@ -6411,8 +6421,8 @@
       const item = pickHealingItem(items, group, names);
       if (!item) break;
       const needed = Math.ceil((targetValue - hero[group.heroField]) / item[group.healField]);
-      // 揮霍模式：差一點也直接吃 10 個，少送幾次請求、補得快
-      const quantity = (needed >= 10 || settings[groupKey(group.id, 'Splurge')]) && item.available >= 10 ? 10 : 1;
+      // 揮霍模式：差一點也直接吃 10 個（差 50 瓶以上吃 100 個），少送幾次請求、補得快
+      const quantity = healQuantity(item, needed, settings[groupKey(group.id, 'Splurge')]);
       await wait(itemRequestGap());
       if (cancelled()) return;
       let result;
@@ -11022,7 +11032,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       return `${toggle}<div class="row" style="flex-wrap:wrap">${MINI_ITEM_KINDS.map((kind) => {
         const item = miniItemFor(settings, miniWindow.items, kind);
         const count = item ? item.available : 0;
-        const quantity = kind.ten && count >= 10 ? 10 : 1;
+        const quantity = item ? miniQuantity(hero, item, kind) : 1;
         return `<button data-mini="use:${hero.id}:${kind.id}" ${eatDisabled || !item ? 'disabled' : ''} title="${item ? escapeHtml(item.name) : '沒有'}" style="${smallButton};flex:1 1 30%">${kind.label}×${quantity}<br><span style="font-size:11px;opacity:.7">剩 ${count}</span></button>`;
       }).join('')}</div>`;
     };
@@ -11186,6 +11196,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     { id: 'aloe', label: '蘆薈', name: '蘆薈' },
   ];
 
+  // 藥水固定吃 10 個；缺的量 ≥ 50 瓶（遊戲出現 ×100 的時候）吃 100 個
+  function miniQuantity(hero, item, kind) {
+    if (!kind.ten) return 1;
+    const group = SUPPLY_GROUPS.find((candidate) => candidate.id === kind.group);
+    const missing = (Number(hero[group.fullField]) || 0) - (Number(hero[group.heroField]) || 0);
+    return healQuantity(item, item[group.healField] > 0 ? missing / item[group.healField] : 0, true);
+  }
+
   function miniItemFor(settings, items, kind) {
     if (kind.group) {
       const group = SUPPLY_GROUPS.find((candidate) => candidate.id === kind.group);
@@ -11218,7 +11236,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         miniWindow.note = `沒有${kind.label}`;
         return;
       }
-      const quantity = kind.ten && item.available >= 10 ? 10 : 1;
+      const quantity = miniQuantity(hero, item, kind);
       await wait(itemRequestGap());
       const result = await requestGameApi(`${ITEMS_API}/${item.id}/use`, {
         method: 'POST',
