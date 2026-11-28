@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.28
+// @version      6.29
 // @description  原地掛機 N 次後全隊休息，可輔助移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時輔助用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -342,6 +342,10 @@
     // API 打怪冷卻結束後隨機再等幾秒才打，像人看到冷卻結束才按
     huntReactMinSeconds: 1,
     huntReactMaxSeconds: 3,
+    // 經驗加倍活動時打快一點：反應時間換成下面這組，低調模式的延遲、休息和小號放慢都先不管
+    expBoostEnabled: false,
+    expBoostReactMinSeconds: 0.2,
+    expBoostReactMaxSeconds: 0.6,
     stageFinishMoveText: '',
     intervalMinSeconds: 8,
     intervalMaxSeconds: 20,
@@ -1244,6 +1248,8 @@
       <div class="hint">開了之後原地掛機、前進後退、全隊休息都直接打 API；補給、換裝請用 API 版。目標關卡只會在同一張地圖裡前進後退</div>
       <label>冷卻結束後再等 ${numberInput('huntReactMinSeconds', 'min="0" step="0.5"')} ～ ${numberInput('huntReactMaxSeconds', 'min="0" step="0.5"')} 秒（隨機）才打</label>
       <div class="hint">像人看到冷卻結束才按。這是打怪頻率最大的變數：1～3 秒一輪約 13 秒，0.5～1.5 秒約快 8%，但越短越不像人。三個帳號輔助同步</div>
+      <label class="row"><input data-field="expBoostEnabled" type="checkbox" style="flex:none;width:auto"> <b>經驗加倍模式</b>：冷卻結束後只等 ${numberInput('expBoostReactMinSeconds', 'min="0" step="0.1"')} ～ ${numberInput('expBoostReactMaxSeconds', 'min="0" step="0.1"')} 秒就打</label>
+      <div class="hint">活動期間用：勾著的時候打怪不加低調模式的延遲和休息（含睡覺時段）、小號也不放慢，打得最快。活動結束記得取消勾選</div>
       <label class="row"><input data-field="lowProfileEnabled" type="checkbox" style="flex:none;width:auto"> <b>低調模式</b>（模擬人類操作的延遲）</label>
       <div class="row">玩法 <select data-field="lowProfileStyle" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="serious">認真玩：一段一段長時間玩</option><option value="casual">休閒：每小時玩一點，離開時偶爾回來點幾下</option><option value="auto">輔助：認真時段認真玩，其他時間休閒</option></select></div>
       <div class="row">輔助：每天 <input data-field="lowProfileSeriousHours" placeholder="20-24" style="width:110px;flex:none"> 點認真玩（可寫多段 12-13,20-24；每天前後飄 30 分鐘）</div>
@@ -5227,6 +5233,9 @@
     'transferTurnMode',
     'huntReactMinSeconds',
     'huntReactMaxSeconds',
+    'expBoostEnabled',
+    'expBoostReactMinSeconds',
+    'expBoostReactMaxSeconds',
   ];
   const SHARED_SETTINGS_AT_KEY = 'aijijiSharedSettingsAt';
   const SHARED_SETTINGS_POLL_MILLISECONDS = 10000;
@@ -5308,7 +5317,8 @@
   let lastActionAt = 0;
   function queueAction(run) {
     const next = actionQueue.then(async () => {
-      const gap = (readSettingsFromPanel().lowProfileEnabled ? randomGap(1500, 4000) : randomGap(800, 1600)) - (Date.now() - lastActionAt);
+      const panelSettings = readSettingsFromPanel();
+      const gap = (panelSettings.lowProfileEnabled && !panelSettings.expBoostEnabled ? randomGap(1500, 4000) : randomGap(800, 1600)) - (Date.now() - lastActionAt);
       if (gap > 0) await wait(gap);
       try {
         return await run();
@@ -8797,7 +8807,7 @@
   // 要補給、換裝時人不會下一步就發現，晚幾秒才反應；回傳還要等多久（毫秒），0＝可以動了。
   // 躲紅名不走這裡，太晚躲會被打
   function lowProfileReactionLeft(settings, key) {
-    if (!settings.lowProfileEnabled) return 0;
+    if (!settings.lowProfileEnabled || settings.expBoostEnabled) return 0;
     const now = Date.now();
     // 上次反應完很久了才又需要，是新的一次，要重新反應
     if (!lowProfile.reaction || lowProfile.reaction.key !== key || now - lowProfile.reaction.due > 30000) {
@@ -10400,10 +10410,10 @@
     if (reloadForUpdateIfIdle()) return;
     const availableAt = huntInfo && huntInfo.huntAvailableAt ? serverTimeToLocal(huntInfo.huntAvailableAt) : 0;
     const cooldown = Math.max(0, (availableAt || 0) - Date.now());
-    const sideWait = sideAccountWait(settings, cooldown);
-    const delay = lowProfileDelay(settings, cooldown + huntReactGap(settings)) + sideWait;
+    const sideWait = settings.expBoostEnabled ? 0 : sideAccountWait(settings, cooldown);
+    const delay = huntDelay(settings, cooldown + huntReactGap(settings)) + sideWait;
     state.timerId = planTick(() => tick(settings), delay);
-    statusElement.textContent += `（${(delay / 1000).toFixed(1)} 秒後下一步${sideWait ? '，小號慢一點' : ''}）`;
+    statusElement.textContent += `（${(delay / 1000).toFixed(1)} 秒後下一步${sideWait ? '，小號慢一點' : ''}${settings.expBoostEnabled ? '，經驗加倍' : ''}）`;
     bookHuntSlot(settings, Date.now() + delay);
   }
 
@@ -10435,9 +10445,15 @@
     setStatus(`主帳號：${dashboard.profile.nickname}${settings.syncAccountsEnabled ? '（其他帳號 10 秒內變小號）' : '（其他帳號也要填一樣的名稱）'}`);
   }
 
+  // 打怪的等待：經驗加倍時不加低調模式的延遲和休息
+  function huntDelay(settings, delay) {
+    return settings.expBoostEnabled ? delay : lowProfileDelay(settings, delay);
+  }
+
   function huntReactGap(settings) {
-    const minimum = Math.max(0, Number(settings.huntReactMinSeconds) || 0);
-    const maximum = Math.max(minimum, Number(settings.huntReactMaxSeconds) || 0);
+    const boost = settings.expBoostEnabled;
+    const minimum = Math.max(0, Number(settings[boost ? 'expBoostReactMinSeconds' : 'huntReactMinSeconds']) || 0);
+    const maximum = Math.max(minimum, Number(settings[boost ? 'expBoostReactMaxSeconds' : 'huntReactMaxSeconds']) || 0);
     return randomGap(minimum * 1000, maximum * 1000);
   }
 
@@ -11351,7 +11367,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
   // 休息要到角色的完成時間才能結束；還沒到就等到那時候
   async function finishRestByApi(settings) {
     if (Date.now() < state.apiRestUntil) {
-      const delay = lowProfileDelay(settings, state.apiRestUntil - Date.now() + randomGap(1000, 3000));
+      const delay = huntDelay(settings, state.apiRestUntil - Date.now() + (settings.expBoostEnabled ? randomGap(300, 1000) : randomGap(1000, 3000)));
       setStatus(`全隊休息中，${Math.ceil(delay / 1000)} 秒後完成休息`);
       state.timerId = planTick(() => tick(settings), delay);
       return;
@@ -11383,7 +11399,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
 
   function scheduleNext(settings) {
     if (reloadForUpdateIfIdle()) return;
-    const delaySeconds = lowProfileDelay(settings, randomIntervalSeconds(settings) * 1000) / 1000;
+    const delaySeconds = huntDelay(settings, randomIntervalSeconds(settings) * 1000) / 1000;
     state.timerId = planTick(() => tick(settings), delaySeconds * 1000);
     statusElement.textContent += `（${delaySeconds.toFixed(1)} 秒後下一步）`;
   }
