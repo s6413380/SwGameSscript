@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.29
+// @version      6.30
 // @description  原地掛機 N 次後全隊休息，可輔助移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時輔助用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -1248,8 +1248,8 @@
       <div class="hint">開了之後原地掛機、前進後退、全隊休息都直接打 API；補給、換裝請用 API 版。目標關卡只會在同一張地圖裡前進後退</div>
       <label>冷卻結束後再等 ${numberInput('huntReactMinSeconds', 'min="0" step="0.5"')} ～ ${numberInput('huntReactMaxSeconds', 'min="0" step="0.5"')} 秒（隨機）才打</label>
       <div class="hint">像人看到冷卻結束才按。這是打怪頻率最大的變數：1～3 秒一輪約 13 秒，0.5～1.5 秒約快 8%，但越短越不像人。三個帳號輔助同步</div>
-      <label class="row"><input data-field="expBoostEnabled" type="checkbox" style="flex:none;width:auto"> <b>經驗加倍模式</b>：冷卻結束後只等 ${numberInput('expBoostReactMinSeconds', 'min="0" step="0.1"')} ～ ${numberInput('expBoostReactMaxSeconds', 'min="0" step="0.1"')} 秒就打</label>
-      <div class="hint">活動期間用：勾著的時候打怪不加低調模式的延遲和休息（含睡覺時段）、小號也不放慢，打得最快。活動結束記得取消勾選</div>
+      <label class="row"><input data-field="expBoostEnabled" type="checkbox" style="flex:none;width:auto"> <b>經驗加倍模式</b>：冷卻結束後只等 ${numberInput('expBoostReactMinSeconds', 'min="0" step="0.1"')} ～ ${numberInput('expBoostReactMaxSeconds', 'min="0" step="0.1"')} 秒就打 <span data-role="exp-boost-left" style="color:#fcd34d"></span></label>
+      <div class="hint">活動期間用：勾著的時候打怪不加低調模式的延遲和休息（含睡覺時段）、小號也不放慢，打得最快。勾了 1 小時後輔助取消（重新勾就再算 1 小時）</div>
       <label class="row"><input data-field="lowProfileEnabled" type="checkbox" style="flex:none;width:auto"> <b>低調模式</b>（模擬人類操作的延遲）</label>
       <div class="row">玩法 <select data-field="lowProfileStyle" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="serious">認真玩：一段一段長時間玩</option><option value="casual">休閒：每小時玩一點，離開時偶爾回來點幾下</option><option value="auto">輔助：認真時段認真玩，其他時間休閒</option></select></div>
       <div class="row">輔助：每天 <input data-field="lowProfileSeriousHours" placeholder="20-24" style="width:110px;flex:none"> 點認真玩（可寫多段 12-13,20-24；每天前後飄 30 分鐘）</div>
@@ -9926,6 +9926,7 @@
     checkForUpdate(settings);
     syncGrowth(settings);
     syncSharedSettings(settings);
+    checkExpBoostExpiry(settings);
     pollGlobalPause(settings);
     pollQueueOverview(settings);
     syncCloud(settings);
@@ -10443,6 +10444,39 @@
     saveSettings(settings);
     if (settings.syncAccountsEnabled) pushSharedSettings(settings);
     setStatus(`主帳號：${dashboard.profile.nickname}${settings.syncAccountsEnabled ? '（其他帳號 10 秒內變小號）' : '（其他帳號也要填一樣的名稱）'}`);
+  }
+
+  // 經驗加倍勾了 1 小時就關掉，免得活動結束後忘了關、一直用最快的速度打。
+  // 結束時間記在這個帳號的 localStorage（同帳號分頁共用）；其他帳號被同步勾上時各自從那時算起
+  const EXP_BOOST_UNTIL_KEY = 'aijijiExpBoostUntil';
+  const EXP_BOOST_MILLISECONDS = 3600000;
+
+  function startExpBoostHour() {
+    writeJsonStorage(EXP_BOOST_UNTIL_KEY, Date.now() + EXP_BOOST_MILLISECONDS);
+  }
+
+  function checkExpBoostExpiry(settings) {
+    const left = panel.querySelector('[data-role="exp-boost-left"]');
+    if (!settings.expBoostEnabled) {
+      if (readJsonStorage(EXP_BOOST_UNTIL_KEY, 0)) writeJsonStorage(EXP_BOOST_UNTIL_KEY, 0);
+      if (left) left.textContent = '';
+      return;
+    }
+    let until = Number(readJsonStorage(EXP_BOOST_UNTIL_KEY, 0)) || 0;
+    if (!until) {
+      startExpBoostHour();
+      until = Date.now() + EXP_BOOST_MILLISECONDS;
+    }
+    const remaining = until - Date.now();
+    if (remaining > 0) {
+      if (left) left.textContent = `（剩 ${Math.ceil(remaining / 60000)} 分鐘）`;
+      return;
+    }
+    writeJsonStorage(EXP_BOOST_UNTIL_KEY, 0);
+    setPanelField('expBoostEnabled', false);
+    if (left) left.textContent = '';
+    setStatus('經驗加倍模式滿 1 小時，已輔助取消，打怪速度回到平常');
+    showToast('經驗加倍模式滿 1 小時，已輔助取消');
   }
 
   // 打怪的等待：經驗加倍時不加低調模式的延遲和休息
@@ -26359,6 +26393,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       applyTitlePrefix();
     }
     if (event.target.dataset.field === 'assistModeEnabled') applyAssistMode();
+    if (event.isTrusted && event.target.dataset.field === 'expBoostEnabled' && event.target.checked) startExpBoostHour();
     // 改了收爐方式：鍛造可能正照舊設定睡到很久以後（例如等全部好），叫它起來照新設定重算
     if (/^forgeCollect/.test(event.target.dataset.field || '')) {
       forgeRunner.collectRoll = null;
