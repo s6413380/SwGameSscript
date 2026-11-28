@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.34
+// @version      6.35
 // @description  原地掛機 N 次後全隊休息，可輔助移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時輔助用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -12636,6 +12636,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       setForgeLimit(Number(event.target.dataset.hero), 'add', event.target.dataset.delta);
     } else if (action === 'forge-limit-cancel') {
       setForgeLimit(Number(event.target.dataset.hero), 'cancel');
+    } else if (action === 'forge-limit-now') {
+      const result = consumeForgeLimit(Number(event.target.dataset.hero), true);
+      if (result) setStatus(result.replace(/^（|）$/g, ''));
     } else if (action === 'forge-type-name-best') {
       setForgePlanNamesByType(event.target.dataset.type, event.target.dataset.name, false);
     } else if (action === 'forge-name-unlock') {
@@ -19686,13 +19689,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       else if (plans[heroId].backRecipe === undefined) plans[heroId].backRecipe = '';
       const limitName = String(settings.forgeRecipeName || '').trim();
       if (limitName && limitName !== (old.name || '')) {
-        // 限量期間今天自動換名稱不要蓋掉；原本沒鎖的換回去後也不鎖
-        if (plans[heroId].backName === undefined) Object.assign(plans[heroId], { backName: old.name || '', backNameManualDay: old.nameManualDay || '' });
-        Object.assign(plans[heroId], { name: limitName, nameManualDay: localDayKey(Date.now()) });
+        // 限量期間輔助換名稱不要蓋掉；原本沒鎖的換回去後也不鎖
+        if (plans[heroId].backName === undefined) Object.assign(plans[heroId], { backName: old.name || '', backNameManual: nameLockedByUser(old) });
+        Object.assign(plans[heroId], { name: limitName, nameManual: true });
+        delete plans[heroId].nameManualDay;
       }
     } else if (changed) {
       // 沒填次數就是一直用新配方，舊的限量不套到新配方上
-      ['limitCount', 'limitTotal', 'backRecipe', 'backType', 'backName', 'backNameManualDay'].forEach((key) => delete plans[heroId][key]);
+      ['limitCount', 'limitTotal', 'backRecipe', 'backType', 'backName', 'backNameManual', 'backNameManualDay'].forEach((key) => delete plans[heroId][key]);
     }
     if (recipeEditing.heroId === heroId && String(settings.forgeRecipeName || '').trim()) plans[heroId].name = settings.forgeRecipeName.trim();
     setPanelField('forgeByApiPlans', JSON.stringify(plans));
@@ -21785,7 +21789,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       if (!count) action = 'cancel';
     }
     if (action === 'cancel') {
-      ['limitCount', 'limitTotal', 'backRecipe', 'backType', 'backName', 'backNameManualDay'].forEach((key) => delete plan[key]);
+      ['limitCount', 'limitTotal', 'backRecipe', 'backType', 'backName', 'backNameManual', 'backNameManualDay'].forEach((key) => delete plan[key]);
     }
     if (action === 'back') {
       plan.backRecipe = normalizeRecipe(value);
@@ -21828,22 +21832,24 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       <div style="display:flex;gap:4px;align-items:center;margin-top:3px;flex-wrap:wrap">
         <button data-action="forge-limit-add" data-hero="${row.heroId}" data-delta="-1" style="${small}" title="少做一爐">−1</button>
         <button data-action="forge-limit-add" data-hero="${row.heroId}" data-delta="1" style="${small}" title="多做一爐">＋1</button>
-        <button data-action="forge-limit-cancel" data-hero="${row.heroId}" style="${small}" title="不限量，一直用這個配方做">取消限量</button></div>
+        <button data-action="forge-limit-cancel" data-hero="${row.heroId}" style="${small}" title="不限量，一直用這個配方做">取消限量</button>
+        <button data-action="forge-limit-now" data-hero="${row.heroId}" style="${small};color:#fbbf24" title="剩下的不做了，下一爐就照「做完 ➜」換回（已經開的爐照常做完）">馬上撤回</button></div>
       <div style="display:flex;gap:4px;align-items:center;margin-top:3px">做完 ➜
         <select data-forge-limit-back="${row.heroId}" style="flex:1;min-width:0;padding:1px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px">${options}<option value="" ${row.backRecipe ? '' : 'selected'}>移出佇列（停做）</option></select></div>
       ${row.backRecipe ? `<div style="margin-top:2px">${chips(row.backRecipe)}${row.backName !== undefined ? `<span style="color:#fde68a">名稱換回「${escapeHtml(row.backName || '配方頁的名稱')}」</span>` : ''}</div>` : ''}
     </div>`;
   }
 
-  // 開爐成功才扣；扣完換回原本的配方，沒有原本的就移出佇列（做幾爐就停）
-  function consumeForgeLimit(heroId) {
+  // 開爐成功才扣；扣完換回原本的配方，沒有原本的就移出佇列（做幾爐就停）。
+  // now＝不等剩下的爐數，馬上換回（已經開的爐照常做完）
+  function consumeForgeLimit(heroId, now = false) {
     const settings = readSettingsFromPanel();
     const plans = forgeByApiPlans(settings);
     const plan = plans[heroId];
     if (!plan || !(plan.limitCount > 0)) return '';
     const hero = forgeHeroes.find((candidate) => candidate.id === heroId);
     const name = hero ? hero.name : heroId;
-    plan.limitCount -= 1;
+    plan.limitCount = now ? 0 : plan.limitCount - 1;
     if (plan.limitCount > 0) {
       setPanelField('forgeByApiPlans', JSON.stringify(plans));
       afterForgeQueueChange();
@@ -21852,8 +21858,9 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const back = plan.backRecipe;
     const backType = plan.backType || plan.type;
     const backName = plan.backName;
-    const backNameManualDay = plan.backNameManualDay;
-    ['limitCount', 'limitTotal', 'backRecipe', 'backType', 'backName', 'backNameManualDay'].forEach((key) => delete plan[key]);
+    const backNameManual = plan.backNameManual || plan.backNameManualDay === localDayKey(Date.now());
+    ['limitCount', 'limitTotal', 'backRecipe', 'backType', 'backName', 'backNameManual', 'backNameManualDay'].forEach((key) => delete plan[key]);
+    const ending = now ? '限量配方撤回' : '限量配方做完';
     let text;
     if (back) {
       plan.prevRecipe = plan.recipe;
@@ -21863,13 +21870,14 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
       if (backName !== undefined) {
         if (backName) plan.name = backName;
         else delete plan.name;
-        if (backNameManualDay) plan.nameManualDay = backNameManualDay;
-        else delete plan.nameManualDay;
+        if (backNameManual) plan.nameManual = true;
+        else delete plan.nameManual;
+        delete plan.nameManualDay;
       }
-      text = `${name} 限量配方做完，換回 ${backType} ${back}${backName !== undefined ? `「${backName || '配方頁的名稱'}」` : ''}`;
+      text = `${name} ${ending}，換回 ${backType} ${back}${backName !== undefined ? `「${backName || '配方頁的名稱'}」` : ''}`;
     } else {
       setPanelField('forgeByApiHeroIds', forgeByApiHeroIds(settings).filter((id) => id !== heroId).join(','));
-      text = `${name} 限量配方做完，沒有要換回的配方，移出佇列`;
+      text = `${name} ${ending}，沒有要換回的配方，移出佇列`;
     }
     setPanelField('forgeByApiPlans', JSON.stringify(plans));
     afterForgeQueueChange();
@@ -22473,9 +22481,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     };
   }
 
-  // 佇列卡片手動改的名稱只鎖今天：今天自動換名稱都不碰它，過了 00:00 照常交給自動換名稱
-  function nameLockedToday(plan) {
-    return Boolean(plan && plan.name && plan.nameManualDay === localDayKey(Date.now()));
+  // 手動改的名稱一直鎖著，輔助換名稱不碰，按「交給輔助」才解開；
+  // 舊版只記 nameManualDay（鎖當天），過了那天輔助換名稱會換掉但不清這個欄位，所以舊的只認今天的
+  function nameLockedByUser(plan) {
+    return Boolean(plan && plan.name && (plan.nameManual || plan.nameManualDay === localDayKey(Date.now())));
   }
 
   function setForgePlanName(heroId, name) {
@@ -22485,9 +22494,10 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const trimmed = String(name || '').trim();
     if (trimmed) {
       plan.name = trimmed;
-      plan.nameManualDay = localDayKey(Date.now());
+      plan.nameManual = true;
     } else {
       delete plan.name;
+      delete plan.nameManual;
       delete plan.nameManualDay;
     }
     plans[heroId] = plan;
@@ -22497,13 +22507,13 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     renderRecipeHeroes();
     if (panel.querySelector('[data-forge-plan-hero]')) renderForgeApiHeroChoices();
     const hero = forgeHeroes.find((candidate) => candidate.id === heroId);
-    const text = `${hero ? hero.name : heroId} 名稱${trimmed ? `改成「${trimmed}」（今天輔助換名稱不會蓋掉）` : '清空，改用配方頁的名稱'}`;
+    const text = `${hero ? hero.name : heroId} 名稱${trimmed ? `改成「${trimmed}」（輔助換名稱不會蓋掉）` : '清空，改用配方頁的名稱'}`;
     forgeLog(text);
     return text;
   }
 
   // 佇列裡這種裝備的角色一次改同一個名稱（名稱效果看種類，同種類用同一個名稱就好）；
-  // lock＝當成手動改的，今天自動換名稱不蓋掉
+  // lock＝當成手動改的，輔助換名稱不蓋掉
   function setForgePlanNamesByType(type, name, lock = true) {
     const trimmed = String(name || '').trim();
     if (!trimmed) return;
@@ -22512,15 +22522,16 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const heroIds = forgeByApiHeroIds(settings).filter((heroId) => forgeApiPlan(settings, heroId).type === type);
     heroIds.forEach((heroId) => {
       const plan = { ...(plans[heroId] || {}), name: trimmed };
-      if (lock) plan.nameManualDay = localDayKey(Date.now());
-      else delete plan.nameManualDay;
+      if (lock) plan.nameManual = true;
+      else delete plan.nameManual;
+      delete plan.nameManualDay;
       plans[heroId] = plan;
     });
     setPanelField('forgeByApiPlans', JSON.stringify(plans));
     saveSettings(readSettingsFromPanel());
     renderForgePlanOverview();
     renderRecipeHeroes();
-    const text = `${type}的 ${heroIds.length} 個角色名稱改成「${trimmed}」${lock ? '（今天輔助換名稱不會蓋掉）' : ''}`;
+    const text = `${type}的 ${heroIds.length} 個角色名稱改成「${trimmed}」${lock ? '（輔助換名稱不會蓋掉）' : ''}`;
     forgeLog(text);
     setStatus(text);
   }
@@ -22530,7 +22541,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const types = [...new Set(rows.map((row) => row.type).filter(Boolean))];
     if (!types.length) return '';
     return `<div style="border:1px solid #3b2f5c;border-radius:8px;padding:4px 6px;margin:4px 0">
-      <div class="hint" style="margin:0 0 2px">同種類一次改名（名稱效果每種裝備不一樣）：打好按 Enter，這種的角色全部換掉，今天輔助換名稱不會蓋掉</div>
+      <div class="hint" style="margin:0 0 2px">同種類一次改名（名稱效果每種裝備不一樣）：打好按 Enter，這種的角色全部換掉，輔助換名稱不會蓋掉</div>
       ${types
         .map((type) => {
           const sameType = rows.filter((row) => row.type === type);
@@ -22549,6 +22560,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const settings = readSettingsFromPanel();
     const plans = forgeByApiPlans(settings);
     if (!plans[heroId]) return;
+    delete plans[heroId].nameManual;
     delete plans[heroId].nameManualDay;
     setPanelField('forgeByApiPlans', JSON.stringify(plans));
     saveSettings(readSettingsFromPanel());
@@ -22564,7 +22576,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const plan = forgeApiPlan(settings, heroId);
     plans[heroId] = { ...(plans[heroId] || {}), purpose: forgePurposeOf(purpose) };
     let text = `改成做來${FORGE_PURPOSES[forgePurposeOf(purpose)]}`;
-    if (!nameLockedToday(plans[heroId]) && settings.forgeAutoNameEnabled && readJsonStorage(FORGE_NAME_DAY_KEY, '') === localDayKey(Date.now())) {
+    if (!nameLockedByUser(plans[heroId]) && settings.forgeAutoNameEnabled && readJsonStorage(FORGE_NAME_DAY_KEY, '') === localDayKey(Date.now())) {
       const best = todayNamesForType(settings, plan.type, purpose)[0];
       if (best && best.score * 100 >= settings.forgeAutoNamePercent) {
         plans[heroId].name = best.name;
@@ -22744,7 +22756,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
         purpose: plan.purpose,
         itemName: plan.name || '',
         ownName: Boolean((plans[heroId] || {}).name),
-        nameLocked: nameLockedToday(plans[heroId]),
+        nameLocked: nameLockedByUser(plans[heroId]),
         limitCount: (plans[heroId] || {}).limitCount || 0,
         limitTotal: (plans[heroId] || {}).limitTotal || 0,
         backRecipe: (plans[heroId] || {}).backRecipe || '',
@@ -22800,7 +22812,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
             </div>
           <div style="display:flex;gap:4px;align-items:center;margin:2px 0">名稱
             <input data-forge-name="${row.heroId}" list="aijiji-today-names" value="${escapeHtml(row.ownName ? row.itemName : '')}" placeholder="${row.itemName ? `${escapeHtml(row.itemName)}（配方頁的）` : '輸入名稱'}" title="直接打字改名稱，按 Enter 或點別處就存；清空＝用配方頁的名稱" style="flex:1;min-width:0;padding:1px 4px;color:#fff;background:#2a2a30;border:1px solid ${row.nameLocked ? '#f59e0b' : '#44444c'};border-radius:5px">
-            ${row.nameLocked ? `<span style="flex:none;color:#fbbf24" title="今天手動改的，輔助換名稱不會蓋掉；明天 00:00 後照常輔助換">📌今天</span><button data-action="forge-name-unlock" data-hero="${row.heroId}" style="flex:none;padding:0 6px" title="交回輔助換名稱，有更好的就換">交給輔助</button>` : ''}</div>
+            ${row.nameLocked ? `<span style="flex:none;color:#fbbf24" title="手動改的，輔助換名稱不會蓋掉；要讓輔助換就按「交給輔助」">📌手動</span><button data-action="forge-name-unlock" data-hero="${row.heroId}" style="flex:none;padding:0 6px" title="交回輔助換名稱，有更好的就換">交給輔助</button>` : ''}</div>
           <div>${chips || '<span style="color:#666">沒有配方</span>'}
             ${row.materials.length ? `<span style="color:#a0a0aa">共 ${row.total}${row.cap ? `/${row.cap}` : ''}</span>` : ''}
             ${row.possible === null ? '' : `<span style="color:${row.possible ? '#4ade80' : '#f87171'}">・夠 ${row.possible} 爐</span>`}</div>
@@ -22922,10 +22934,11 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const changes = {};
     fields.forEach((field) => (changes[field] = row.querySelector(`[data-forge-plan="${field}"]`).value.trim()));
     const plan = rememberPreviousRecipe(old, changes);
-    // 在清單裡自己改名稱跟佇列卡片一樣，今天自動換名稱不蓋掉
+    // 在清單裡自己改名稱跟佇列卡片一樣，輔助換名稱不蓋掉
     if (fields.includes('name') && plan.name !== (old.name || '')) {
-      if (plan.name) plan.nameManualDay = localDayKey(Date.now());
-      else delete plan.nameManualDay;
+      if (plan.name) plan.nameManual = true;
+      else delete plan.nameManual;
+      delete plan.nameManualDay;
     }
     if (plan.recipe || plan.name) plans[heroId] = plan;
     else delete plans[heroId];
@@ -22986,7 +22999,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const plans = forgeByApiPlans(settings);
     // 鍵是「類型|用途」；配方頁的名稱當成「用」
     forgeByApiHeroIds(settings).forEach((heroId) => {
-      if (nameLockedToday(plans[heroId])) return;
+      if (nameLockedByUser(plans[heroId])) return;
       const plan = forgeApiPlan(settings, heroId);
       const name = namesByType[`${plan.type}|${plan.purpose}`];
       if (name) plans[heroId] = { ...(plans[heroId] || {}), name };
@@ -23001,7 +23014,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const settings = readSettingsFromPanel();
     const plans = forgeByApiPlans(settings);
     forgeByApiHeroIds(settings).forEach((heroId) => {
-      if (plans[heroId] && !nameLockedToday(plans[heroId])) plans[heroId].name = name;
+      if (plans[heroId] && !nameLockedByUser(plans[heroId])) plans[heroId].name = name;
     });
     setPanelField('forgeByApiPlans', JSON.stringify(plans));
     setPanelField('forgeRecipeName', name);
@@ -23078,7 +23091,7 @@ setInterval(function () { try { opener.__aijijiStatsAttach(window); } catch (err
     const plans = forgeByApiPlans(settings);
     const texts = new Set();
     forgeByApiHeroIds(settings).forEach((heroId) => {
-      if (nameLockedToday(plans[heroId])) return;
+      if (nameLockedByUser(plans[heroId])) return;
       const plan = forgeApiPlan(settings, heroId);
       const change = better(plan.type, plan.purpose, plan.name);
       if (!change) return;
