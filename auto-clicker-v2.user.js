@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.33
+// @version      6.34
 // @description  原地掛機 N 次後全隊休息，可輔助移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時輔助用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -346,6 +346,10 @@
     expBoostEnabled: false,
     expBoostReactMinSeconds: 0.45,
     expBoostReactMaxSeconds: 1.35,
+    // 經驗加倍時偶爾多愣一下：機率（%）和多等的秒數（隨機）
+    expBoostPausePercent: 2,
+    expBoostPauseMinSeconds: 1,
+    expBoostPauseMaxSeconds: 2,
     stageFinishMoveText: '',
     intervalMinSeconds: 8,
     intervalMaxSeconds: 20,
@@ -1259,7 +1263,8 @@
       <label>冷卻結束後再等 ${numberInput('huntReactMinSeconds', 'min="0" step="0.5"')} ～ ${numberInput('huntReactMaxSeconds', 'min="0" step="0.5"')} 秒（隨機）才打</label>
       <div class="hint">像人看到冷卻結束才按。這是打怪頻率最大的變數：1～3 秒一輪約 13 秒，0.5～1.5 秒約快 8%，但越短越不像人。三個帳號輔助同步</div>
       <label class="row"><input data-field="expBoostEnabled" type="checkbox" style="flex:none;width:auto"> <b>經驗加倍模式</b>：冷卻結束後只等 ${numberInput('expBoostReactMinSeconds', 'min="0" step="0.001"')} ～ ${numberInput('expBoostReactMaxSeconds', 'min="0" step="0.001"')} 秒就打 <span data-role="exp-boost-left" style="color:#fcd34d"></span></label>
-      <div class="hint">活動期間用：勾著的時候打怪不加低調模式的延遲和休息（含睡覺時段）、小號也不放慢，打得最快。勾了 1 小時後輔助取消（重新勾就再算 1 小時）。等待秒數偏向最小值：0.45～1.35 一半落在 0.45～0.68，偶爾才到 1.35；約 2% 的機率再多等 1 秒</div>
+      <div class="row">　偶爾分心：每輪 ${numberInput('expBoostPausePercent', 'min="0" max="100" step="0.1"')} % 機率多等 ${numberInput('expBoostPauseMinSeconds', 'min="0" step="0.001"')} ～ ${numberInput('expBoostPauseMaxSeconds', 'min="0" step="0.001"')} 秒（0%＝不分心）</div>
+      <div class="hint">活動期間用：勾著的時候打怪不加低調模式的延遲和休息（含睡覺時段）、小號也不放慢，打得最快。勾了 1 小時後輔助取消（重新勾就再算 1 小時）。等待秒數偏向最小值：0.45～1.35 一半落在 0.45～0.68，偶爾才到 1.35；「偶爾分心」照設定的機率再多等一段</div>
       <label class="row"><input data-field="lowProfileEnabled" type="checkbox" style="flex:none;width:auto"> <b>低調模式</b>（模擬人類操作的延遲）</label>
       <div class="row">玩法 <select data-field="lowProfileStyle" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="serious">認真玩：一段一段長時間玩</option><option value="casual">休閒：每小時玩一點，離開時偶爾回來點幾下</option><option value="auto">輔助：認真時段認真玩，其他時間休閒</option></select></div>
       <div class="row">輔助：每天 <input data-field="lowProfileSeriousHours" placeholder="20-24" style="width:110px;flex:none"> 點認真玩（可寫多段 12-13,20-24；每天前後飄 30 分鐘）</div>
@@ -5246,6 +5251,9 @@
     'expBoostEnabled',
     'expBoostReactMinSeconds',
     'expBoostReactMaxSeconds',
+    'expBoostPausePercent',
+    'expBoostPauseMinSeconds',
+    'expBoostPauseMaxSeconds',
   ];
   const SHARED_SETTINGS_AT_KEY = 'aijijiSharedSettingsAt';
   const SHARED_SETTINGS_POLL_MILLISECONDS = 10000;
@@ -10494,15 +10502,21 @@
     return settings.expBoostEnabled ? delay : lowProfileDelay(settings, delay);
   }
 
-  const EXP_BOOST_PAUSE_CHANCE = 0.02;
+  function expBoostDistraction(settings) {
+    const percent = Math.min(100, Math.max(0, Number(settings.expBoostPausePercent) || 0));
+    if (Math.random() * 100 >= percent) return 0;
+    const minimum = Math.max(0, Number(settings.expBoostPauseMinSeconds) || 0);
+    const maximum = Math.max(minimum, Number(settings.expBoostPauseMaxSeconds) || 0);
+    return randomGap(minimum * 1000, maximum * 1000);
+  }
 
   function huntReactGap(settings) {
     const boost = settings.expBoostEnabled;
     const minimum = Math.max(0, Number(settings[boost ? 'expBoostReactMinSeconds' : 'huntReactMinSeconds']) || 0);
     const maximum = Math.max(minimum, Number(settings[boost ? 'expBoostReactMaxSeconds' : 'huntReactMaxSeconds']) || 0);
     // 經驗加倍偏向最小值：一半落在最前面 1/4（0.45～1.35 的中位數約 0.68 秒），偶爾才慢到最大值；
-    // 再極少數多愣 1 秒，像人偶爾分心
-    if (boost) return randomSkewedSeconds(minimum, maximum) * 1000 + (Math.random() < EXP_BOOST_PAUSE_CHANCE ? 1000 : 0);
+    // 再照設定的機率多愣一段（秒數在區間內隨機），像人偶爾分心
+    if (boost) return randomSkewedSeconds(minimum, maximum) * 1000 + expBoostDistraction(settings);
     return randomGap(minimum * 1000, maximum * 1000);
   }
 
