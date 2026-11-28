@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         愛吉吉
 // @namespace    local.auto-clicker
-// @version      6.32
+// @version      6.33
 // @description  原地掛機 N 次後全隊休息，可輔助移動到目標關卡（含子區域與地形切換）；可鍛造；體力與血條低時輔助用道具補給；統計戰鬥傷害、治療、控制、擊殺
 // @match        https://myteam.swordgale.online/*
 // @grant        none
@@ -344,8 +344,8 @@
     huntReactMaxSeconds: 3,
     // 經驗加倍活動時打快一點：反應時間換成下面這組，低調模式的延遲、休息和小號放慢都先不管
     expBoostEnabled: false,
-    expBoostReactMinSeconds: 0.2,
-    expBoostReactMaxSeconds: 0.6,
+    expBoostReactMinSeconds: 0.45,
+    expBoostReactMaxSeconds: 1.35,
     stageFinishMoveText: '',
     intervalMinSeconds: 8,
     intervalMaxSeconds: 20,
@@ -903,6 +903,8 @@
     };
   }
 
+  const EXP_BOOST_RANGE_KEY = 'aijijiExpBoostRange045';
+
   function loadSettings() {
     let saved = null;
     try {
@@ -930,6 +932,14 @@
       saveSettings(saved);
     }
     writeJsonStorage(SLEEP_MERGED_KEY, true);
+    // 經驗加倍的舊預設 0.2～0.6 換成 0.45～1.35，只做一次；自己改過的不動
+    if (saved && !readJsonStorage(EXP_BOOST_RANGE_KEY, false)) {
+      if (Number(saved.expBoostReactMinSeconds) === 0.2 && Number(saved.expBoostReactMaxSeconds) === 0.6) {
+        Object.assign(saved, { expBoostReactMinSeconds: 0.45, expBoostReactMaxSeconds: 1.35 });
+        saveSettings(saved);
+      }
+      writeJsonStorage(EXP_BOOST_RANGE_KEY, true);
+    }
     if (saved && ('equipRuleMinAtk' in saved || 'equipRuleEnchants' in saved)) {
       EQUIP_PARTS.forEach((part) => {
         saved[equipRuleKey(part.id, 'MinAtk')] = saved.equipRuleMinAtk || 0;
@@ -1249,7 +1259,7 @@
       <label>冷卻結束後再等 ${numberInput('huntReactMinSeconds', 'min="0" step="0.5"')} ～ ${numberInput('huntReactMaxSeconds', 'min="0" step="0.5"')} 秒（隨機）才打</label>
       <div class="hint">像人看到冷卻結束才按。這是打怪頻率最大的變數：1～3 秒一輪約 13 秒，0.5～1.5 秒約快 8%，但越短越不像人。三個帳號輔助同步</div>
       <label class="row"><input data-field="expBoostEnabled" type="checkbox" style="flex:none;width:auto"> <b>經驗加倍模式</b>：冷卻結束後只等 ${numberInput('expBoostReactMinSeconds', 'min="0" step="0.001"')} ～ ${numberInput('expBoostReactMaxSeconds', 'min="0" step="0.001"')} 秒就打 <span data-role="exp-boost-left" style="color:#fcd34d"></span></label>
-      <div class="hint">活動期間用：勾著的時候打怪不加低調模式的延遲和休息（含睡覺時段）、小號也不放慢，打得最快。勾了 1 小時後輔助取消（重新勾就再算 1 小時）。等待秒數偏向最小值：0.2～0.6 大多落在 0.2～0.3，偶爾才到 0.6</div>
+      <div class="hint">活動期間用：勾著的時候打怪不加低調模式的延遲和休息（含睡覺時段）、小號也不放慢，打得最快。勾了 1 小時後輔助取消（重新勾就再算 1 小時）。等待秒數偏向最小值：0.45～1.35 一半落在 0.45～0.68，偶爾才到 1.35；約 2% 的機率再多等 1 秒</div>
       <label class="row"><input data-field="lowProfileEnabled" type="checkbox" style="flex:none;width:auto"> <b>低調模式</b>（模擬人類操作的延遲）</label>
       <div class="row">玩法 <select data-field="lowProfileStyle" style="flex:1;min-width:0;padding:3px;color:#fff;background:#2a2a30;border:1px solid #44444c;border-radius:5px"><option value="serious">認真玩：一段一段長時間玩</option><option value="casual">休閒：每小時玩一點，離開時偶爾回來點幾下</option><option value="auto">輔助：認真時段認真玩，其他時間休閒</option></select></div>
       <div class="row">輔助：每天 <input data-field="lowProfileSeriousHours" placeholder="20-24" style="width:110px;flex:none"> 點認真玩（可寫多段 12-13,20-24；每天前後飄 30 分鐘）</div>
@@ -10484,12 +10494,15 @@
     return settings.expBoostEnabled ? delay : lowProfileDelay(settings, delay);
   }
 
+  const EXP_BOOST_PAUSE_CHANCE = 0.02;
+
   function huntReactGap(settings) {
     const boost = settings.expBoostEnabled;
     const minimum = Math.max(0, Number(settings[boost ? 'expBoostReactMinSeconds' : 'huntReactMinSeconds']) || 0);
     const maximum = Math.max(minimum, Number(settings[boost ? 'expBoostReactMaxSeconds' : 'huntReactMaxSeconds']) || 0);
-    // 經驗加倍偏向最小值：一半落在最前面 1/4（0.2～0.6 的中位數約 0.3 秒），偶爾才慢到最大值
-    if (boost) return randomSkewedSeconds(minimum, maximum) * 1000;
+    // 經驗加倍偏向最小值：一半落在最前面 1/4（0.45～1.35 的中位數約 0.68 秒），偶爾才慢到最大值；
+    // 再極少數多愣 1 秒，像人偶爾分心
+    if (boost) return randomSkewedSeconds(minimum, maximum) * 1000 + (Math.random() < EXP_BOOST_PAUSE_CHANCE ? 1000 : 0);
     return randomGap(minimum * 1000, maximum * 1000);
   }
 
